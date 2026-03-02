@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -42,7 +43,7 @@ func newCaptchaRouter(t *testing.T, cfg config.Config) http.Handler {
 	if err != nil {
 		t.Fatalf("hash admin password: %v", err)
 	}
-	if err := st.EnsureAdmin(t.Context(), "admin@example.com", adminHash); err != nil {
+	if err := st.EnsureAdmin(context.Background(), "admin@example.com", adminHash); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +45,7 @@ func newAdminRegistrationRouter(t *testing.T) (http.Handler, *store.Store) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	if err := st.EnsureAdmin(t.Context(), "admin@example.com", pwHash); err != nil {
+	if err := st.EnsureAdmin(context.Background(), "admin@example.com", pwHash); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
 
@@ -73,10 +74,10 @@ func addPendingRegistration(t *testing.T, st *store.Store, email string) string 
 	if err != nil {
 		t.Fatalf("hash pending password: %v", err)
 	}
-	if _, err := st.CreateUser(t.Context(), email, pwHash, "user", models.UserPending); err != nil {
+	if _, err := st.CreateUser(context.Background(), email, pwHash, "user", models.UserPending); err != nil {
 		t.Fatalf("create pending user: %v", err)
 	}
-	reg, err := st.CreateRegistration(t.Context(), email, "127.0.0.1", "ua-hash", true)
+	reg, err := st.CreateRegistration(context.Background(), email, "127.0.0.1", "ua-hash", true)
 	if err != nil {
 		t.Fatalf("create registration: %v", err)
 	}
@@ -144,14 +145,14 @@ func TestAdminApproveRegistrationFlow(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	reg, err := st.GetRegistrationByID(t.Context(), regID)
+	reg, err := st.GetRegistrationByID(context.Background(), regID)
 	if err != nil {
 		t.Fatalf("load registration: %v", err)
 	}
 	if reg.Status != "approved" {
 		t.Fatalf("expected registration status approved, got %q", reg.Status)
 	}
-	u, err := st.GetUserByEmail(t.Context(), "approve@example.com")
+	u, err := st.GetUserByEmail(context.Background(), "approve@example.com")
 	if err != nil {
 		t.Fatalf("load user: %v", err)
 	}
@@ -170,14 +171,14 @@ func TestAdminRejectRegistrationFlow(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	reg, err := st.GetRegistrationByID(t.Context(), regID)
+	reg, err := st.GetRegistrationByID(context.Background(), regID)
 	if err != nil {
 		t.Fatalf("load registration: %v", err)
 	}
 	if reg.Status != "rejected" {
 		t.Fatalf("expected registration status rejected, got %q", reg.Status)
 	}
-	_, err = st.GetUserByEmail(t.Context(), "reject@example.com")
+	_, err = st.GetUserByEmail(context.Background(), "reject@example.com")
 	if err != store.ErrNotFound {
 		t.Fatalf("expected rejected user to be deleted, got err=%v", err)
 	}
@@ -240,11 +241,11 @@ func TestAdminBulkRegistrationDecisionApprove(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	reg1, err := st.GetRegistrationByID(t.Context(), regA)
+	reg1, err := st.GetRegistrationByID(context.Background(), regA)
 	if err != nil {
 		t.Fatalf("load reg A: %v", err)
 	}
-	reg2, err := st.GetRegistrationByID(t.Context(), regB)
+	reg2, err := st.GetRegistrationByID(context.Background(), regB)
 	if err != nil {
 		t.Fatalf("load reg B: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestAdminBulkUserActionSuspendUnsuspend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	u, err := st.CreateUser(t.Context(), "bulk-user@example.com", pwHash, "user", models.UserActive)
+	u, err := st.CreateUser(context.Background(), "bulk-user@example.com", pwHash, "user", models.UserActive)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -307,7 +308,7 @@ func TestAdminBulkUserActionSuspendUnsuspend(t *testing.T) {
 		t.Fatalf("suspend failed: %d body=%s", suspendRec.Code, suspendRec.Body.String())
 	}
 
-	afterSuspend, err := st.GetUserByID(t.Context(), u.ID)
+	afterSuspend, err := st.GetUserByID(context.Background(), u.ID)
 	if err != nil {
 		t.Fatalf("load suspended user: %v", err)
 	}
@@ -321,7 +322,7 @@ func TestAdminBulkUserActionSuspendUnsuspend(t *testing.T) {
 		t.Fatalf("unsuspend failed: %d body=%s", unsuspendRec.Code, unsuspendRec.Body.String())
 	}
 
-	afterUnsuspend, err := st.GetUserByID(t.Context(), u.ID)
+	afterUnsuspend, err := st.GetUserByID(context.Background(), u.ID)
 	if err != nil {
 		t.Fatalf("load unsuspended user: %v", err)
 	}
@@ -332,7 +333,7 @@ func TestAdminBulkUserActionSuspendUnsuspend(t *testing.T) {
 
 func TestAdminRejectRegistrationWorksWhenPendingUserMissing(t *testing.T) {
 	router, st := newAdminRegistrationRouter(t)
-	reg, err := st.CreateRegistration(t.Context(), "missing-user@example.com", "127.0.0.1", "ua", true)
+	reg, err := st.CreateRegistration(context.Background(), "missing-user@example.com", "127.0.0.1", "ua", true)
 	if err != nil {
 		t.Fatalf("create registration: %v", err)
 	}
@@ -342,7 +343,7 @@ func TestAdminRejectRegistrationWorksWhenPendingUserMissing(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
-	updated, err := st.GetRegistrationByID(t.Context(), reg.ID)
+	updated, err := st.GetRegistrationByID(context.Background(), reg.ID)
 	if err != nil {
 		t.Fatalf("load registration: %v", err)
 	}
@@ -357,10 +358,10 @@ func TestAdminRejectRegistrationReturnsUserStateConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	if _, err := st.CreateUser(t.Context(), "conflict@example.com", pwHash, "user", models.UserActive); err != nil {
+	if _, err := st.CreateUser(context.Background(), "conflict@example.com", pwHash, "user", models.UserActive); err != nil {
 		t.Fatalf("create active user: %v", err)
 	}
-	reg, err := st.CreateRegistration(t.Context(), "conflict@example.com", "127.0.0.1", "ua", true)
+	reg, err := st.CreateRegistration(context.Background(), "conflict@example.com", "127.0.0.1", "ua", true)
 	if err != nil {
 		t.Fatalf("create registration: %v", err)
 	}

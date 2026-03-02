@@ -98,7 +98,7 @@ func newPAMLoginRouter(t *testing.T, mailClient mail.Client) (http.Handler, *sql
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	if err := st.EnsureAdmin(t.Context(), "admin@example.com", pwHash); err != nil {
+	if err := st.EnsureAdmin(context.Background(), "admin@example.com", pwHash); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
 

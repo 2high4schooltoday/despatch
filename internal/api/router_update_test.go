@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -49,14 +50,14 @@ func newUpdateFixture(t *testing.T, enabled bool, configured bool) updateTestFix
 	if err != nil {
 		t.Fatalf("hash admin password: %v", err)
 	}
-	if err := st.EnsureAdmin(t.Context(), "admin@example.com", adminHash); err != nil {
+	if err := st.EnsureAdmin(context.Background(), "admin@example.com", adminHash); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
 	userHash, err := auth.HashPassword("UserPass123!")
 	if err != nil {
 		t.Fatalf("hash user password: %v", err)
 	}
-	if _, err := st.CreateUser(t.Context(), "user@example.com", userHash, "user", models.UserActive); err != nil {
+	if _, err := st.CreateUser(context.Background(), "user@example.com", userHash, "user", models.UserActive); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -41,7 +42,7 @@ func newCookieRouter(t *testing.T, cookieMode string, trustProxy bool) http.Hand
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	if err := st.EnsureAdmin(t.Context(), "admin@example.com", pwHash); err != nil {
+	if err := st.EnsureAdmin(context.Background(), "admin@example.com", pwHash); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
 

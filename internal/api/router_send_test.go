@@ -100,15 +100,15 @@ func newSendRouter(t *testing.T, mailClient mail.Client, mailLogin string) http.
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	if err := st.EnsureAdmin(t.Context(), "admin@example.com", pwHash); err != nil {
+	if err := st.EnsureAdmin(context.Background(), "admin@example.com", pwHash); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
 	if mailLogin != "" {
-		admin, err := st.GetUserByEmail(t.Context(), "admin@example.com")
+		admin, err := st.GetUserByEmail(context.Background(), "admin@example.com")
 		if err != nil {
 			t.Fatalf("load admin: %v", err)
 		}
-		if err := st.UpdateUserMailLogin(t.Context(), admin.ID, mailLogin); err != nil {
+		if err := st.UpdateUserMailLogin(context.Background(), admin.ID, mailLogin); err != nil {
 			t.Fatalf("set mail_login: %v", err)
 		}
 	}

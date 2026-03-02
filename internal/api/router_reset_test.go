@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -42,7 +43,7 @@ func newResetRouter(t *testing.T, cfg config.Config) (http.Handler, *store.Store
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	if err := st.EnsureAdmin(t.Context(), "admin@example.com", pwHash); err != nil {
+	if err := st.EnsureAdmin(context.Background(), "admin@example.com", pwHash); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
 	svc := service.New(cfg, st, &sendTestMailClient{}, mail.NoopProvisioner{}, nil)
@@ -143,7 +144,7 @@ func TestAdminResetPasswordReturnsMappedLoginErrorInPAMMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	user, err := st.CreateUser(t.Context(), "nomap@example.com", pwHash, "user", models.UserActive)
+	user, err := st.CreateUser(context.Background(), "nomap@example.com", pwHash, "user", models.UserActive)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -200,11 +201,11 @@ func TestMeReturnsNeedsRecoveryEmailWhenMissing(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	user, err := st.CreateUser(t.Context(), "legacy@example.com", pwHash, "user", models.UserActive)
+	user, err := st.CreateUser(context.Background(), "legacy@example.com", pwHash, "user", models.UserActive)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	if err := st.UpdateUserRecoveryEmail(t.Context(), user.ID, ""); err != nil {
+	if err := st.UpdateUserRecoveryEmail(context.Background(), user.ID, ""); err != nil {
 		t.Fatalf("clear recovery email: %v", err)
 	}
 	sessionCookie, _ := loginForResetTest(t, router, "legacy@example.com", "NoRecovery123!")
@@ -235,11 +236,11 @@ func TestMeUpdateRecoveryEmail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	user, err := st.CreateUser(t.Context(), "recover@example.com", pwHash, "user", models.UserActive)
+	user, err := st.CreateUser(context.Background(), "recover@example.com", pwHash, "user", models.UserActive)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
-	if err := st.UpdateUserRecoveryEmail(t.Context(), user.ID, ""); err != nil {
+	if err := st.UpdateUserRecoveryEmail(context.Background(), user.ID, ""); err != nil {
 		t.Fatalf("clear recovery email: %v", err)
 	}
 	sessionCookie, csrfCookie := loginForResetTest(t, router, "recover@example.com", "RecoverMe123!")
@@ -256,7 +257,7 @@ func TestMeUpdateRecoveryEmail(t *testing.T) {
 		t.Fatalf("expected update 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 
-	updated, err := st.GetUserByID(t.Context(), user.ID)
+	updated, err := st.GetUserByID(context.Background(), user.ID)
 	if err != nil {
 		t.Fatalf("load updated user: %v", err)
 	}
@@ -274,7 +275,7 @@ func TestMeUpdateRecoveryEmailRejectsInvalidAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("hash password: %v", err)
 	}
-	_, err = st.CreateUser(t.Context(), "recover2@example.com", pwHash, "user", models.UserActive)
+	_, err = st.CreateUser(context.Background(), "recover2@example.com", pwHash, "user", models.UserActive)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
