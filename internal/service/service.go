@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	netmail "net/mail"
 	"regexp"
 	"strings"
@@ -299,7 +300,8 @@ func (s *Service) RejectRegistration(ctx context.Context, adminID, regID, reason
 		target = regID
 	}
 	meta, _ := json.Marshal(map[string]string{"registration_id": regID, "user_id": userID, "reason": reason})
-	return s.st.InsertAudit(ctx, adminID, "registration.reject", target, string(meta))
+	s.insertAuditBestEffort(ctx, adminID, "registration.reject", target, string(meta))
+	return nil
 }
 
 func (s *Service) SuspendUser(ctx context.Context, adminID, userID string) error {
@@ -377,6 +379,12 @@ func (s *Service) PasswordResetCapabilities() PasswordResetCapabilities {
 		Delivery:            delivery,
 		TokenTTLMinutes:     s.cfg.PasswordResetTokenTTLMinutes,
 		RequiresMappedLogin: s.usesPAMAuth() && s.cfg.PasswordResetRequireMappedLogin,
+	}
+}
+
+func (s *Service) insertAuditBestEffort(ctx context.Context, actorID, action, target, metadata string) {
+	if err := s.st.InsertAudit(ctx, actorID, action, target, metadata); err != nil {
+		log.Printf("audit_insert_failed action=%s actor=%s target=%s err=%q", action, actorID, target, err.Error())
 	}
 }
 

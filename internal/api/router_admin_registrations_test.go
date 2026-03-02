@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -20,6 +21,11 @@ import (
 )
 
 func newAdminRegistrationRouter(t *testing.T) (http.Handler, *store.Store) {
+	router, st, _ := newAdminRegistrationRouterWithDB(t)
+	return router, st
+}
+
+func newAdminRegistrationRouterWithDB(t *testing.T) (http.Handler, *store.Store, *sql.DB) {
 	t.Helper()
 
 	sqdb, err := db.OpenSQLite(filepath.Join(t.TempDir(), "app.db"), 1, 1, time.Minute)
@@ -65,7 +71,7 @@ func newAdminRegistrationRouter(t *testing.T) (http.Handler, *store.Store) {
 	}
 
 	svc := service.New(cfg, st, &sendTestMailClient{}, mail.NoopProvisioner{}, nil)
-	return NewRouter(cfg, svc), st
+	return NewRouter(cfg, svc), st, sqdb
 }
 
 func addPendingRegistration(t *testing.T, st *store.Store, email string) string {
@@ -377,5 +383,42 @@ func TestAdminRejectRegistrationReturnsUserStateConflict(t *testing.T) {
 	}
 	if payload["code"] != "registration_user_state_conflict" {
 		t.Fatalf("expected registration_user_state_conflict, got %v", payload["code"])
+	}
+}
+
+func TestAdminBulkRejectRegistrationSucceedsWhenAuditInsertFails(t *testing.T) {
+	router, st, sqdb := newAdminRegistrationRouterWithDB(t)
+	regID := addPendingRegistration(t, st, "audit-failure@example.com")
+	if _, err := sqdb.Exec(`DROP TABLE admin_audit_log`); err != nil {
+		t.Fatalf("drop audit table: %v", err)
+	}
+	sess, csrf := loginForSend(t, router)
+
+	body := []byte(`{"ids":["` + regID + `"],"decision":"reject","reason":"policy"}`)
+	rec := doAdminRequest(t, router, http.MethodPost, "/api/v1/admin/registrations/bulk/decision", body, sess, csrf)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Applied []string         `json:"applied"`
+		Failed  []map[string]any `json:"failed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
+	}
+	if len(payload.Failed) != 0 {
+		t.Fatalf("expected no failed items, got %+v", payload.Failed)
+	}
+	if len(payload.Applied) != 1 || payload.Applied[0] != regID {
+		t.Fatalf("expected applied to include %s, got %+v", regID, payload.Applied)
+	}
+
+	updated, err := st.GetRegistrationByID(context.Background(), regID)
+	if err != nil {
+		t.Fatalf("load registration: %v", err)
+	}
+	if updated.Status != "rejected" {
+		t.Fatalf("expected rejected status, got %q", updated.Status)
 	}
 }
