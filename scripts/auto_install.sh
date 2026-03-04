@@ -19,6 +19,8 @@ CURRENT_STAGE_ID=""
 CURRENT_STAGE_TITLE=""
 CURRENT_STAGE_WEIGHT=0
 RUN_RESULT_EMITTED=0
+# Prefer rustup-managed toolchain when present (avoids old distro cargo/rustc).
+export PATH="$HOME/.cargo/bin:$PATH"
 
 log() { printf '[INFO] %s\n' "$*"; }
 warn() { printf '[WARN] %s\n' "$*" >&2; }
@@ -363,6 +365,79 @@ install_apt_packages() {
     APT_UPDATED=1
   fi
   run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+}
+
+version_ge() {
+  local actual expected
+  actual="$(trim "${1:-}")"
+  expected="$(trim "${2:-}")"
+  if [[ -z "$actual" || -z "$expected" ]]; then
+    return 1
+  fi
+  [[ "$(printf '%s\n%s\n' "$expected" "$actual" | sort -V | head -n1)" == "$expected" ]]
+}
+
+ensure_rust_toolchain() {
+  local target="$1"
+  local min_version="1.74.0"
+  local rustc_ver=""
+  local need_bootstrap=0
+
+  if have_cmd rustc; then
+    rustc_ver="$(rustc --version 2>/dev/null | awk '{print $2}')"
+  fi
+
+  if ! have_cmd rustup; then
+    need_bootstrap=1
+  fi
+  if [[ -z "$rustc_ver" ]] || ! version_ge "$rustc_ver" "$min_version"; then
+    need_bootstrap=1
+  fi
+
+  if [[ "$need_bootstrap" -eq 1 ]]; then
+    warn "Bootstrapping Rust toolchain (stable >= ${min_version}) for privileged binaries"
+    if [[ "$OS_ID" == "ubuntu" || "$OS_ID" == "debian" ]]; then
+      # openssl-sys vendored path and Rust bootstrap dependencies
+      install_apt_packages ca-certificates curl build-essential pkg-config perl cmake || true
+    fi
+    if ! have_cmd curl; then
+      err "curl is required to bootstrap rustup toolchain"
+      return 1
+    fi
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --profile minimal --default-toolchain stable
+    export PATH="$HOME/.cargo/bin:$PATH"
+  fi
+
+  if ! have_cmd rustup; then
+    err "rustup is required to install Rust targets for privileged binaries"
+    return 1
+  fi
+  rustup default stable >/dev/null 2>&1 || true
+  rustup target add "$target" >/dev/null 2>&1 || true
+
+  case "$target" in
+    aarch64-unknown-linux-gnu)
+      if [[ "$UNAME_ARCH" == "x86_64" || "$UNAME_ARCH" == "amd64" ]]; then
+        if [[ "$OS_ID" == "ubuntu" || "$OS_ID" == "debian" ]]; then
+          install_apt_packages gcc-aarch64-linux-gnu || true
+        fi
+        if have_cmd aarch64-linux-gnu-gcc; then
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER="aarch64-linux-gnu-gcc"
+        fi
+      fi
+      ;;
+    x86_64-unknown-linux-gnu)
+      if [[ "$UNAME_ARCH" == "aarch64" || "$UNAME_ARCH" == "arm64" ]]; then
+        if [[ "$OS_ID" == "ubuntu" || "$OS_ID" == "debian" ]]; then
+          install_apt_packages gcc-x86-64-linux-gnu || true
+        fi
+        if have_cmd x86_64-linux-gnu-gcc; then
+          export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="x86_64-linux-gnu-gcc"
+        fi
+      fi
+      ;;
+  esac
 }
 
 ensure_repo_checkout_or_bootstrap() {
@@ -2054,11 +2129,19 @@ case "$GOARCH" in
     ;;
 esac
 log "Building privileged Rust binaries for ${RUST_TARGET}"
+ensure_rust_toolchain "$RUST_TARGET"
 (
   cd "$ROOT_DIR/rust"
   MAILCLIENT_BUILD_VERSION="$BUILD_VERSION" \
   MAILCLIENT_BUILD_COMMIT="$BUILD_COMMIT" \
-  cargo build --release --target "$RUST_TARGET" -p pam_reset_helper -p update_worker
+  cargo build --release --locked --target "$RUST_TARGET" -p pam_reset_helper -p update_worker
+) || (
+  warn "Initial Rust privileged binary build failed; refreshing stable toolchain and retrying once."
+  ensure_rust_toolchain "$RUST_TARGET"
+  cd "$ROOT_DIR/rust"
+  MAILCLIENT_BUILD_VERSION="$BUILD_VERSION" \
+  MAILCLIENT_BUILD_COMMIT="$BUILD_COMMIT" \
+  cargo build --release --locked --target "$RUST_TARGET" -p pam_reset_helper -p update_worker
 )
 RUST_BIN_DIR="$ROOT_DIR/rust/target/$RUST_TARGET/release"
 if [[ ! -x "$RUST_BIN_DIR/pam_reset_helper" || ! -x "$RUST_BIN_DIR/update_worker" ]]; then
