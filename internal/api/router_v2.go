@@ -69,11 +69,11 @@ func (h *Handlers) V2Login(w http.ResponseWriter, r *http.Request) {
 	}
 	h.setAuthCookies(w, r, token, csrfToken)
 	out := map[string]any{
-		"user_id":        user.ID,
-		"email":          user.Email,
-		"role":           user.Role,
-		"csrf_token":     csrfToken,
-		"session_active": true,
+		"user_id":              user.ID,
+		"email":                user.Email,
+		"role":                 user.Role,
+		"csrf_token":           csrfToken,
+		"session_active":       true,
 		"mail_secret_required": strings.TrimSpace(sess.MailSecret) == "",
 	}
 	applyAuthStageFields(out, stage)
@@ -135,13 +135,17 @@ func (h *Handlers) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 			creds, err := h.svc.Store().ListMFAWebAuthnCredentials(r.Context(), user.ID)
 			if err == nil {
 				for _, cred := range creds {
+					credentialID := canonicalWebAuthnCredentialID(cred.CredentialID)
+					if credentialID == "" {
+						credentialID = strings.TrimSpace(cred.CredentialID)
+					}
 					allowCredentials = append(allowCredentials, map[string]any{
-						"id":         cred.CredentialID,
+						"id":         credentialID,
 						"type":       "public-key",
 						"name":       cred.Name,
 						"transports": parseWebAuthnTransportsJSON(cred.TransportsJSON),
 					})
-					allowedCredentialIDs = append(allowedCredentialIDs, cred.CredentialID)
+					allowedCredentialIDs = append(allowedCredentialIDs, credentialID)
 				}
 			}
 		}
@@ -287,7 +291,7 @@ func (h *Handlers) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cred, err := h.svc.Store().GetMFAWebAuthnCredentialByCredentialIDAnyUser(r.Context(), credID)
+	cred, err := h.findMFAWebAuthnCredentialAnyUserByAnyID(r.Context(), credID)
 	if err != nil {
 		util.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid credentials", middleware.RequestID(r.Context()))
 		return
@@ -299,7 +303,7 @@ func (h *Handlers) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	if len(state.AllowCredentialsJSON) > 0 {
 		matched := false
 		for _, item := range state.AllowCredentialsJSON {
-			if subtleConstantCompare(strings.TrimSpace(item), strings.TrimSpace(credID)) == 1 {
+			if webAuthnCredentialIDEqual(item, credID) || webAuthnCredentialIDEqual(item, cred.CredentialID) {
 				matched = true
 				break
 			}
@@ -315,11 +319,15 @@ func (h *Handlers) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid credentials", middleware.RequestID(r.Context()))
 		return
 	}
+	assertionCredentialID := canonicalWebAuthnCredentialID(credID)
+	if assertionCredentialID == "" {
+		assertionCredentialID = strings.TrimSpace(credID)
+	}
 	mailsecResult, err := h.callMailSecOperation(r.Context(), "webauthn.assertion.finish", user.ID, map[string]any{
 		"challenge":                     state.Challenge,
 		"rp_id":                         firstNonEmpty(state.RPID, webAuthnContext.RPID),
 		"origins":                       firstNonEmptySlice(state.Origins, webAuthnContext.Origins),
-		"credential_id":                 credID,
+		"credential_id":                 assertionCredentialID,
 		"client_data_json_b64url":       clientDataJSON,
 		"authenticator_data_b64url":     authenticatorData,
 		"signature_b64url":              signature,
@@ -527,8 +535,12 @@ func (h *Handlers) V2MFAWebAuthnBegin(w http.ResponseWriter, r *http.Request) {
 	}
 	allowCredentials := make([]map[string]any, 0, len(creds))
 	for _, cred := range creds {
+		credentialID := canonicalWebAuthnCredentialID(cred.CredentialID)
+		if credentialID == "" {
+			credentialID = strings.TrimSpace(cred.CredentialID)
+		}
 		allowCredentials = append(allowCredentials, map[string]any{
-			"id":         cred.CredentialID,
+			"id":         credentialID,
 			"type":       "public-key",
 			"name":       cred.Name,
 			"transports": parseWebAuthnTransportsJSON(cred.TransportsJSON),
@@ -593,16 +605,20 @@ func (h *Handlers) V2MFAWebAuthnFinish(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 401, "webauthn_challenge_invalid", "challenge is missing or expired", middleware.RequestID(r.Context()))
 		return
 	}
-	cred, err := h.svc.Store().GetMFAWebAuthnCredentialByCredentialID(r.Context(), u.ID, credID)
+	cred, err := h.findMFAWebAuthnCredentialByAnyID(r.Context(), u.ID, credID)
 	if err != nil {
 		util.WriteError(w, 401, "webauthn_credential_invalid", "credential is not registered", middleware.RequestID(r.Context()))
 		return
+	}
+	assertionCredentialID := canonicalWebAuthnCredentialID(credID)
+	if assertionCredentialID == "" {
+		assertionCredentialID = strings.TrimSpace(credID)
 	}
 	mailsecResult, err := h.callMailSecOperation(r.Context(), "webauthn.assertion.finish", u.ID, map[string]any{
 		"challenge":                     state.Challenge,
 		"rp_id":                         firstNonEmpty(state.RPID, webAuthnContext.RPID),
 		"origins":                       firstNonEmptySlice(state.Origins, webAuthnContext.Origins),
-		"credential_id":                 credID,
+		"credential_id":                 assertionCredentialID,
 		"client_data_json_b64url":       clientDataJSON,
 		"authenticator_data_b64url":     authenticatorData,
 		"signature_b64url":              signature,
@@ -2498,7 +2514,38 @@ func (h *Handlers) V2ListTrustedDevices(w http.ResponseWriter, r *http.Request) 
 		util.WriteError(w, 500, "trusted_devices_list_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	util.WriteJSON(w, 200, map[string]any{"items": items})
+	currentDeviceID := ""
+	if cookie, err := r.Cookie(h.trustedDeviceCookieName()); err == nil && strings.TrimSpace(cookie.Value) != "" {
+		current, err := h.svc.Store().GetActiveMFATrustedDeviceByTokenHash(r.Context(), u.ID, trustedDeviceTokenHash(cookie.Value), time.Now().UTC())
+		if err == nil {
+			currentDeviceID = current.ID
+		}
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		displayLabel, browser, osLabel, deviceType := summarizeTrustedDeviceLabel(item.DeviceLabel)
+		entry := map[string]any{
+			"id":            item.ID,
+			"user_id":       item.UserID,
+			"ip_hint":       item.IPHint,
+			"device_label":  item.DeviceLabel,
+			"created_at":    item.CreatedAt,
+			"expires_at":    item.ExpiresAt,
+			"is_current":    currentDeviceID != "" && item.ID == currentDeviceID,
+			"display_label": displayLabel,
+			"browser":       browser,
+			"os":            osLabel,
+			"device_type":   deviceType,
+		}
+		if !item.LastUsedAt.IsZero() {
+			entry["last_used_at"] = item.LastUsedAt
+		}
+		if !item.RevokedAt.IsZero() {
+			entry["revoked_at"] = item.RevokedAt
+		}
+		out = append(out, entry)
+	}
+	util.WriteJSON(w, 200, map[string]any{"items": out})
 }
 
 func (h *Handlers) V2RevokeTrustedDevice(w http.ResponseWriter, r *http.Request) {
@@ -2541,12 +2588,40 @@ func (h *Handlers) V2RevokeAllTrustedDevices(w http.ResponseWriter, r *http.Requ
 
 func (h *Handlers) V2ListSessions(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
+	sess, _ := middleware.Session(r.Context())
 	items, err := h.svc.Store().ListSessionsMeta(r.Context(), u.ID)
 	if err != nil {
 		util.WriteError(w, 500, "sessions_list_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	util.WriteJSON(w, 200, map[string]any{"items": items})
+	currentSessionID := strings.TrimSpace(sess.ID)
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		entry := map[string]any{
+			"session_id":      item.SessionID,
+			"user_id":         item.UserID,
+			"device_label":    item.DeviceLabel,
+			"ua_summary":      item.UASummary,
+			"ip_hint":         item.IPHint,
+			"auth_method":     item.AuthMethod,
+			"created_at":      item.CreatedAt,
+			"last_seen_at":    item.LastSeenAt,
+			"expires_at":      item.ExpiresAt,
+			"idle_expires_at": item.IdleExpiresAt,
+			"is_current":      currentSessionID != "" && item.SessionID == currentSessionID,
+		}
+		if !item.MFAVerifiedAt.IsZero() {
+			entry["mfa_verified_at"] = item.MFAVerifiedAt
+		}
+		if !item.RevokedAt.IsZero() {
+			entry["revoked_at"] = item.RevokedAt
+		}
+		if strings.TrimSpace(item.RevokedReason) != "" {
+			entry["revoked_reason"] = item.RevokedReason
+		}
+		out = append(out, entry)
+	}
+	util.WriteJSON(w, 200, map[string]any{"items": out})
 }
 
 func (h *Handlers) V2RevokeSession(w http.ResponseWriter, r *http.Request) {
@@ -3782,6 +3857,115 @@ func (h *Handlers) readPasskeyLoginChallengeCookie(r *http.Request) (string, str
 	return challengeID, nonce, true
 }
 
+func summarizeTrustedDeviceLabel(raw string) (displayLabel, browser, osLabel, deviceType string) {
+	label := strings.TrimSpace(raw)
+	lower := strings.ToLower(label)
+
+	browser = detectTrustedDeviceBrowser(lower)
+	osLabel = detectTrustedDeviceOS(lower)
+	deviceType = detectTrustedDeviceType(lower)
+
+	parts := make([]string, 0, 3)
+	if browser != "Unknown browser" {
+		parts = append(parts, browser)
+	}
+	if osLabel != "Unknown OS" {
+		parts = append(parts, osLabel)
+	}
+	if deviceType != "Unknown device" {
+		parts = append(parts, deviceType)
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, " / "), browser, osLabel, deviceType
+	}
+	if label == "" {
+		return "Trusted device", browser, osLabel, deviceType
+	}
+	if len(label) > 96 {
+		label = label[:96] + "..."
+	}
+	return label, browser, osLabel, deviceType
+}
+
+func detectTrustedDeviceBrowser(lowerUA string) string {
+	switch {
+	case strings.Contains(lowerUA, "edg/"), strings.Contains(lowerUA, "edge/"):
+		return "Microsoft Edge"
+	case strings.Contains(lowerUA, "opr/"), strings.Contains(lowerUA, "opera"):
+		return "Opera"
+	case strings.Contains(lowerUA, "samsungbrowser/"):
+		return "Samsung Internet"
+	case strings.Contains(lowerUA, "crios/"), strings.Contains(lowerUA, "chrome/"):
+		return "Google Chrome"
+	case strings.Contains(lowerUA, "fxios/"), strings.Contains(lowerUA, "firefox/"):
+		return "Mozilla Firefox"
+	case strings.Contains(lowerUA, "safari/") && !strings.Contains(lowerUA, "chrome/") && !strings.Contains(lowerUA, "crios/"):
+		return "Safari"
+	default:
+		return "Unknown browser"
+	}
+}
+
+func detectTrustedDeviceOS(lowerUA string) string {
+	switch {
+	case strings.Contains(lowerUA, "windows nt"):
+		return "Windows"
+	case strings.Contains(lowerUA, "iphone"), strings.Contains(lowerUA, "ipad"), strings.Contains(lowerUA, "ios"):
+		return "iOS"
+	case strings.Contains(lowerUA, "mac os"), strings.Contains(lowerUA, "macintosh"):
+		return "macOS"
+	case strings.Contains(lowerUA, "android"):
+		return "Android"
+	case strings.Contains(lowerUA, "ubuntu"):
+		return "Ubuntu"
+	case strings.Contains(lowerUA, "linux"):
+		return "Linux"
+	case strings.Contains(lowerUA, "cros"):
+		return "ChromeOS"
+	default:
+		return "Unknown OS"
+	}
+}
+
+func detectTrustedDeviceType(lowerUA string) string {
+	switch {
+	case strings.Contains(lowerUA, "ipad"), strings.Contains(lowerUA, "tablet"):
+		return "Tablet"
+	case strings.Contains(lowerUA, "iphone"), strings.Contains(lowerUA, "android"), strings.Contains(lowerUA, "mobile"):
+		return "Mobile"
+	case strings.Contains(lowerUA, "windows"), strings.Contains(lowerUA, "macintosh"), strings.Contains(lowerUA, "linux"), strings.Contains(lowerUA, "ubuntu"), strings.Contains(lowerUA, "x11"):
+		return "Desktop"
+	default:
+		return "Unknown device"
+	}
+}
+
+func (h *Handlers) findMFAWebAuthnCredentialAnyUserByAnyID(ctx context.Context, credentialID string) (models.MFAWebAuthnCredential, error) {
+	for _, candidate := range webAuthnCredentialIDCandidates(credentialID) {
+		item, err := h.svc.Store().GetMFAWebAuthnCredentialByCredentialIDAnyUser(ctx, candidate)
+		if err == nil {
+			return item, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return models.MFAWebAuthnCredential{}, err
+		}
+	}
+	return models.MFAWebAuthnCredential{}, store.ErrNotFound
+}
+
+func (h *Handlers) findMFAWebAuthnCredentialByAnyID(ctx context.Context, userID, credentialID string) (models.MFAWebAuthnCredential, error) {
+	for _, candidate := range webAuthnCredentialIDCandidates(credentialID) {
+		item, err := h.svc.Store().GetMFAWebAuthnCredentialByCredentialID(ctx, userID, candidate)
+		if err == nil {
+			return item, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return models.MFAWebAuthnCredential{}, err
+		}
+	}
+	return models.MFAWebAuthnCredential{}, store.ErrNotFound
+}
+
 func getMapValue(m map[string]any, key string) map[string]any {
 	v, ok := m[key]
 	if !ok {
@@ -3886,6 +4070,107 @@ func getBoolValue(m map[string]any, key string) (bool, bool) {
 	default:
 		return false, false
 	}
+}
+
+func canonicalWebAuthnCredentialID(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	decoded, ok := decodeWebAuthnCredentialID(trimmed)
+	if !ok {
+		return trimmed
+	}
+	return base64.RawURLEncoding.EncodeToString(decoded)
+}
+
+func webAuthnCredentialIDCandidates(raw string) []string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 4)
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	add(trimmed)
+	decoded, ok := decodeWebAuthnCredentialID(trimmed)
+	if !ok {
+		return out
+	}
+	add(base64.RawURLEncoding.EncodeToString(decoded))
+	hexLower := hex.EncodeToString(decoded)
+	add(hexLower)
+	add(strings.ToUpper(hexLower))
+	return out
+}
+
+func webAuthnCredentialIDEqual(left, right string) bool {
+	leftTrimmed := strings.TrimSpace(left)
+	rightTrimmed := strings.TrimSpace(right)
+	if leftTrimmed == "" || rightTrimmed == "" {
+		return false
+	}
+	leftDecoded, leftOK := decodeWebAuthnCredentialID(leftTrimmed)
+	rightDecoded, rightOK := decodeWebAuthnCredentialID(rightTrimmed)
+	if leftOK && rightOK {
+		if len(leftDecoded) != len(rightDecoded) {
+			return false
+		}
+		return subtle.ConstantTimeCompare(leftDecoded, rightDecoded) == 1
+	}
+	return subtleConstantCompare(leftTrimmed, rightTrimmed) == 1
+}
+
+func decodeWebAuthnCredentialID(raw string) ([]byte, bool) {
+	cleaned := strings.TrimSpace(raw)
+	if cleaned == "" {
+		return nil, false
+	}
+	if isHexCredentialID(cleaned) {
+		if out, err := hex.DecodeString(cleaned); err == nil && len(out) > 0 {
+			return out, true
+		}
+	}
+	decoders := []*base64.Encoding{
+		base64.RawURLEncoding,
+		base64.URLEncoding,
+		base64.RawStdEncoding,
+		base64.StdEncoding,
+	}
+	for _, dec := range decoders {
+		out, err := dec.DecodeString(cleaned)
+		if err != nil || len(out) == 0 {
+			continue
+		}
+		return out, true
+	}
+	return nil, false
+}
+
+func isHexCredentialID(raw string) bool {
+	if len(raw) == 0 || len(raw)%2 != 0 {
+		return false
+	}
+	for _, ch := range raw {
+		switch {
+		case ch >= '0' && ch <= '9':
+		case ch >= 'a' && ch <= 'f':
+		case ch >= 'A' && ch <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func firstNonEmptySlice(values ...[]string) []string {
