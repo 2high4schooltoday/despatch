@@ -1476,6 +1476,19 @@ func (h *Handlers) setAuthCookies(w http.ResponseWriter, r *http.Request, sessio
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   maxAge,
 	})
+	// Frontend currently reads a fixed cookie name for CSRF. Mirror the configured
+	// CSRF token into the legacy default name for compatibility with custom configs.
+	if strings.TrimSpace(h.cfg.CSRFCookieName) != "mailclient_csrf" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "mailclient_csrf",
+			Value:    csrfToken,
+			Path:     "/",
+			HttpOnly: false,
+			Secure:   secure,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   maxAge,
+		})
+	}
 }
 
 func (h *Handlers) clearAuthCookies(w http.ResponseWriter, r *http.Request) {
@@ -1501,6 +1514,19 @@ func (h *Handlers) clearAuthCookies(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		Expires:  expiredAt,
 	})
+	// Clear the legacy mirror cookie too so browsers don't keep stale CSRF tokens.
+	if strings.TrimSpace(h.cfg.CSRFCookieName) != "mailclient_csrf" {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "mailclient_csrf",
+			Value:    "",
+			Path:     "/",
+			HttpOnly: false,
+			Secure:   secure,
+			SameSite: http.SameSiteLaxMode,
+			MaxAge:   -1,
+			Expires:  expiredAt,
+		})
+	}
 }
 
 func decodeSendRequest(r *http.Request) (mail.SendRequest, error) {
