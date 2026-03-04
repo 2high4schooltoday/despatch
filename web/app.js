@@ -3238,12 +3238,21 @@ function renderUpdateStatus(status) {
   if (el.updateLastChecked) el.updateLastChecked.textContent = formatDate(status.last_checked_at) || "-";
   if (el.updateApplyState) el.updateApplyState.textContent = String(status.apply?.state || "idle");
 
+  const applyState = String(status.apply?.state || "idle");
+  const applyError = String(status.apply?.error || "").trim();
+
   if (status.legacy_backend) {
     setUpdateNote("This server build does not expose updater API endpoints yet (HTTP 404). Upgrade backend binary manually to a newer release, then reopen Admin.", "error");
   } else if (!status.enabled) {
     setUpdateNote("Software update feature is disabled in configuration (UPDATE_ENABLED=false).", "info");
   } else if (!status.configured) {
     setUpdateNote("Updater is not configured on this host. Install mailclient-updater systemd units to enable one-click updates.", "error");
+  } else if ((applyState === "failed" || applyState === "rolled_back") && applyError) {
+    if (applyError.toLowerCase().includes("mailsec")) {
+      setUpdateNote(`Last update failed due to mailsec dependency checks: ${applyError}`, "error");
+    } else {
+      setUpdateNote(`Last update failed: ${applyError}`, "error");
+    }
   } else if (status.last_check_error) {
     if (String(status.last_check_error).toLowerCase().includes("release asset")) {
       setUpdateNote(`Release packaging issue detected for this CPU architecture: ${status.last_check_error}`, "error");

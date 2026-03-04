@@ -39,6 +39,8 @@ struct Config {
     update_service_name: String,
     update_systemd_unit_dir: PathBuf,
     listen_addr: String,
+    mailsec_enabled: bool,
+    mailsec_socket: PathBuf,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -239,6 +241,11 @@ impl Config {
                 "/etc/systemd/system",
             )),
             listen_addr: env_var("LISTEN_ADDR", ":8080"),
+            mailsec_enabled: env_bool("MAILSEC_ENABLED", false),
+            mailsec_socket: PathBuf::from(env_var(
+                "MAILSEC_SOCKET",
+                "/run/mailclient/mailsec.sock",
+            )),
         })
     }
 }
@@ -467,6 +474,32 @@ fn apply_release(cfg: &Config, req: &ApplyRequest) -> Result<ApplyResult, Worker
         .join("deploy")
         .join("mailclient-mailsec.service");
     let mailsec_unit_present = mailsec_unit_path.exists();
+    let current_mailsec = cfg.update_install_dir.join("mailclient-mailsec-service");
+    let current_mailsec_present = current_mailsec.exists();
+    let installed_mailsec_unit = cfg
+        .update_systemd_unit_dir
+        .join("mailclient-mailsec.service");
+    let installed_mailsec_unit_present = installed_mailsec_unit.exists();
+    let install_deploy_mailsec_unit = cfg
+        .update_install_dir
+        .join("deploy")
+        .join("mailclient-mailsec.service");
+    let install_deploy_mailsec_unit_present = install_deploy_mailsec_unit.exists();
+
+    if cfg.mailsec_enabled && !mailsec_payload_present && !current_mailsec_present {
+        return Err(WorkerError::Message(
+            "mailsec is enabled but mailclient-mailsec-service is missing in both current install and release payload".to_string(),
+        ));
+    }
+    if cfg.mailsec_enabled
+        && !mailsec_unit_present
+        && !installed_mailsec_unit_present
+        && !install_deploy_mailsec_unit_present
+    {
+        return Err(WorkerError::Message(
+            "mailsec is enabled but mailclient-mailsec.service is missing in payload, install deploy/, and systemd unit directory".to_string(),
+        ));
+    }
 
     let prev_bin = cfg
         .update_install_dir
@@ -494,7 +527,6 @@ fn apply_release(cfg: &Config, req: &ApplyRequest) -> Result<ApplyResult, Worker
     let current_worker = cfg.update_install_dir.join("mailclient-update-worker");
     let current_web = cfg.update_install_dir.join("web");
     let current_mig = cfg.update_install_dir.join("migrations");
-    let current_mailsec = cfg.update_install_dir.join("mailclient-mailsec-service");
 
     let stage_bin = stage_dir.join("mailclient");
     let stage_pam = stage_dir.join("mailclient-pam-reset-helper");
@@ -538,11 +570,17 @@ fn apply_release(cfg: &Config, req: &ApplyRequest) -> Result<ApplyResult, Worker
         rollback_paths(&swapped)?;
         return Err(WorkerError::Message(format!("chown failed: {err}")));
     }
+    let mut mailsec_unit_source: Option<PathBuf> = None;
     if mailsec_unit_present {
-        let dst = cfg
-            .update_systemd_unit_dir
-            .join("mailclient-mailsec.service");
-        if let Err(err) = copy_file(&mailsec_unit_path, &dst, 0o644) {
+        mailsec_unit_source = Some(mailsec_unit_path.clone());
+    } else if install_deploy_mailsec_unit_present {
+        mailsec_unit_source = Some(install_deploy_mailsec_unit.clone());
+    }
+    let mailsec_unit_dst = cfg
+        .update_systemd_unit_dir
+        .join("mailclient-mailsec.service");
+    if let Some(src) = mailsec_unit_source {
+        if let Err(err) = copy_file(&src, &mailsec_unit_dst, 0o644) {
             rollback_paths(&swapped)?;
             return Err(WorkerError::Message(format!(
                 "mailsec unit install failed: {err}"
@@ -555,7 +593,18 @@ fn apply_release(cfg: &Config, req: &ApplyRequest) -> Result<ApplyResult, Worker
             )));
         }
     }
-    if mailsec_payload_present || mailsec_unit_present {
+    let mailsec_unit_now_present = mailsec_unit_dst.exists();
+    if cfg.mailsec_enabled && !mailsec_unit_now_present {
+        rollback_paths(&swapped)?;
+        return Err(WorkerError::Message(
+            "mailsec is enabled but systemd unit mailclient-mailsec.service is still missing after update".to_string(),
+        ));
+    }
+    if cfg.mailsec_enabled
+        || mailsec_payload_present
+        || mailsec_unit_present
+        || mailsec_unit_now_present
+    {
         if let Err(err) = run_cmd(
             "systemctl",
             &["enable", "--now", "mailclient-mailsec"],
@@ -564,6 +613,13 @@ fn apply_release(cfg: &Config, req: &ApplyRequest) -> Result<ApplyResult, Worker
             rollback_paths(&swapped)?;
             return Err(WorkerError::Message(format!(
                 "mailsec enable failed: {err}"
+            )));
+        }
+        if cfg.mailsec_enabled && !wait_for_path(&cfg.mailsec_socket, Duration::from_secs(10)) {
+            rollback_paths(&swapped)?;
+            return Err(WorkerError::Message(format!(
+                "mailsec is enabled but socket was not created at {} after start",
+                cfg.mailsec_socket.display()
             )));
         }
     }
@@ -1047,6 +1103,17 @@ fn trim_backups(base: &Path, keep: usize) -> Result<(), WorkerError> {
         let _ = fs::remove_dir_all(entry.path());
     }
     Ok(())
+}
+
+fn wait_for_path(path: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() <= deadline {
+        if path.exists() {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+    false
 }
 
 fn chown_runtime_artifacts(install_dir: &Path) -> Result<(), WorkerError> {

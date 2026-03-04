@@ -213,6 +213,33 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 	} else if !os.IsNotExist(err) {
 		return "", false, err
 	}
+	currentMailSec := filepath.Join(m.cfg.UpdateInstallDir, "mailclient-mailsec-service")
+	currentMailSecPresent := false
+	if _, err := os.Stat(currentMailSec); err == nil {
+		currentMailSecPresent = true
+	} else if !os.IsNotExist(err) {
+		return "", false, err
+	}
+	systemMailSecUnit := filepath.Join(m.cfg.UpdateSystemdUnitDir, "mailclient-mailsec.service")
+	systemMailSecUnitPresent := false
+	if _, err := os.Stat(systemMailSecUnit); err == nil {
+		systemMailSecUnitPresent = true
+	} else if !os.IsNotExist(err) {
+		return "", false, err
+	}
+	installDeployMailSecUnit := filepath.Join(m.cfg.UpdateInstallDir, "deploy", "mailclient-mailsec.service")
+	installDeployMailSecUnitPresent := false
+	if _, err := os.Stat(installDeployMailSecUnit); err == nil {
+		installDeployMailSecUnitPresent = true
+	} else if !os.IsNotExist(err) {
+		return "", false, err
+	}
+	if m.cfg.MailSecEnabled && !mailSecPayloadPresent && !currentMailSecPresent {
+		return "", false, fmt.Errorf("mailsec is enabled but mailclient-mailsec-service is missing in both current install and release payload")
+	}
+	if m.cfg.MailSecEnabled && !mailSecUnitPresent && !systemMailSecUnitPresent && !installDeployMailSecUnitPresent {
+		return "", false, fmt.Errorf("mailsec is enabled but mailclient-mailsec.service is missing in payload, install deploy/, and systemd unit directory")
+	}
 
 	prevBin := filepath.Join(m.cfg.UpdateInstallDir, ".prev-mailclient-"+sanitizePathToken(runID))
 	prevWeb := filepath.Join(m.cfg.UpdateInstallDir, ".prev-web-"+sanitizePathToken(runID))
@@ -222,7 +249,7 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 	currentBin := filepath.Join(m.cfg.UpdateInstallDir, "mailclient")
 	currentWeb := filepath.Join(m.cfg.UpdateInstallDir, "web")
 	currentMig := filepath.Join(m.cfg.UpdateInstallDir, "migrations")
-	currentMailSec := filepath.Join(m.cfg.UpdateInstallDir, "mailclient-mailsec-service")
+	currentMailSec = filepath.Join(m.cfg.UpdateInstallDir, "mailclient-mailsec-service")
 	stageBin := filepath.Join(stageDir, "mailclient")
 	stageWeb := filepath.Join(stageDir, "web")
 	stageMig := filepath.Join(stageDir, "migrations")
@@ -292,9 +319,16 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 		}
 		return "", true, err
 	}
-	if mailSecUnitPresent {
-		dst := filepath.Join(m.cfg.UpdateSystemdUnitDir, "mailclient-mailsec.service")
-		if err := copyFile(mailSecUnitPath, dst, 0o644); err != nil {
+	mailSecUnitSource := ""
+	switch {
+	case mailSecUnitPresent:
+		mailSecUnitSource = mailSecUnitPath
+	case installDeployMailSecUnitPresent:
+		mailSecUnitSource = installDeployMailSecUnit
+	}
+	mailSecUnitDst := filepath.Join(m.cfg.UpdateSystemdUnitDir, "mailclient-mailsec.service")
+	if mailSecUnitSource != "" {
+		if err := copyFile(mailSecUnitSource, mailSecUnitDst, 0o644); err != nil {
 			if rbErr := rollback(); rbErr != nil {
 				return "", false, fmt.Errorf("mailsec unit install failed: %v; rollback failed: %v", err, rbErr)
 			}
@@ -307,12 +341,35 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 			return "", true, err
 		}
 	}
-	if mailSecPayloadPresent || mailSecUnitPresent {
+	mailSecUnitNowPresent := false
+	if _, err := os.Stat(mailSecUnitDst); err == nil {
+		mailSecUnitNowPresent = true
+	} else if !os.IsNotExist(err) {
+		if rbErr := rollback(); rbErr != nil {
+			return "", false, fmt.Errorf("mailsec unit stat failed: %v; rollback failed: %v", err, rbErr)
+		}
+		return "", true, err
+	}
+	if m.cfg.MailSecEnabled && !mailSecUnitNowPresent {
+		if rbErr := rollback(); rbErr != nil {
+			return "", false, fmt.Errorf("mailsec unit missing after update; rollback failed: %v", rbErr)
+		}
+		return "", true, fmt.Errorf("mailsec is enabled but systemd unit mailclient-mailsec.service is still missing after update")
+	}
+	if m.cfg.MailSecEnabled || mailSecPayloadPresent || mailSecUnitPresent || mailSecUnitNowPresent {
 		if err := runCmd(ctx, "systemctl", "enable", "--now", "mailclient-mailsec"); err != nil {
 			if rbErr := rollback(); rbErr != nil {
 				return "", false, fmt.Errorf("mailsec enable failed: %v; rollback failed: %v", err, rbErr)
 			}
 			return "", true, err
+		}
+		if m.cfg.MailSecEnabled {
+			if !waitForPath(m.cfg.MailSecSocket, 10*time.Second) {
+				if rbErr := rollback(); rbErr != nil {
+					return "", false, fmt.Errorf("mailsec socket missing after start; rollback failed: %v", rbErr)
+				}
+				return "", true, fmt.Errorf("mailsec is enabled but socket was not created at %s after start", strings.TrimSpace(m.cfg.MailSecSocket))
+			}
 		}
 	}
 	if err := runCmd(ctx, "systemctl", "restart", m.cfg.UpdateServiceName); err != nil {
@@ -682,6 +739,23 @@ func checkServiceHealth(ctx context.Context, listenAddr string) error {
 			return fmt.Errorf("health checks failed after restart")
 		}
 		time.Sleep(1200 * time.Millisecond)
+	}
+}
+
+func waitForPath(path string, timeout time.Duration) bool {
+	target := strings.TrimSpace(path)
+	if target == "" {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	for {
+		if _, err := os.Stat(target); err == nil {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(200 * time.Millisecond)
 	}
 }
 
