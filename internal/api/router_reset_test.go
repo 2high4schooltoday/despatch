@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -15,11 +16,16 @@ import (
 	"despatch/internal/db"
 	"despatch/internal/mail"
 	"despatch/internal/models"
+	"despatch/internal/notify"
 	"despatch/internal/service"
 	"despatch/internal/store"
 )
 
 func newResetRouter(t *testing.T, cfg config.Config) (http.Handler, *store.Store) {
+	return newResetRouterWithSender(t, cfg, nil)
+}
+
+func newResetRouterWithSender(t *testing.T, cfg config.Config, sender notify.Sender) (http.Handler, *store.Store) {
 	t.Helper()
 	sqdb, err := db.OpenSQLite(filepath.Join(t.TempDir(), "app.db"), 1, 1, time.Minute)
 	if err != nil {
@@ -46,8 +52,19 @@ func newResetRouter(t *testing.T, cfg config.Config) (http.Handler, *store.Store
 	if err := st.EnsureAdmin(context.Background(), "admin@example.com", pwHash); err != nil {
 		t.Fatalf("ensure admin: %v", err)
 	}
-	svc := service.New(cfg, st, &sendTestDespatch{}, mail.NoopProvisioner{}, nil)
+	svc := service.New(cfg, st, &sendTestDespatch{}, mail.NoopProvisioner{}, sender)
 	return NewRouter(cfg, svc), st
+}
+
+type failingResetSender struct {
+	err error
+}
+
+func (s failingResetSender) SendPasswordReset(ctx context.Context, toEmail, token string) error {
+	_ = ctx
+	_ = toEmail
+	_ = token
+	return s.err
 }
 
 func defaultResetTestConfig() config.Config {
@@ -155,6 +172,35 @@ func TestPasswordResetRequestReturnsUnavailableWhenSenderIsDegraded(t *testing.T
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503 when sender is degraded, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPasswordResetRequestReturnsAcceptedOnDeliverySoftFailure(t *testing.T) {
+	cfg := defaultResetTestConfig()
+	cfg.PAMResetHelperEnabled = true
+	cfg.PasswordResetSender = "smtp"
+	router, st := newResetRouterWithSender(t, cfg, failingResetSender{err: errors.New("smtp down")})
+
+	pwHash, err := auth.HashPassword("Recoverable123!")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	user, err := st.CreateUser(context.Background(), "recover-soft@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(context.Background(), user.ID, "recover-soft-mail@example.net"); err != nil {
+		t.Fatalf("set recovery email: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"email": "recover-soft@example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/password/reset/request", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 on soft delivery failure, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

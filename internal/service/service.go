@@ -32,6 +32,7 @@ var (
 	ErrForbidden                  = errors.New("forbidden")
 	ErrPAMVerifierDown            = errors.New("cannot reach Dovecot IMAP for PAM verification")
 	ErrPasswordResetUnavailable   = errors.New("password reset is currently unavailable")
+	ErrPasswordResetDelivery      = errors.New("password_reset_delivery_failed")
 	ErrPasswordResetLoginUnmapped = errors.New("password_reset_login_unmapped")
 	ErrPasswordResetHelperDown    = errors.New("password_reset_helper_unavailable")
 	ErrPasswordResetHelperFailed  = errors.New("password_reset_helper_failed")
@@ -779,14 +780,13 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 		if errors.Is(err, store.ErrNotFound) {
 			return nil
 		}
-		return nil
+		return fmt.Errorf("%w: lookup_failed", ErrPasswordResetDelivery)
 	}
 	if RecoveryEmailNeedsSetup(u.Email, u.RecoveryEmail) {
 		return nil
 	}
 	if err := s.issuePasswordResetToken(ctx, u, strings.ToLower(strings.TrimSpace(*u.RecoveryEmail))); err != nil {
-		// Keep public API leak-resistant: treat delivery failures as accepted.
-		return nil
+		return fmt.Errorf("%w: %v", ErrPasswordResetDelivery, err)
 	}
 	return nil
 }
@@ -890,7 +890,11 @@ func (s *Service) issuePasswordResetToken(ctx context.Context, u models.User, de
 	if _, err := s.st.CreatePasswordResetToken(ctx, u.ID, hash, expiresAt); err != nil {
 		return err
 	}
-	return s.sender.SendPasswordReset(ctx, deliveryEmail, raw)
+	if err := s.sender.SendPasswordReset(ctx, deliveryEmail, raw); err != nil {
+		_ = s.st.InvalidatePasswordResetToken(ctx, hash)
+		return err
+	}
+	return nil
 }
 
 func (s *Service) UpdateRecoveryEmail(ctx context.Context, userID, recoveryEmail string) (string, error) {

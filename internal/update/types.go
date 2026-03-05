@@ -53,12 +53,19 @@ type ApplyStatus struct {
 }
 
 type StatusResponse struct {
-	Enabled         bool         `json:"enabled"`
-	Configured      bool         `json:"configured"`
-	Current         version.Info `json:"current"`
-	Latest          *ReleaseInfo `json:"latest,omitempty"`
-	LastCheckedAt   string       `json:"last_checked_at,omitempty"`
-	LastCheckError  string       `json:"last_check_error,omitempty"`
-	UpdateAvailable bool         `json:"update_available"`
-	Apply           ApplyStatus  `json:"apply"`
+	Enabled          bool              `json:"enabled"`
+	Configured       bool              `json:"configured"`
+	Current          version.Info      `json:"current"`
+	Latest           *ReleaseInfo      `json:"latest,omitempty"`
+	LastCheckedAt    string            `json:"last_checked_at,omitempty"`
+	LastCheckError   string            `json:"last_check_error,omitempty"`
+	UpdateAvailable  bool              `json:"update_available"`
+	Apply            ApplyStatus       `json:"apply"`
+	ConfigDiagnostic *ConfigDiagnostic `json:"config_diagnostic,omitempty"`
+}
+
+type ConfigDiagnostic struct {
+	Reason     string `json:"reason,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+	RepairHint string `json:"repair_hint,omitempty"`
 }

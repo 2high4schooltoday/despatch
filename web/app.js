@@ -2410,7 +2410,7 @@ function renderDomainSidebar(nodesByKey, activeKey) {
 
 function renderListItem(opts = {}) {
   const {
-    as = "button",
+    as = "div",
     active = false,
     markerText = "",
     markerClass = "",
@@ -2421,13 +2421,21 @@ function renderListItem(opts = {}) {
     onAction = null,
     leadingNode = null,
   } = opts;
-  const row = document.createElement(as === "div" ? "div" : "button");
+  const row = document.createElement(as === "button" ? "button" : "div");
   if (row.tagName === "BUTTON") {
     row.type = "button";
   }
   row.className = "setting-list-item";
   if (active) {
     row.classList.add("is-active");
+  }
+  const canSelect = typeof onSelect === "function";
+  if (canSelect) {
+    row.classList.add("setting-list-item--interactive");
+    if (row.tagName !== "BUTTON") {
+      row.tabIndex = 0;
+      row.setAttribute("role", "button");
+    }
   }
   if (leadingNode) {
     row.appendChild(leadingNode);
@@ -2448,24 +2456,36 @@ function renderListItem(opts = {}) {
   metaNode.textContent = String(meta || "");
   main.appendChild(metaNode);
   row.appendChild(main);
-  const action = document.createElement(row.tagName === "BUTTON" ? "span" : "button");
-  if (action.tagName === "BUTTON") {
+  const resolvedAction = typeof onAction === "function"
+    ? onAction
+    : (canSelect ? onSelect : null);
+  if (String(actionText || "").trim()) {
+    const action = document.createElement("button");
     action.type = "button";
     action.className = "setting-list-action";
     action.textContent = String(actionText || "View");
-    if (typeof onAction === "function") {
+    if (typeof resolvedAction === "function") {
       action.addEventListener("click", (event) => {
         event.stopPropagation();
-        onAction();
+        resolvedAction();
+      });
+    } else {
+      action.disabled = true;
+    }
+    row.appendChild(action);
+  }
+  if (canSelect) {
+    row.addEventListener("click", (event) => {
+      if (event.target && event.target.closest("button,a,input,select,textarea,summary")) return;
+      onSelect();
+    });
+    if (row.tagName !== "BUTTON") {
+      row.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        onSelect();
       });
     }
-  } else {
-    action.className = "setting-list-action";
-    action.textContent = String(actionText || "View");
-  }
-  row.appendChild(action);
-  if (typeof onSelect === "function") {
-    row.addEventListener("click", onSelect);
   }
   return row;
 }
@@ -2481,6 +2501,17 @@ function renderDetailView(container, item, renderContent) {
   if (typeof renderContent === "function") {
     renderContent(container, item);
   }
+}
+
+function createBackToListButton(onClick, label = "Back To List") {
+  const back = document.createElement("button");
+  back.type = "button";
+  back.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+  back.textContent = label;
+  back.addEventListener("click", () => {
+    if (typeof onClick === "function") onClick();
+  });
+  return back;
 }
 
 function renderToggleItem(opts = {}) {
@@ -2602,7 +2633,11 @@ function renderTrustedDevices(items) {
   const rows = Array.isArray(items) ? items : [];
   state.settings.devices.items = rows;
   if (!rows.some((item) => String(item.id || "") === state.settings.devices.detailId)) {
-    state.settings.devices.detailId = rows[0] ? String(rows[0].id || "") : "";
+    state.settings.devices.detailId = "";
+    if (state.ui.settingsNav.domain === "devices") {
+      state.ui.settingsNav.page = "list";
+      state.ui.settingsNav.detailId = "";
+    }
   }
   el.trustedDevicesList.replaceChildren();
   if (rows.length === 0) {
@@ -2616,16 +2651,23 @@ function renderTrustedDevices(items) {
     return;
   }
   for (const item of rows) {
+    const itemID = String(item.id || "");
     const lastUsed = item.last_used_at ? `Last used ${formatDateTimeOrNA(item.last_used_at)}` : "Last used never";
     const expires = item.expires_at ? `Expires ${formatDateTimeOrNA(item.expires_at)}` : "Expires n/a";
     const row = renderListItem({
-      active: String(item.id || "") === state.settings.devices.detailId,
+      active: itemID === state.settings.devices.detailId,
       markerClass: "status-chip status-chip--info",
       markerText: item.is_current ? "Current" : "Trusted",
       title: String(item.display_label || item.device_label || "Trusted device"),
       meta: [lastUsed, expires].join(" • "),
       onSelect: () => {
-        state.settings.devices.detailId = String(item.id || "");
+        state.settings.devices.detailId = itemID;
+        state.ui.settingsNav.page = "list";
+        state.ui.settingsNav.detailId = itemID;
+        renderTrustedDevices(state.settings.devices.items);
+      },
+      onAction: () => {
+        state.settings.devices.detailId = itemID;
         state.ui.settingsNav.page = "detail";
         state.ui.settingsNav.detailId = state.settings.devices.detailId;
         renderTrustedDevices(state.settings.devices.items);
@@ -2633,7 +2675,10 @@ function renderTrustedDevices(items) {
     });
     el.trustedDevicesList.appendChild(row);
   }
-  const selected = rows.find((item) => String(item.id || "") === state.settings.devices.detailId) || null;
+  let selected = null;
+  if (state.ui.settingsNav.page === "detail") {
+    selected = rows.find((item) => String(item.id || "") === state.settings.devices.detailId) || null;
+  }
   if (selected) {
     state.ui.settingsNav.page = "detail";
     state.ui.settingsNav.detailId = String(selected.id || "");
@@ -2663,6 +2708,11 @@ function renderTrustedDevices(items) {
     detail.appendChild(expires);
     const actions = document.createElement("div");
     actions.className = "settings-detail-actions";
+    actions.appendChild(createBackToListButton(() => {
+      state.ui.settingsNav.page = "list";
+      state.ui.settingsNav.detailId = "";
+      renderTrustedDevices(state.settings.devices.items);
+    }));
     const revoke = document.createElement("button");
     revoke.type = "button";
     revoke.className = "cmd-btn cmd-btn--dense cmd-btn--danger";
@@ -2709,13 +2759,6 @@ function renderTrustedDevices(items) {
 }
 
 function setSessionDetail(item) {
-  if (item) {
-    state.ui.settingsNav.page = "detail";
-    state.ui.settingsNav.detailId = String(item.session_id || "");
-  } else {
-    state.ui.settingsNav.page = "list";
-    state.ui.settingsNav.detailId = "";
-  }
   renderDetailView(el.settingsSessionDetail, item, (detail, selected) => {
     const title = document.createElement("h4");
     title.textContent = String(selected.device_label || selected.ua_summary || "Session");
@@ -2736,9 +2779,14 @@ function setSessionDetail(item) {
     expires.className = "hint";
     expires.textContent = `Expires: ${formatDateTimeOrNA(selected.expires_at)}`;
     detail.appendChild(expires);
+    const actions = document.createElement("div");
+    actions.className = "settings-detail-actions";
+    actions.appendChild(createBackToListButton(() => {
+      state.ui.settingsNav.page = "list";
+      state.ui.settingsNav.detailId = "";
+      renderSessions(state.settings.sessions.items);
+    }));
     if (!selected.is_current) {
-      const actions = document.createElement("div");
-      actions.className = "settings-detail-actions";
       const revoke = document.createElement("button");
       revoke.type = "button";
       revoke.className = "cmd-btn cmd-btn--dense cmd-btn--danger";
@@ -2764,8 +2812,8 @@ function setSessionDetail(item) {
         }
       });
       actions.appendChild(revoke);
-      detail.appendChild(actions);
     }
+    detail.appendChild(actions);
     const tech = document.createElement("details");
     tech.className = "setting-tech";
     tech.innerHTML = "<summary>Technical details</summary>";
@@ -2799,7 +2847,11 @@ function renderSessions(items) {
   const rows = Array.isArray(items) ? items : [];
   state.settings.sessions.items = rows;
   if (!rows.some((item) => String(item.session_id || "") === state.settings.sessions.detailId)) {
-    state.settings.sessions.detailId = rows[0] ? String(rows[0].session_id || "") : "";
+    state.settings.sessions.detailId = "";
+    if (state.ui.settingsNav.domain === "sessions") {
+      state.ui.settingsNav.page = "list";
+      state.ui.settingsNav.detailId = "";
+    }
   }
   el.sessionsList.replaceChildren();
   if (rows.length === 0) {
@@ -2811,14 +2863,21 @@ function renderSessions(items) {
     return;
   }
   for (const item of rows) {
+    const sessionID = String(item.session_id || "");
     const row = renderListItem({
-      active: String(item.session_id || "") === state.settings.sessions.detailId,
+      active: sessionID === state.settings.sessions.detailId,
       markerClass: item.is_current ? "status-chip status-chip--ok" : "status-chip status-chip--info",
       markerText: item.is_current ? "Current" : String(item.auth_method || "password"),
       title: String(item.device_label || item.ua_summary || "Session"),
       meta: `Last seen ${formatDateTimeOrNA(item.last_seen_at)} • Expires ${formatDateTimeOrNA(item.expires_at)}`,
       onSelect: () => {
-        state.settings.sessions.detailId = String(item.session_id || "");
+        state.settings.sessions.detailId = sessionID;
+        state.ui.settingsNav.page = "list";
+        state.ui.settingsNav.detailId = sessionID;
+        renderSessions(state.settings.sessions.items);
+      },
+      onAction: () => {
+        state.settings.sessions.detailId = sessionID;
         state.ui.settingsNav.page = "detail";
         state.ui.settingsNav.detailId = state.settings.sessions.detailId;
         renderSessions(state.settings.sessions.items);
@@ -2826,7 +2885,17 @@ function renderSessions(items) {
     });
     el.sessionsList.appendChild(row);
   }
-  const selected = rows.find((item) => String(item.session_id || "") === state.settings.sessions.detailId) || null;
+  let selected = null;
+  if (state.ui.settingsNav.page === "detail") {
+    selected = rows.find((item) => String(item.session_id || "") === state.settings.sessions.detailId) || null;
+  }
+  if (selected) {
+    state.ui.settingsNav.page = "detail";
+    state.ui.settingsNav.detailId = String(selected.session_id || "");
+  } else {
+    state.ui.settingsNav.page = "list";
+    state.ui.settingsNav.detailId = "";
+  }
   setSessionDetail(selected);
 }
 
@@ -3133,7 +3202,11 @@ function renderPasskeyCredentials(items) {
   const rows = Array.isArray(items) ? items : [];
   state.settings.passkeys.items = rows;
   if (!rows.some((item) => String(item.id || "") === state.settings.passkeys.detailId)) {
-    state.settings.passkeys.detailId = rows[0] ? String(rows[0].id || "") : "";
+    state.settings.passkeys.detailId = "";
+    if (state.ui.settingsNav.domain === "signin") {
+      state.ui.settingsNav.page = "list";
+      state.ui.settingsNav.detailId = "";
+    }
   }
   el.passkeysList.replaceChildren();
   if (rows.length === 0) {
@@ -3147,14 +3220,21 @@ function renderPasskeyCredentials(items) {
     return;
   }
   for (const item of rows) {
+    const passkeyID = String(item.id || "");
     const row = renderListItem({
-      active: String(item.id || "") === state.settings.passkeys.detailId,
+      active: passkeyID === state.settings.passkeys.detailId,
       markerClass: "status-chip status-chip--info",
       markerText: "Passkey",
       title: String(item.name || "Passkey"),
       meta: `Created ${formatDateTimeOrNA(item.created_at)} • Last used ${formatDateTimeOrNA(item.last_used_at)}`,
       onSelect: () => {
-        state.settings.passkeys.detailId = String(item.id || "");
+        state.settings.passkeys.detailId = passkeyID;
+        state.ui.settingsNav.page = "list";
+        state.ui.settingsNav.detailId = passkeyID;
+        renderPasskeyCredentials(state.settings.passkeys.items);
+      },
+      onAction: () => {
+        state.settings.passkeys.detailId = passkeyID;
         state.ui.settingsNav.page = "detail";
         state.ui.settingsNav.detailId = state.settings.passkeys.detailId;
         renderPasskeyCredentials(state.settings.passkeys.items);
@@ -3162,7 +3242,10 @@ function renderPasskeyCredentials(items) {
     });
     el.passkeysList.appendChild(row);
   }
-  const selected = rows.find((item) => String(item.id || "") === state.settings.passkeys.detailId) || null;
+  let selected = null;
+  if (state.ui.settingsNav.page === "detail") {
+    selected = rows.find((item) => String(item.id || "") === state.settings.passkeys.detailId) || null;
+  }
   if (selected) {
     state.ui.settingsNav.page = "detail";
     state.ui.settingsNav.detailId = String(selected.id || "");
@@ -3184,6 +3267,11 @@ function renderPasskeyCredentials(items) {
     detail.appendChild(lastUsed);
     const actions = document.createElement("div");
     actions.className = "settings-detail-actions";
+    actions.appendChild(createBackToListButton(() => {
+      state.ui.settingsNav.page = "list";
+      state.ui.settingsNav.detailId = "";
+      renderPasskeyCredentials(state.settings.passkeys.items);
+    }));
     const rename = document.createElement("button");
     rename.type = "button";
     rename.className = "cmd-btn cmd-btn--dense";
@@ -4012,6 +4100,28 @@ function setUpdateNote(text, type = "info") {
   else el.updateNote.style.color = "var(--fg-muted)";
 }
 
+function updateConfigDiagnosticMessage(status) {
+  const diag = status && typeof status === "object" ? status.config_diagnostic : null;
+  if (!diag || typeof diag !== "object") {
+    return "Updater is not configured on this host. Install despatch-updater systemd units to enable one-click updates.";
+  }
+  const reason = String(diag.reason || "").trim().toLowerCase();
+  const detail = String(diag.detail || "").trim();
+  const repair = String(diag.repair_hint || "").trim();
+  let headline = "Updater is not configured on this host.";
+  if (reason === "updater_unit_missing") {
+    headline = "Updater units are missing on this host.";
+  } else if (reason === "request_dir_unwritable" || reason === "status_dir_unwritable") {
+    headline = "Updater request/status directories are not writable by the despatch service user.";
+  } else if (reason === "request_probe_failed" || reason === "status_probe_failed") {
+    headline = "Updater write-probe failed due to permissions or ownership mismatch.";
+  }
+  const parts = [headline];
+  if (detail) parts.push(detail);
+  if (repair) parts.push(`Fix: ${repair}`);
+  return parts.join(" ");
+}
+
 function applyUpdateControls(status) {
   if (!el.btnUpdateCheck || !el.btnUpdateApply) return;
   const st = status || state.update.lastStatus || {};
@@ -4052,7 +4162,7 @@ function renderUpdateStatus(status) {
   } else if (!status.enabled) {
     setUpdateNote("Software update feature is disabled in configuration (UPDATE_ENABLED=false).", "info");
   } else if (!status.configured) {
-    setUpdateNote("Updater is not configured on this host. Install despatch-updater systemd units to enable one-click updates.", "error");
+    setUpdateNote(updateConfigDiagnosticMessage(status), "error");
   } else if ((applyState === "failed" || applyState === "rolled_back") && applyError) {
     if (applyError.toLowerCase().includes("mailsec")) {
       setUpdateNote(`Last update failed due to mailsec dependency checks: ${applyError}`, "error");
@@ -4208,7 +4318,11 @@ async function loadAdminRegistrations() {
   const rows = Array.isArray(regs.items) ? regs.items : [];
   state.admin.registrations.items = rows;
   if (!rows.some((item) => String(item.id || "") === state.admin.registrations.detailId)) {
-    state.admin.registrations.detailId = rows[0] ? String(rows[0].id || "") : "";
+    state.admin.registrations.detailId = "";
+    if (state.ui.adminNav.domain === "registrations") {
+      state.ui.adminNav.page = "list";
+      state.ui.adminNav.detailId = "";
+    }
   }
 
   el.adminRegs.replaceChildren();
@@ -4224,13 +4338,24 @@ async function loadAdminRegistrations() {
     const checked = state.admin.registrations.selected.has(regID);
     const row = document.createElement("div");
     row.className = "setting-list-item";
+    row.classList.add("setting-list-item--interactive");
     if (regID === state.admin.registrations.detailId) {
       row.classList.add("is-active");
     }
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
     row.addEventListener("click", (event) => {
       if (event.target && event.target.closest("input,button")) return;
       state.admin.registrations.detailId = regID;
-      state.ui.adminNav.page = "detail";
+      state.ui.adminNav.page = "list";
+      state.ui.adminNav.detailId = regID;
+      renderAdminRegistrationDetail();
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      state.admin.registrations.detailId = regID;
+      state.ui.adminNav.page = "list";
       state.ui.adminNav.detailId = regID;
       renderAdminRegistrationDetail();
     });
@@ -4275,7 +4400,7 @@ async function loadAdminRegistrations() {
     el.adminRegs.appendChild(row);
   }
   renderAdminRegistrationDetail();
-  if (state.admin.registrations.detailId) {
+  if (state.ui.adminNav.page === "detail" && state.admin.registrations.detailId) {
     state.ui.adminNav.page = "detail";
     state.ui.adminNav.detailId = state.admin.registrations.detailId;
   } else {
@@ -4301,7 +4426,11 @@ async function loadAdminUsers() {
   const rows = (Array.isArray(users.items) ? users.items : []).filter((u) => String(u.status || "").trim().toLowerCase() !== "rejected");
   state.admin.users.items = rows;
   if (!rows.some((item) => String(item.id || "") === state.admin.users.detailId)) {
-    state.admin.users.detailId = rows[0] ? String(rows[0].id || "") : "";
+    state.admin.users.detailId = "";
+    if (state.ui.adminNav.domain === "users") {
+      state.ui.adminNav.page = "list";
+      state.ui.adminNav.detailId = "";
+    }
   }
   el.adminUsers.replaceChildren();
   if (rows.length === 0) {
@@ -4315,13 +4444,24 @@ async function loadAdminUsers() {
     const checked = state.admin.users.selected.has(userID);
     const row = document.createElement("div");
     row.className = "setting-list-item";
+    row.classList.add("setting-list-item--interactive");
     if (userID === state.admin.users.detailId) {
       row.classList.add("is-active");
     }
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
     row.addEventListener("click", (event) => {
       if (event.target && event.target.closest("input,button")) return;
       state.admin.users.detailId = userID;
-      state.ui.adminNav.page = "detail";
+      state.ui.adminNav.page = "list";
+      state.ui.adminNav.detailId = userID;
+      renderAdminUserDetail();
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      state.admin.users.detailId = userID;
+      state.ui.adminNav.page = "list";
       state.ui.adminNav.detailId = userID;
       renderAdminUserDetail();
     });
@@ -4363,7 +4503,7 @@ async function loadAdminUsers() {
     el.adminUsers.appendChild(row);
   }
   renderAdminUserDetail();
-  if (state.admin.users.detailId) {
+  if (state.ui.adminNav.page === "detail" && state.admin.users.detailId) {
     state.ui.adminNav.page = "detail";
     state.ui.adminNav.detailId = state.admin.users.detailId;
   } else {
@@ -4391,7 +4531,11 @@ async function loadAdminAudit() {
   const rows = Array.isArray(audit.items) ? audit.items : [];
   state.admin.audit.items = rows;
   if (!rows.some((item) => String(item.id || "") === state.admin.audit.detailId)) {
-    state.admin.audit.detailId = rows[0] ? String(rows[0].id || "") : "";
+    state.admin.audit.detailId = "";
+    if (state.ui.adminNav.domain === "audit") {
+      state.ui.adminNav.page = "list";
+      state.ui.adminNav.detailId = "";
+    }
   }
   el.adminAudit.replaceChildren();
   if (rows.length === 0) {
@@ -4401,15 +4545,27 @@ async function loadAdminAudit() {
     el.adminAudit.appendChild(empty);
   }
   for (const item of rows) {
-    const row = document.createElement("button");
-    row.type = "button";
+    const auditID = String(item.id || "");
+    const row = document.createElement("div");
     row.className = "setting-list-item";
-    if (String(item.id || "") === state.admin.audit.detailId) {
+    row.classList.add("setting-list-item--interactive");
+    if (auditID === state.admin.audit.detailId) {
       row.classList.add("is-active");
     }
-    row.addEventListener("click", () => {
-      state.admin.audit.detailId = String(item.id || "");
-      state.ui.adminNav.page = "detail";
+    row.tabIndex = 0;
+    row.setAttribute("role", "button");
+    row.addEventListener("click", (event) => {
+      if (event.target && event.target.closest("button,input,select,textarea,a")) return;
+      state.admin.audit.detailId = auditID;
+      state.ui.adminNav.page = "list";
+      state.ui.adminNav.detailId = state.admin.audit.detailId;
+      renderAdminAuditDetail();
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      state.admin.audit.detailId = auditID;
+      state.ui.adminNav.page = "list";
       state.ui.adminNav.detailId = state.admin.audit.detailId;
       renderAdminAuditDetail();
     });
@@ -4428,14 +4584,21 @@ async function loadAdminAudit() {
     meta.textContent = `${formatDate(item.created_at) || "n/a"} • ${String(item.actor_email || "-")} • ${String(item.target_label || item.target || "-")}`;
     main.appendChild(meta);
     row.appendChild(main);
-    const view = document.createElement("span");
+    const view = document.createElement("button");
+    view.type = "button";
     view.className = "setting-list-action";
     view.textContent = "View";
+    view.addEventListener("click", () => {
+      state.admin.audit.detailId = auditID;
+      state.ui.adminNav.page = "detail";
+      state.ui.adminNav.detailId = state.admin.audit.detailId;
+      renderAdminAuditDetail();
+    });
     row.appendChild(view);
     el.adminAudit.appendChild(row);
   }
   renderAdminAuditDetail();
-  if (state.admin.audit.detailId) {
+  if (state.ui.adminNav.page === "detail" && state.admin.audit.detailId) {
     state.ui.adminNav.page = "detail";
     state.ui.adminNav.detailId = state.admin.audit.detailId;
   } else {
@@ -4447,10 +4610,16 @@ async function loadAdminAudit() {
 function renderAdminRegistrationDetail() {
   if (!el.adminRegsDetail) return;
   el.adminRegsDetail.replaceChildren();
-  const item = state.admin.registrations.items.find((it) => String(it.id || "") === state.admin.registrations.detailId);
+  const inDetailMode = state.ui.adminNav.page === "detail";
+  const item = inDetailMode
+    ? state.admin.registrations.items.find((it) => String(it.id || "") === state.admin.registrations.detailId)
+    : null;
   if (!item) {
+    if (inDetailMode) {
+      state.ui.adminNav.page = "list";
+      state.ui.adminNav.detailId = "";
+    }
     state.ui.adminNav.page = "list";
-    state.ui.adminNav.detailId = "";
     el.adminRegsDetail.classList.add("hidden");
     return;
   }
@@ -4482,6 +4651,11 @@ function renderAdminRegistrationDetail() {
   }
   const actions = document.createElement("div");
   actions.className = "settings-detail-actions";
+  actions.appendChild(createBackToListButton(() => {
+    state.ui.adminNav.page = "list";
+    state.ui.adminNav.detailId = "";
+    renderAdminRegistrationDetail();
+  }));
   if (String(item.status || "").toLowerCase() === "pending") {
     const approve = document.createElement("button");
     approve.type = "button";
@@ -4533,10 +4707,16 @@ function renderAdminRegistrationDetail() {
 function renderAdminUserDetail() {
   if (!el.adminUsersDetail) return;
   el.adminUsersDetail.replaceChildren();
-  const item = state.admin.users.items.find((it) => String(it.id || "") === state.admin.users.detailId);
+  const inDetailMode = state.ui.adminNav.page === "detail";
+  const item = inDetailMode
+    ? state.admin.users.items.find((it) => String(it.id || "") === state.admin.users.detailId)
+    : null;
   if (!item) {
+    if (inDetailMode) {
+      state.ui.adminNav.page = "list";
+      state.ui.adminNav.detailId = "";
+    }
     state.ui.adminNav.page = "list";
-    state.ui.adminNav.detailId = "";
     el.adminUsersDetail.classList.add("hidden");
     return;
   }
@@ -4560,6 +4740,11 @@ function renderAdminUserDetail() {
   el.adminUsersDetail.appendChild(provision);
   const actions = document.createElement("div");
   actions.className = "settings-detail-actions";
+  actions.appendChild(createBackToListButton(() => {
+    state.ui.adminNav.page = "list";
+    state.ui.adminNav.detailId = "";
+    renderAdminUserDetail();
+  }));
   const userStatus = String(item.status || "").toLowerCase();
   if (userStatus === "active") {
     const suspend = document.createElement("button");
@@ -4651,10 +4836,16 @@ function renderAdminUserDetail() {
 function renderAdminAuditDetail() {
   if (!el.adminAuditDetail) return;
   el.adminAuditDetail.replaceChildren();
-  const item = state.admin.audit.items.find((it) => String(it.id || "") === state.admin.audit.detailId);
+  const inDetailMode = state.ui.adminNav.page === "detail";
+  const item = inDetailMode
+    ? state.admin.audit.items.find((it) => String(it.id || "") === state.admin.audit.detailId)
+    : null;
   if (!item) {
+    if (inDetailMode) {
+      state.ui.adminNav.page = "list";
+      state.ui.adminNav.detailId = "";
+    }
     state.ui.adminNav.page = "list";
-    state.ui.adminNav.detailId = "";
     el.adminAuditDetail.classList.add("hidden");
     return;
   }
@@ -4680,6 +4871,14 @@ function renderAdminAuditDetail() {
   severity.className = "hint";
   severity.textContent = `Severity: ${String(item.severity || "info")}`;
   el.adminAuditDetail.appendChild(severity);
+  const actions = document.createElement("div");
+  actions.className = "settings-detail-actions";
+  actions.appendChild(createBackToListButton(() => {
+    state.ui.adminNav.page = "list";
+    state.ui.adminNav.detailId = "";
+    renderAdminAuditDetail();
+  }));
+  el.adminAuditDetail.appendChild(actions);
   if (String(item.metadata_json || "").trim()) {
     const tech = document.createElement("details");
     tech.className = "setting-tech";
@@ -4699,7 +4898,11 @@ async function loadAdminFeatureFlags() {
     const rows = Array.isArray(payload.items) ? payload.items : [];
     state.admin.featureFlags.items = rows;
     if (!rows.some((item) => String(item.id || "") === state.admin.featureFlags.detailId)) {
-      state.admin.featureFlags.detailId = rows[0] ? String(rows[0].id || "") : "";
+      state.admin.featureFlags.detailId = "";
+      if (state.ui.adminNav.domain === "system") {
+        state.ui.adminNav.page = "list";
+        state.ui.adminNav.detailId = "";
+      }
     }
     el.adminFeatureFlags.replaceChildren();
     if (rows.length === 0) {
@@ -4718,6 +4921,12 @@ async function loadAdminFeatureFlags() {
         title: String(item.name || item.id || "Feature flag"),
         meta: `${String(item.category || "General")} • ${item.editable ? "Editable" : "Read-only"}`,
         onSelect: () => {
+          state.admin.featureFlags.detailId = String(item.id || "");
+          state.ui.adminNav.page = "list";
+          state.ui.adminNav.detailId = state.admin.featureFlags.detailId;
+          renderAdminFeatureFlagDetail();
+        },
+        onAction: () => {
           state.admin.featureFlags.detailId = String(item.id || "");
           state.ui.adminNav.page = "detail";
           state.ui.adminNav.detailId = state.admin.featureFlags.detailId;
@@ -4741,7 +4950,10 @@ async function loadAdminFeatureFlags() {
 }
 
 function renderAdminFeatureFlagDetail() {
-  const item = state.admin.featureFlags.items.find((it) => String(it.id || "") === state.admin.featureFlags.detailId);
+  const inDetailMode = state.ui.adminNav.page === "detail";
+  const item = inDetailMode
+    ? state.admin.featureFlags.items.find((it) => String(it.id || "") === state.admin.featureFlags.detailId)
+    : null;
   if (item) {
     state.ui.adminNav.page = "detail";
     state.ui.adminNav.detailId = String(item.id || "");
@@ -4761,6 +4973,14 @@ function renderAdminFeatureFlagDetail() {
     stateNote.className = "hint";
     stateNote.textContent = `State: ${selected.enabled ? "Enabled" : "Disabled"} • Source: ${String(selected.source || "default")}`;
     detail.appendChild(stateNote);
+    const navActions = document.createElement("div");
+    navActions.className = "settings-detail-actions";
+    navActions.appendChild(createBackToListButton(() => {
+      state.ui.adminNav.page = "list";
+      state.ui.adminNav.detailId = "";
+      renderAdminFeatureFlagDetail();
+    }));
+    detail.appendChild(navActions);
     if (selected.note) {
       const note = document.createElement("p");
       note.className = "hint";
@@ -5794,7 +6014,7 @@ function bindUI() {
         startUpdatePolling();
       } catch (err) {
         if (err.code === "updater_not_configured") {
-          setUpdateNote("Updater is not configured on this host. Install despatch-updater units first.", "error");
+          setUpdateNote(updateConfigDiagnosticMessage(state.update.lastStatus), "error");
         } else if (err.code === "update_in_progress") {
           setUpdateNote("An update is already running. Waiting for completion.", "info");
           startUpdatePolling();

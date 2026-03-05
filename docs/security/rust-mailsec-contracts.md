@@ -10,6 +10,7 @@ This document freezes Go-to-Rust IPC contracts for `mailsec_service`.
   - JSON payload body
 - Maximum frame size: `8 MiB`
 - Unknown JSON fields are rejected (`deny_unknown_fields`)
+- Exception: WebAuthn `clientDataJSON` parsing accepts unknown keys from authenticators while still requiring `type`, `challenge`, and `origin`.
 
 ## 2. Request Envelope
 

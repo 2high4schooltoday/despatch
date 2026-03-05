@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -18,6 +19,7 @@ type captureResetSender struct {
 	to    string
 	token string
 	calls int
+	err   error
 }
 
 func (s *captureResetSender) SendPasswordReset(ctx context.Context, toEmail, token string) error {
@@ -25,7 +27,7 @@ func (s *captureResetSender) SendPasswordReset(ctx context.Context, toEmail, tok
 	s.calls++
 	s.to = toEmail
 	s.token = token
-	return nil
+	return s.err
 }
 
 func newPasswordResetService(t *testing.T, sender *captureResetSender) (*Service, *store.Store) {
@@ -117,5 +119,38 @@ func TestRequestPasswordResetSkipsLegacyUserWithoutRecoveryEmail(t *testing.T) {
 	}
 	if sender.calls != 0 {
 		t.Fatalf("expected no reset email send for missing recovery email, got %d", sender.calls)
+	}
+}
+
+func TestRequestPasswordResetReturnsSoftErrorAndInvalidatesTokenWhenDeliveryFails(t *testing.T) {
+	ctx := context.Background()
+	sender := &captureResetSender{err: errors.New("smtp delivery failed")}
+	svc, st := newPasswordResetService(t, sender)
+
+	pwHash, err := auth.HashPassword("DeliveryFail123!")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	u, err := st.CreateUser(ctx, "delivery-fail@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(ctx, u.ID, "delivery-recovery@example.net"); err != nil {
+		t.Fatalf("update recovery email: %v", err)
+	}
+
+	err = svc.RequestPasswordReset(ctx, "delivery-fail@example.com")
+	if !errors.Is(err, ErrPasswordResetDelivery) {
+		t.Fatalf("expected ErrPasswordResetDelivery, got %v", err)
+	}
+	if sender.calls != 1 {
+		t.Fatalf("expected one reset delivery attempt, got %d", sender.calls)
+	}
+	if sender.token == "" {
+		t.Fatalf("expected generated reset token on failed send")
+	}
+	confirmErr := svc.ConfirmPasswordReset(ctx, sender.token, "ReplacementPass123!")
+	if !errors.Is(confirmErr, ErrInvalidCredentials) {
+		t.Fatalf("expected invalid credentials for invalidated token, got %v", confirmErr)
 	}
 }

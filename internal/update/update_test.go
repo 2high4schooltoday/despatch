@@ -4,8 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	crand "crypto/rand"
-	"errors"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -129,6 +129,129 @@ func TestQueueApplyIgnoresUnreadableStatusFile(t *testing.T) {
 
 	if _, err := mgr.QueueApply(context.Background(), st, "admin@example.com", "v1.2.3", "req-perm"); err != nil {
 		t.Fatalf("queue apply should tolerate unreadable status file: %v", err)
+	}
+}
+
+func TestStatusReportsUpdaterUnitMissingDiagnostic(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		t.Fatalf("mkdir unit dir: %v", err)
+	}
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("set last check timestamp: %v", err)
+	}
+	mgr := NewManager(cfg)
+	status, err := mgr.Status(context.Background(), st, false)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.Configured {
+		t.Fatalf("expected configured=false when updater marker is missing")
+	}
+	if status.ConfigDiagnostic == nil {
+		t.Fatalf("expected config diagnostic when updater marker is missing")
+	}
+	if status.ConfigDiagnostic.Reason != "updater_unit_missing" {
+		t.Fatalf("expected updater_unit_missing, got %q", status.ConfigDiagnostic.Reason)
+	}
+}
+
+func TestStatusReportsRequestDirDiagnostic(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		t.Fatalf("mkdir unit dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "despatch-updater.path"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write updater marker: %v", err)
+	}
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := os.MkdirAll(cfg.UpdateBaseDir, 0o755); err != nil {
+		t.Fatalf("mkdir update base dir: %v", err)
+	}
+	if err := os.WriteFile(requestDir(cfg), []byte("block dir creation"), 0o644); err != nil {
+		t.Fatalf("write request dir blocker: %v", err)
+	}
+	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("set last check timestamp: %v", err)
+	}
+	mgr := NewManager(cfg)
+	status, err := mgr.Status(context.Background(), st, false)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.Configured {
+		t.Fatalf("expected configured=false when request path is not a directory")
+	}
+	if status.ConfigDiagnostic == nil {
+		t.Fatalf("expected request dir diagnostic")
+	}
+	if status.ConfigDiagnostic.Reason != "request_dir_unwritable" {
+		t.Fatalf("expected request_dir_unwritable, got %q", status.ConfigDiagnostic.Reason)
+	}
+}
+
+func TestStatusConfiguredWhenUpdaterReady(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		t.Fatalf("mkdir unit dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "despatch-updater.path"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write updater marker: %v", err)
+	}
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("set last check timestamp: %v", err)
+	}
+	mgr := NewManager(cfg)
+	status, err := mgr.Status(context.Background(), st, false)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !status.Configured {
+		t.Fatalf("expected configured=true when updater marker and writable paths are present")
+	}
+	if status.ConfigDiagnostic != nil {
+		t.Fatalf("expected no config diagnostic when updater is configured, got %#v", status.ConfigDiagnostic)
 	}
 }
 

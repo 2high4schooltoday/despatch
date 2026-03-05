@@ -1019,6 +1019,14 @@ func (s *Store) CreatePasswordResetToken(ctx context.Context, userID, tokenHash 
 	return t, err
 }
 
+func (s *Store) InvalidatePasswordResetToken(ctx context.Context, tokenHash string) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE password_reset_tokens SET used_at=? WHERE token_hash=? AND used_at IS NULL`,
+		time.Now().UTC(), tokenHash,
+	)
+	return err
+}
+
 func (s *Store) ConsumePasswordResetToken(ctx context.Context, tokenHash string) (models.PasswordResetToken, error) {
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx,

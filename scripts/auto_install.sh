@@ -181,6 +181,33 @@ run_as_root() {
   "$@"
 }
 
+run_as_despatch() {
+  if [[ "${EUID:-1}" -ne 0 ]]; then
+    if ! have_cmd sudo; then
+      err "sudo is required for despatch user verification"
+      exit 1
+    fi
+    sudo -u despatch "$@"
+    return
+  fi
+  if have_cmd runuser; then
+    runuser -u despatch -- "$@"
+    return
+  fi
+  if have_cmd sudo; then
+    sudo -u despatch "$@"
+    return
+  fi
+  if have_cmd su; then
+    local quoted
+    quoted="$(printf '%q ' "$@")"
+    su -s /bin/sh -c "$quoted" despatch
+    return
+  fi
+  err "cannot execute updater verification as despatch user (missing runuser/sudo/su)"
+  exit 1
+}
+
 trim() {
   local s="$1"
   # shellcheck disable=SC2001
@@ -845,6 +872,15 @@ detect_letsencrypt_tls_pair() {
 derive_imap_insecure_skip_verify() {
   local host="$1" imap_tls="$2" imap_starttls="$3"
   if is_loopback_host "$host" && { [[ "$imap_tls" == "true" ]] || [[ "$imap_starttls" == "true" ]]; }; then
+    printf 'true'
+    return
+  fi
+  printf 'false'
+}
+
+derive_smtp_insecure_skip_verify() {
+  local host="$1" smtp_tls="$2" smtp_starttls="$3"
+  if is_loopback_host "$host" && { [[ "$smtp_tls" == "true" ]] || [[ "$smtp_starttls" == "true" ]]; }; then
     printf 'true'
     return
   fi
@@ -2021,6 +2057,7 @@ fi
 IMAP_PORT="$(detect_imap_port)"
 SMTP_PORT="$(detect_smtp_port)"
 IMAP_HOST="127.0.0.1"
+SMTP_HOST="127.0.0.1"
 IMAP_TLS="true"
 IMAP_STARTTLS="false"
 if [[ "$IMAP_PORT" == "143" ]]; then
@@ -2037,7 +2074,7 @@ fi
 if [[ "$SMTP_PORT" == "25" ]]; then
   SMTP_STARTTLS="false"
 fi
-SMTP_INSECURE_SKIP_VERIFY="false"
+SMTP_INSECURE_SKIP_VERIFY="$(derive_smtp_insecure_skip_verify "$SMTP_HOST" "$SMTP_TLS" "$SMTP_STARTTLS")"
 
 finish_stage_ok
 begin_stage "env_generation" "Environment Generation" "10"
@@ -2071,7 +2108,7 @@ set_env_var "$OUT_ENV" "IMAP_TLS" "$IMAP_TLS"
 set_env_var "$OUT_ENV" "IMAP_STARTTLS" "$IMAP_STARTTLS"
 set_env_var "$OUT_ENV" "IMAP_INSECURE_SKIP_VERIFY" "$IMAP_INSECURE_SKIP_VERIFY"
 set_env_var "$OUT_ENV" "MAIL_ALLOW_INSECURE_SKIP_VERIFY_NON_LOOPBACK" "false"
-set_env_var "$OUT_ENV" "SMTP_HOST" "127.0.0.1"
+set_env_var "$OUT_ENV" "SMTP_HOST" "$SMTP_HOST"
 set_env_var "$OUT_ENV" "SMTP_PORT" "$SMTP_PORT"
 set_env_var "$OUT_ENV" "SMTP_TLS" "$SMTP_TLS"
 set_env_var "$OUT_ENV" "SMTP_STARTTLS" "$SMTP_STARTTLS"
@@ -2130,10 +2167,14 @@ set_env_var "$OUT_ENV" "MAILSEC_SOCKET" "/run/despatch/mailsec.sock"
 set_env_var "$OUT_ENV" "MAILSEC_TIMEOUT_MS" "5000"
 
 log "Generated $OUT_ENV"
-log "Detected IMAP ${IMAP_HOST}:${IMAP_PORT} and SMTP 127.0.0.1:${SMTP_PORT}"
+log "Detected IMAP ${IMAP_HOST}:${IMAP_PORT} and SMTP ${SMTP_HOST}:${SMTP_PORT}"
 if [[ "$IMAP_INSECURE_SKIP_VERIFY" == "true" ]]; then
   warn "IMAP host is loopback with TLS/STARTTLS enabled; auto-setting IMAP_INSECURE_SKIP_VERIFY=true to avoid local certificate SAN mismatches."
-else
+fi
+if [[ "$SMTP_INSECURE_SKIP_VERIFY" == "true" ]]; then
+  warn "SMTP host is loopback with TLS/STARTTLS enabled; auto-setting SMTP_INSECURE_SKIP_VERIFY=true to avoid local certificate SAN mismatches."
+fi
+if [[ "$IMAP_INSECURE_SKIP_VERIFY" != "true" && "$SMTP_INSECURE_SKIP_VERIFY" != "true" ]]; then
   log "TLS certificate verification for IMAP/SMTP is enabled by default."
 fi
 log "Deployment mode: $DEPLOY_MODE"
@@ -2289,7 +2330,7 @@ set_env_var "$OUT_ENV" "PAM_RESET_ALLOWED_GID" "$DESPATCH_GID"
 "${PREFIX[@]}" chmod 0640 /opt/despatch/.env
 "${PREFIX[@]}" chown despatch:despatch /var/lib/despatch
 "${PREFIX[@]}" chmod 0750 /var/lib/despatch
-"${PREFIX[@]}" chown root:root /var/lib/despatch/update
+"${PREFIX[@]}" chown root:despatch /var/lib/despatch/update
 "${PREFIX[@]}" chmod 0750 /var/lib/despatch/update
 "${PREFIX[@]}" chown root:root /var/lib/despatch/update/lock /var/lib/despatch/update/backups /var/lib/despatch/update/work
 "${PREFIX[@]}" chmod 0750 /var/lib/despatch/update/lock /var/lib/despatch/update/backups /var/lib/despatch/update/work
@@ -2357,6 +2398,48 @@ fi
 if ! wait_for_condition "despatch mailsec service state" 20 1 "${PREFIX[@]}" systemctl is-active --quiet despatch-mailsec; then
   err "despatch-mailsec service is not active after install."
   err "Run: systemctl status despatch-mailsec --no-pager"
+  exit 1
+fi
+
+step "Updater runtime readiness verification"
+if ! wait_for_condition "despatch updater path state" 20 1 "${PREFIX[@]}" systemctl is-active --quiet despatch-updater.path; then
+  err "despatch-updater.path is not active after install."
+  err "Run: systemctl status despatch-updater.path --no-pager"
+  err "Run: systemctl status despatch-updater.service --no-pager"
+  exit 1
+fi
+if ! run_as_despatch test -w /var/lib/despatch/update/request; then
+  err "despatch user cannot write /var/lib/despatch/update/request."
+  err "Run: chown root:despatch /var/lib/despatch/update /var/lib/despatch/update/request"
+  err "Run: chmod 0750 /var/lib/despatch/update && chmod 0770 /var/lib/despatch/update/request"
+  exit 1
+fi
+if ! run_as_despatch test -w /var/lib/despatch/update/status; then
+  err "despatch user cannot write /var/lib/despatch/update/status."
+  err "Run: chown root:despatch /var/lib/despatch/update /var/lib/despatch/update/status"
+  err "Run: chmod 0750 /var/lib/despatch/update && chmod 0770 /var/lib/despatch/update/status"
+  exit 1
+fi
+UPDATER_REQUEST_PROBE="/var/lib/despatch/update/request/.installer-write-check.$$"
+UPDATER_STATUS_PROBE="/var/lib/despatch/update/status/.installer-write-check.$$"
+if ! run_as_despatch sh -c "printf '%s\n' ok > '$UPDATER_REQUEST_PROBE'"; then
+  err "Failed to write updater request probe as despatch user."
+  err "Run: ls -ld /var/lib/despatch/update /var/lib/despatch/update/request"
+  exit 1
+fi
+if ! run_as_despatch rm -f "$UPDATER_REQUEST_PROBE"; then
+  err "Failed to remove updater request probe as despatch user."
+  err "Run: ls -l /var/lib/despatch/update/request"
+  exit 1
+fi
+if ! run_as_despatch sh -c "printf '%s\n' ok > '$UPDATER_STATUS_PROBE'"; then
+  err "Failed to write updater status probe as despatch user."
+  err "Run: ls -ld /var/lib/despatch/update /var/lib/despatch/update/status"
+  exit 1
+fi
+if ! run_as_despatch rm -f "$UPDATER_STATUS_PROBE"; then
+  err "Failed to remove updater status probe as despatch user."
+  err "Run: ls -l /var/lib/despatch/update/status"
   exit 1
 fi
 

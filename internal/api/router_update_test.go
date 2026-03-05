@@ -17,6 +17,7 @@ import (
 	"despatch/internal/models"
 	"despatch/internal/service"
 	"despatch/internal/store"
+	"despatch/internal/update"
 	"despatch/internal/util"
 )
 
@@ -188,6 +189,53 @@ func TestAdminUpdateApplyNotConfigured(t *testing.T) {
 	}
 	if apiErr.Code != "updater_not_configured" {
 		t.Fatalf("expected updater_not_configured, got %q", apiErr.Code)
+	}
+}
+
+func TestAdminUpdateStatusIncludesConfigDiagnosticWhenNotConfigured(t *testing.T) {
+	fx := newUpdateFixture(t, true, false)
+	sessionCookie, _ := loginCookies(t, fx.router, "admin@example.com", "SecretPass123!")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/update/status", nil)
+	req.AddCookie(sessionCookie)
+	rec := httptest.NewRecorder()
+	fx.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload update.StatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode status payload: %v body=%s", err, rec.Body.String())
+	}
+	if payload.Configured {
+		t.Fatalf("expected configured=false when updater unit is missing")
+	}
+	if payload.ConfigDiagnostic == nil {
+		t.Fatalf("expected config diagnostic for unconfigured updater")
+	}
+	if payload.ConfigDiagnostic.Reason != "updater_unit_missing" {
+		t.Fatalf("expected updater_unit_missing reason, got %q", payload.ConfigDiagnostic.Reason)
+	}
+}
+
+func TestAdminUpdateStatusOmitsConfigDiagnosticWhenConfigured(t *testing.T) {
+	fx := newUpdateFixture(t, true, true)
+	sessionCookie, _ := loginCookies(t, fx.router, "admin@example.com", "SecretPass123!")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/update/status", nil)
+	req.AddCookie(sessionCookie)
+	rec := httptest.NewRecorder()
+	fx.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload update.StatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode status payload: %v body=%s", err, rec.Body.String())
+	}
+	if !payload.Configured {
+		t.Fatalf("expected configured=true when updater marker exists")
+	}
+	if payload.ConfigDiagnostic != nil {
+		t.Fatalf("expected config diagnostic to be omitted when configured, got %#v", payload.ConfigDiagnostic)
 	}
 }
 

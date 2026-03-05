@@ -62,7 +62,6 @@ enum ServiceError {
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ClientData {
     #[serde(rename = "type")]
     typ: String,
@@ -1960,5 +1959,37 @@ mod tests {
         });
         let out = verify_totp_operation(payload).expect("totp verify");
         assert!(out["valid"].as_bool().unwrap_or(false));
+    }
+
+    #[test]
+    fn client_data_allows_unknown_fields() {
+        let parsed: ClientData = serde_json::from_str(
+            r#"{
+            "type":"webauthn.create",
+            "challenge":"abc",
+            "origin":"https://example.test",
+            "crossOrigin":false,
+            "other_keys_can_be_added_here":"yes"
+        }"#,
+        )
+        .expect("clientDataJSON should accept unknown keys");
+        assert_eq!(parsed.typ, "webauthn.create");
+        assert_eq!(parsed.challenge, "abc");
+    }
+
+    #[test]
+    fn client_data_requires_challenge_field() {
+        let err = serde_json::from_str::<ClientData>(
+            r#"{
+            "type":"webauthn.get",
+            "origin":"https://example.test",
+            "crossOrigin":false
+        }"#,
+        )
+        .expect_err("challenge is required");
+        assert!(
+            err.to_string().contains("challenge"),
+            "expected challenge-related decode error, got {err}"
+        );
     }
 }

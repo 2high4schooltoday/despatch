@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -44,11 +45,13 @@ func NewManager(cfg config.Config) *Manager {
 }
 
 func (m *Manager) Status(ctx context.Context, st *store.Store, forceCheck bool) (StatusResponse, error) {
+	configured, configDiagnostic := m.configurationStatus()
 	status := StatusResponse{
-		Enabled:    m.cfg.UpdateEnabled,
-		Configured: m.isConfigured(),
-		Current:    version.Current(),
-		Apply:      ApplyStatus{State: ApplyStateIdle},
+		Enabled:          m.cfg.UpdateEnabled,
+		Configured:       configured,
+		Current:          version.Current(),
+		Apply:            ApplyStatus{State: ApplyStateIdle},
+		ConfigDiagnostic: configDiagnostic,
 	}
 	var checkErr error
 	if m.cfg.UpdateEnabled && (forceCheck || m.shouldRefresh(ctx, st)) {
@@ -90,7 +93,8 @@ func (m *Manager) Status(ctx context.Context, st *store.Store, forceCheck bool) 
 }
 
 func (m *Manager) QueueApply(ctx context.Context, st *store.Store, requestedBy, targetVersion, requestID string) (ApplyRequest, error) {
-	if !m.cfg.UpdateEnabled || !m.isConfigured() {
+	configured, _ := m.configurationStatus()
+	if !m.cfg.UpdateEnabled || !configured {
 		return ApplyRequest{}, ErrUpdaterNotConfigured
 	}
 	target := strings.TrimSpace(targetVersion)
@@ -133,22 +137,71 @@ func (m *Manager) QueueApply(ctx context.Context, st *store.Store, requestedBy, 
 	return req, nil
 }
 
-func (m *Manager) isConfigured() bool {
+func (m *Manager) configurationStatus() (bool, *ConfigDiagnostic) {
 	if !m.cfg.UpdateEnabled {
-		return false
+		return false, nil
 	}
-	if _, err := os.Stat(updaterPathUnitPath(m.cfg)); err != nil {
-		return false
+	unitPath := updaterPathUnitPath(m.cfg)
+	if _, err := os.Stat(unitPath); err != nil {
+		detail := fmt.Sprintf("required updater unit marker is missing: %s", unitPath)
+		if !os.IsNotExist(err) {
+			detail = fmt.Sprintf("cannot verify updater unit marker at %s: %v", unitPath, err)
+		}
+		return false, &ConfigDiagnostic{
+			Reason: "updater_unit_missing",
+			Detail: detail,
+			RepairHint: fmt.Sprintf(
+				"install despatch-updater.path and despatch-updater.service into %s, run systemctl daemon-reload, then enable despatch-updater.path",
+				m.cfg.UpdateSystemdUnitDir,
+			),
+		}
 	}
-	if err := os.MkdirAll(requestDir(m.cfg), 0o750); err != nil {
-		return false
+	if ok, diag := m.checkWritablePath(requestDir(m.cfg), "request"); !ok {
+		return false, diag
 	}
-	probe := requestDir(m.cfg) + "/.write-check"
-	if err := os.WriteFile(probe, []byte("ok"), 0o600); err != nil {
-		return false
+	if ok, diag := m.checkWritablePath(statusDir(m.cfg), "status"); !ok {
+		return false, diag
 	}
-	_ = os.Remove(probe)
-	return true
+	return true, nil
+}
+
+func (m *Manager) checkWritablePath(dirPath, stage string) (bool, *ConfigDiagnostic) {
+	reasonPrefix := strings.TrimSpace(stage)
+	if reasonPrefix == "" {
+		reasonPrefix = "path"
+	}
+	if err := os.MkdirAll(dirPath, 0o750); err != nil {
+		return false, &ConfigDiagnostic{
+			Reason: fmt.Sprintf("%s_dir_unwritable", reasonPrefix),
+			Detail: fmt.Sprintf("cannot access updater %s directory %s: %v", reasonPrefix, dirPath, err),
+			RepairHint: fmt.Sprintf(
+				"ensure %s exists and is writable by the despatch service user (expected owner root:despatch with group write permissions)",
+				dirPath,
+			),
+		}
+	}
+	probePath := filepath.Join(dirPath, fmt.Sprintf(".write-check-%d", time.Now().UnixNano()))
+	if err := os.WriteFile(probePath, []byte("ok"), 0o600); err != nil {
+		return false, &ConfigDiagnostic{
+			Reason: fmt.Sprintf("%s_probe_failed", reasonPrefix),
+			Detail: fmt.Sprintf("write probe failed for updater %s directory %s: %v", reasonPrefix, dirPath, err),
+			RepairHint: fmt.Sprintf(
+				"fix ownership/mode for %s and its parent directories so user 'despatch' can create and remove files",
+				dirPath,
+			),
+		}
+	}
+	if err := os.Remove(probePath); err != nil {
+		return false, &ConfigDiagnostic{
+			Reason: fmt.Sprintf("%s_probe_failed", reasonPrefix),
+			Detail: fmt.Sprintf("write probe cleanup failed for updater %s directory %s: %v", reasonPrefix, dirPath, err),
+			RepairHint: fmt.Sprintf(
+				"fix ownership/mode for %s and its parent directories so user 'despatch' can remove probe files",
+				dirPath,
+			),
+		}
+	}
+	return true, nil
 }
 
 func (m *Manager) shouldRefresh(ctx context.Context, st *store.Store) bool {

@@ -119,7 +119,8 @@ What it auto-detects:
 - installed reverse proxy (`nginx` or `apache2`) and can configure it automatically
 
 TLS default posture:
-- Installer keeps IMAP/SMTP certificate verification enabled by default (including loopback).
+- Installer keeps IMAP/SMTP certificate verification enabled by default.
+- For loopback IMAP/SMTP with TLS/STARTTLS, installer auto-sets `*_INSECURE_SKIP_VERIFY=true` to avoid local certificate SAN mismatches.
 - Prefer certificate SAN/FQDN alignment over `*_INSECURE_SKIP_VERIFY=true`.
 - Non-loopback `*_INSECURE_SKIP_VERIFY=true` is rejected unless `MAIL_ALLOW_INSECURE_SKIP_VERIFY_NON_LOOPBACK=true` is explicitly set.
 
@@ -147,6 +148,7 @@ Password reset sender identity:
 - Default sender is `no-reply@<base_domain>` when `PASSWORD_RESET_FROM` is unset or placeholder.
 - SQL auth mode auto-provisions sender mailbox identity through the configured auth provisioner.
 - PAM mode marks sender identity as externally managed and reports diagnostics in readiness/capabilities.
+- Password reset SMTP delivery follows `SMTP_TLS` / `SMTP_STARTTLS` / `SMTP_INSECURE_SKIP_VERIFY` runtime settings.
 
 Installer troubleshooting:
 - Installer now prints exact failing line/command on errors.
@@ -194,17 +196,22 @@ Default runtime paths:
 Hardened ownership/mode matrix:
 - `/opt/despatch` and shipped binaries: `root:root`, binaries `0755`
 - `/opt/despatch/.env`: `root:despatch`, `0640` (read-only for app user)
+- `/var/lib/despatch/update`: `root:despatch`, `0750` (group traversal required for app writes)
 - `/var/lib/despatch/update/request` and `/status`: `root:despatch`, `0770`, files `0660`
 - `/var/lib/despatch/update/lock`, `/work`, `/backups`: `root:root`, `0750`
 
 If update check/apply shows `permission denied` on update status/request files, repair ownership:
 
 ```bash
+sudo chown root:despatch /var/lib/despatch/update
+sudo chmod 0750 /var/lib/despatch/update
 sudo chown root:despatch /var/lib/despatch/update/request /var/lib/despatch/update/status
 sudo chmod 0770 /var/lib/despatch/update/request /var/lib/despatch/update/status
 sudo find /var/lib/despatch/update/request /var/lib/despatch/update/status -type f -exec chown root:despatch {} \; -exec chmod 0660 {} \;
 sudo chown root:root /var/lib/despatch/update/lock /var/lib/despatch/update/work /var/lib/despatch/update/backups
 sudo chmod 0750 /var/lib/despatch/update/lock /var/lib/despatch/update/work /var/lib/despatch/update/backups
+sudo -u despatch sh -c 'printf ok > /var/lib/despatch/update/request/.probe && rm -f /var/lib/despatch/update/request/.probe'
+sudo -u despatch sh -c 'printf ok > /var/lib/despatch/update/status/.probe && rm -f /var/lib/despatch/update/status/.probe'
 sudo systemctl restart despatch despatch-updater.path
 ```
 
