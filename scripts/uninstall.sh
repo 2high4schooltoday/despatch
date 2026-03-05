@@ -182,6 +182,51 @@ safe_systemctl() {
   fi
 }
 
+teardown_systemd_prefix() {
+  local prefix="$1"
+  local units=(
+    "${prefix}-pam-reset-helper.socket"
+    "${prefix}-pam-reset-helper.service"
+    "${prefix}-updater.path"
+    "${prefix}-updater.service"
+    "${prefix}-mailsec"
+    "${prefix}"
+  )
+  local unit
+  for unit in "${units[@]}"; do
+    safe_systemctl stop "$unit"
+    safe_systemctl disable "$unit"
+  done
+
+  local files=(
+    "/etc/systemd/system/${prefix}-updater.path"
+    "/etc/systemd/system/${prefix}-updater.service"
+    "/etc/systemd/system/${prefix}-pam-reset-helper.socket"
+    "/etc/systemd/system/${prefix}-pam-reset-helper.service"
+    "/etc/systemd/system/${prefix}-mailsec.service"
+    "/etc/systemd/system/${prefix}.service"
+  )
+  local f
+  for f in "${files[@]}"; do
+    if [[ -f "$f" ]]; then
+      run_as_root rm -f "$f"
+    fi
+  done
+
+  local dropins=(
+    "/etc/systemd/system/${prefix}-pam-reset-helper.service.d"
+    "/etc/systemd/system/${prefix}-mailsec.service.d"
+    "/etc/systemd/system/${prefix}-updater.service.d"
+    "/etc/systemd/system/${prefix}.service.d"
+  )
+  local d
+  for d in "${dropins[@]}"; do
+    if [[ -d "$d" ]]; then
+      run_as_root rm -rf "$d"
+    fi
+  done
+}
+
 cleanup_nginx_proxy() {
   local conf="/etc/nginx/sites-available/despatch.conf"
   local enabled="/etc/nginx/sites-enabled/despatch.conf"
@@ -263,46 +308,13 @@ finish_stage_ok
 begin_stage "service" "Service Teardown" "25"
 log "Removing service files..."
 if have_cmd systemctl; then
-  safe_systemctl stop despatch-pam-reset-helper.socket
-  safe_systemctl disable despatch-pam-reset-helper.socket
-  safe_systemctl stop despatch-pam-reset-helper.service
-  safe_systemctl disable despatch-pam-reset-helper.service
-  safe_systemctl stop despatch-updater.path
-  safe_systemctl disable despatch-updater.path
-  safe_systemctl stop despatch-updater.service
-  safe_systemctl disable despatch-updater.service
-  safe_systemctl stop despatch-mailsec
-  safe_systemctl disable despatch-mailsec
-  safe_systemctl stop despatch
-  safe_systemctl disable despatch
-  if [[ -f /etc/systemd/system/despatch-updater.path ]]; then
-    run_as_root rm -f /etc/systemd/system/despatch-updater.path
-  fi
-  if [[ -f /etc/systemd/system/despatch-updater.service ]]; then
-    run_as_root rm -f /etc/systemd/system/despatch-updater.service
-  fi
-  if [[ -f /etc/systemd/system/despatch-pam-reset-helper.socket ]]; then
-    run_as_root rm -f /etc/systemd/system/despatch-pam-reset-helper.socket
-  fi
-  if [[ -f /etc/systemd/system/despatch-pam-reset-helper.service ]]; then
-    run_as_root rm -f /etc/systemd/system/despatch-pam-reset-helper.service
-  fi
-  if [[ -f /etc/systemd/system/despatch-mailsec.service ]]; then
-    run_as_root rm -f /etc/systemd/system/despatch-mailsec.service
-  fi
-  if [[ -d /etc/systemd/system/despatch-pam-reset-helper.service.d ]]; then
-    run_as_root rm -rf /etc/systemd/system/despatch-pam-reset-helper.service.d
-  fi
-  if [[ -d /etc/systemd/system/despatch-mailsec.service.d ]]; then
-    run_as_root rm -rf /etc/systemd/system/despatch-mailsec.service.d
-  fi
-  if [[ -d /etc/systemd/system/despatch-updater.service.d ]]; then
-    run_as_root rm -rf /etc/systemd/system/despatch-updater.service.d
-  fi
-  if [[ -f /etc/systemd/system/despatch.service ]]; then
-    run_as_root rm -f /etc/systemd/system/despatch.service
-  fi
+  teardown_systemd_prefix "despatch"
+  teardown_systemd_prefix "mailclient"
   run_as_root systemctl daemon-reload
+  run_as_root systemctl reset-failed \
+    despatch despatch-mailsec despatch-updater.service despatch-updater.path despatch-pam-reset-helper.service despatch-pam-reset-helper.socket \
+    mailclient mailclient-mailsec mailclient-updater.service mailclient-updater.path mailclient-pam-reset-helper.service mailclient-pam-reset-helper.socket \
+    >/dev/null 2>&1 || true
 else
   warn "systemctl not found; skipping systemd removal."
 fi

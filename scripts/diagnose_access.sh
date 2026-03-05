@@ -53,6 +53,61 @@ record_ok() {
   printf '[ OK ] %s\n' "$1"
 }
 
+health_url_from_listen() {
+  local listen_addr="$1"
+  local host="127.0.0.1" port="8080"
+
+  if [[ "$listen_addr" == :* ]]; then
+    port="${listen_addr#:}"
+  elif [[ "$listen_addr" == *:* ]]; then
+    host="${listen_addr%:*}"
+    port="${listen_addr##*:}"
+    host="${host#[}"
+    host="${host%]}"
+  fi
+
+  if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
+    port="8080"
+  fi
+  if [[ -z "$host" || "$host" == "0.0.0.0" || "$host" == "::" ]]; then
+    host="127.0.0.1"
+  fi
+  if [[ "$host" == *:* ]]; then
+    printf 'http://[%s]:%s/health/live' "$host" "$port"
+    return
+  fi
+  printf 'http://%s:%s/health/live' "$host" "$port"
+}
+
+service_state() {
+  local unit="$1" state=""
+  state="$(systemctl is-active "$unit" 2>/dev/null || true)"
+  state="$(trim "$state")"
+  if [[ -z "$state" ]]; then
+    state="unknown"
+  fi
+  printf '%s' "$state"
+}
+
+wait_for_active_or_terminal() {
+  local unit="$1" tries="$2" sleep_sec="$3"
+  local state="" i
+  for ((i = 1; i <= tries; i++)); do
+    state="$(service_state "$unit")"
+    if [[ "$state" == "active" ]]; then
+      printf '%s' "$state"
+      return 0
+    fi
+    if [[ "$state" != "activating" ]]; then
+      printf '%s' "$state"
+      return 1
+    fi
+    sleep "$sleep_sec"
+  done
+  printf '%s' "activating"
+  return 1
+}
+
 DEPLOY_MODE="$(trim "$(get_env DEPLOY_MODE "")")"
 LISTEN_ADDR="$(trim "$(get_env LISTEN_ADDR ":8080")")"
 BASE_DOMAIN="$(trim "$(get_env BASE_DOMAIN "")")"
@@ -109,23 +164,19 @@ if [[ -n "$PROXY_SERVER" ]]; then
 fi
 printf '\n'
 
+LOCAL_HEALTH="$(health_url_from_listen "$LISTEN_ADDR")"
+
 if have_cmd systemctl; then
-  if systemctl is-active --quiet despatch; then
+  service_state_val="$(wait_for_active_or_terminal despatch 30 1 || true)"
+  if [[ "$service_state_val" == "active" ]]; then
     record_ok "despatch service is active"
+  elif [[ "$service_state_val" == "activating" ]] && have_cmd curl && curl -fsS --max-time 6 "$LOCAL_HEALTH" >/dev/null; then
+    record_ok "despatch service is activating but app health is already reachable (${LOCAL_HEALTH})"
   else
-    record_fail 10 "APP_DOWN: despatch service is inactive"
+    record_fail 10 "APP_DOWN: despatch service is inactive (is-active=${service_state_val})"
   fi
 else
   printf '[WARN] systemctl not found; service state cannot be verified.\n'
-fi
-
-LOCAL_HEALTH="http://127.0.0.1:8080/health/live"
-if [[ "$LISTEN_ADDR" =~ ^:([0-9]+)$ ]]; then
-  LOCAL_HEALTH="http://127.0.0.1:${BASH_REMATCH[1]}/health/live"
-elif [[ "$LISTEN_ADDR" =~ ^127\.0\.0\.1:([0-9]+)$ ]]; then
-  LOCAL_HEALTH="http://127.0.0.1:${BASH_REMATCH[1]}/health/live"
-elif [[ "$LISTEN_ADDR" =~ ^0\.0\.0\.0:([0-9]+)$ ]]; then
-  LOCAL_HEALTH="http://127.0.0.1:${BASH_REMATCH[1]}/health/live"
 fi
 
 if have_cmd curl && curl -fsS --max-time 6 "$LOCAL_HEALTH" >/dev/null; then

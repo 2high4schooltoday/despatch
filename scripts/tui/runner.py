@@ -443,22 +443,24 @@ class OperationRunner:
                 )
             )
 
-        is_active = command_output(["systemctl", "is-active", "despatch"], timeout=5.0).strip()
+        health_url = self._health_url_for_listen(spec.listen_addr)
+        service_ready, is_active, sub_state, health_ok, health_detail = self._wait_for_despatch_ready(health_url)
         checks["systemctl_is_active"] = is_active
-        if is_active != "active":
+        checks["systemctl_sub_state"] = sub_state
+        checks["health_url"] = health_url
+        checks["health_response"] = health_detail
+        if not service_ready:
             errors.append(
                 RunnerError(
                     code="SERVICE_INACTIVE",
-                    message=f"despatch service is not active (is-active={is_active or 'unknown'}).",
+                    message=(
+                        "despatch service is not ready "
+                        f"(is-active={is_active or 'unknown'}, sub-state={sub_state or 'unknown'})."
+                    ),
                     stage_id="post_checks",
                     suggested_fix="Run: systemctl status despatch --no-pager",
                 )
             )
-
-        health_url = self._health_url_for_listen(spec.listen_addr)
-        health_ok, health_detail = self._http_health_ok(health_url)
-        checks["health_url"] = health_url
-        checks["health_response"] = health_detail
         if not health_ok:
             errors.append(
                 RunnerError(
@@ -514,7 +516,37 @@ class OperationRunner:
             port = port_part or port
         if host in {"0.0.0.0", "::", ""}:
             host = "127.0.0.1"
+        if ":" in host:
+            host = f"[{host}]"
         return f"http://{host}:{port}/health/live"
+
+    def _wait_for_despatch_ready(
+        self,
+        health_url: str,
+        timeout_sec: float = 45.0,
+    ) -> tuple[bool, str, str, bool, str]:
+        deadline = time.monotonic() + timeout_sec
+        state = "unknown"
+        sub_state = "unknown"
+        health_ok = False
+        health_detail = "unreachable"
+
+        while True:
+            state = command_output(["systemctl", "is-active", "despatch"], timeout=5.0).strip() or "unknown"
+            sub_state = (
+                command_output(["systemctl", "show", "despatch", "--property=SubState", "--value"], timeout=5.0).strip()
+                or "unknown"
+            )
+            health_ok, health_detail = self._http_health_ok(health_url)
+
+            if state in {"active", "activating"} and health_ok:
+                return True, state, sub_state, health_ok, health_detail
+
+            should_retry = state == "activating" or (state == "active" and not health_ok)
+            if not should_retry or time.monotonic() >= deadline:
+                return False, state, sub_state, health_ok, health_detail
+
+            time.sleep(1.0)
 
     @staticmethod
     def _http_health_ok(url: str) -> tuple[bool, str]:

@@ -124,6 +124,40 @@ class RunnerTests(unittest.TestCase):
             self.assertIn("E_SERVICE", codes)
             self.assertIn("UNIT_MISSING", codes)
 
+    def test_post_install_verifier_accepts_activating_when_health_is_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            runner = self._runner(tmp)
+            logstore = LogStore(max_entries=128, log_dir=tmp / "logs")
+            spec = InstallSpec(base_domain="example.com", proxy_setup=False, install_service=True)
+
+            def fake_cmd_output(cmd: list[str], timeout: float = 2.0) -> str:
+                _ = timeout
+                if cmd[:2] == ["systemctl", "list-unit-files"]:
+                    return "despatch.service enabled"
+                if cmd[:2] == ["systemctl", "is-active"]:
+                    return "activating"
+                if cmd[:3] == ["systemctl", "show", "despatch"]:
+                    return "start-post"
+                return ""
+
+            with mock.patch("scripts.tui.runner.command_output", side_effect=fake_cmd_output), mock.patch(
+                "scripts.tui.runner.OperationRunner._http_health_ok",
+                return_value=(True, "status=200 body=ok"),
+            ):
+                verify = runner._verify_install_postchecks(spec, logstore, "run2")
+
+            self.assertTrue(bool(verify["ok"]))
+
+    def test_health_url_for_listen_formats_ipv6(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            runner = self._runner(tmp)
+            self.assertEqual(
+                runner._health_url_for_listen("[::1]:8080"),
+                "http://[::1]:8080/health/live",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
