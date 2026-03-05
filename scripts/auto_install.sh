@@ -839,6 +839,15 @@ wait_for_condition() {
   return 1
 }
 
+http_base_url_from_host_port() {
+  local host="$1" port="$2"
+  if [[ "$host" == *:* && "$host" != \[*\] ]]; then
+    printf 'http://[%s]:%s' "$host" "$port"
+    return
+  fi
+  printf 'http://%s:%s' "$host" "$port"
+}
+
 detect_docker_compose_mode() {
   if have_cmd docker && run_as_root docker compose version >/dev/null 2>&1; then
     printf 'plugin'
@@ -1067,12 +1076,12 @@ verify_direct_access() {
     host="127.0.0.1"
   fi
 
-  check_url="http://${host}:${port}/health/live"
+  check_url="$(http_base_url_from_host_port "$host" "$port")/health/live"
   if curl -fsS --max-time 5 "$check_url" >/dev/null; then
     return 0
   fi
   if [[ "$host" != "127.0.0.1" ]]; then
-    curl -fsS --max-time 5 "http://127.0.0.1:${port}/health/live" >/dev/null
+    curl -fsS --max-time 5 "$(http_base_url_from_host_port "127.0.0.1" "$port")/health/live" >/dev/null
     return
   fi
   return 1
@@ -1099,7 +1108,12 @@ local_base_url_from_listen() {
   if [[ -z "$host" || "$host" == "0.0.0.0" || "$host" == "::" ]]; then
     host="127.0.0.1"
   fi
-  printf 'http://%s:%s' "$host" "$port"
+  http_base_url_from_host_port "$host" "$port"
+}
+
+verify_setup_status() {
+  local base_url="$1"
+  curl -fsS --max-time 8 "${base_url}/api/v1/setup/status" >/dev/null
 }
 
 verify_proxy_access() {
@@ -2263,7 +2277,7 @@ fi
 
 step "Auth path sanity verification"
 LOCAL_BASE_URL="$(local_base_url_from_listen "$LISTEN_ADDR")"
-if ! curl -fsS --max-time 8 "${LOCAL_BASE_URL}/api/v1/setup/status" >/dev/null; then
+if ! wait_for_condition "auth/setup API sanity check" 20 1 verify_setup_status "$LOCAL_BASE_URL"; then
   err "Auth/setup API sanity check failed on local endpoint."
   err "Run: journalctl -u despatch -n 100 --no-pager"
   exit 1
