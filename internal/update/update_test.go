@@ -215,6 +215,62 @@ func TestStatusReportsRequestDirDiagnostic(t *testing.T) {
 	if status.ConfigDiagnostic.Reason != "request_dir_unwritable" {
 		t.Fatalf("expected request_dir_unwritable, got %q", status.ConfigDiagnostic.Reason)
 	}
+	if !strings.Contains(status.ConfigDiagnostic.RepairHint, "install -d -o root -g despatch -m 0770") {
+		t.Fatalf("expected repair hint to include ownership/mode fix command, got %q", status.ConfigDiagnostic.RepairHint)
+	}
+}
+
+func TestStatusReportsRequestProbeDiagnostic(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	if err := os.MkdirAll(unitDir, 0o755); err != nil {
+		t.Fatalf("mkdir unit dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(unitDir, "despatch-updater.path"), []byte("ok"), 0o644); err != nil {
+		t.Fatalf("write updater marker: %v", err)
+	}
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := os.MkdirAll(requestDir(cfg), 0o755); err != nil {
+		t.Fatalf("mkdir request dir: %v", err)
+	}
+	if err := os.Chmod(requestDir(cfg), 0o500); err != nil {
+		t.Fatalf("chmod request dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(requestDir(cfg), 0o755)
+	})
+	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("set last check timestamp: %v", err)
+	}
+	mgr := NewManager(cfg)
+	status, err := mgr.Status(context.Background(), st, false)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.Configured {
+		t.Fatalf("expected configured=false when request dir write probe fails")
+	}
+	if status.ConfigDiagnostic == nil {
+		t.Fatalf("expected request probe diagnostic")
+	}
+	if status.ConfigDiagnostic.Reason != "request_probe_failed" {
+		t.Fatalf("expected request_probe_failed, got %q", status.ConfigDiagnostic.Reason)
+	}
+	if !strings.Contains(status.ConfigDiagnostic.RepairHint, "install -d -o root -g despatch -m 0770") {
+		t.Fatalf("expected repair hint to include ownership/mode fix command, got %q", status.ConfigDiagnostic.RepairHint)
+	}
 }
 
 func TestStatusConfiguredWhenUpdaterReady(t *testing.T) {

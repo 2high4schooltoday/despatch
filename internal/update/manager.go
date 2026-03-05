@@ -170,38 +170,77 @@ func (m *Manager) checkWritablePath(dirPath, stage string) (bool, *ConfigDiagnos
 	if reasonPrefix == "" {
 		reasonPrefix = "path"
 	}
+	pathState := describePathState(dirPath, 5)
+	repairHint := m.updaterPermissionRepairHint()
 	if err := os.MkdirAll(dirPath, 0o750); err != nil {
 		return false, &ConfigDiagnostic{
-			Reason: fmt.Sprintf("%s_dir_unwritable", reasonPrefix),
-			Detail: fmt.Sprintf("cannot access updater %s directory %s: %v", reasonPrefix, dirPath, err),
-			RepairHint: fmt.Sprintf(
-				"ensure %s exists and is writable by the despatch service user (expected owner root:despatch with group write permissions)",
-				dirPath,
-			),
+			Reason:     fmt.Sprintf("%s_dir_unwritable", reasonPrefix),
+			Detail:     fmt.Sprintf("cannot access updater %s directory %s: %v (path_state=%s)", reasonPrefix, dirPath, err, pathState),
+			RepairHint: repairHint,
 		}
 	}
 	probePath := filepath.Join(dirPath, fmt.Sprintf(".write-check-%d", time.Now().UnixNano()))
 	if err := os.WriteFile(probePath, []byte("ok"), 0o600); err != nil {
 		return false, &ConfigDiagnostic{
-			Reason: fmt.Sprintf("%s_probe_failed", reasonPrefix),
-			Detail: fmt.Sprintf("write probe failed for updater %s directory %s: %v", reasonPrefix, dirPath, err),
-			RepairHint: fmt.Sprintf(
-				"fix ownership/mode for %s and its parent directories so user 'despatch' can create and remove files",
-				dirPath,
-			),
+			Reason:     fmt.Sprintf("%s_probe_failed", reasonPrefix),
+			Detail:     fmt.Sprintf("write probe failed for updater %s directory %s: %v (path_state=%s)", reasonPrefix, dirPath, err, pathState),
+			RepairHint: repairHint,
 		}
 	}
 	if err := os.Remove(probePath); err != nil {
 		return false, &ConfigDiagnostic{
-			Reason: fmt.Sprintf("%s_probe_failed", reasonPrefix),
-			Detail: fmt.Sprintf("write probe cleanup failed for updater %s directory %s: %v", reasonPrefix, dirPath, err),
-			RepairHint: fmt.Sprintf(
-				"fix ownership/mode for %s and its parent directories so user 'despatch' can remove probe files",
-				dirPath,
-			),
+			Reason:     fmt.Sprintf("%s_probe_failed", reasonPrefix),
+			Detail:     fmt.Sprintf("write probe cleanup failed for updater %s directory %s: %v (path_state=%s)", reasonPrefix, dirPath, err, pathState),
+			RepairHint: repairHint,
 		}
 	}
 	return true, nil
+}
+
+func (m *Manager) updaterPermissionRepairHint() string {
+	updateDir := filepath.Clean(m.cfg.UpdateBaseDir)
+	dataDir := filepath.Clean(filepath.Dir(updateDir))
+	request := filepath.Clean(requestDir(m.cfg))
+	status := filepath.Clean(statusDir(m.cfg))
+	lock := filepath.Clean(lockDir(m.cfg))
+	work := filepath.Clean(workDir(m.cfg))
+	backups := filepath.Clean(backupsDir(m.cfg))
+	return fmt.Sprintf(
+		"run as root: install -d -o despatch -g despatch -m 0750 %s && install -d -o root -g despatch -m 0750 %s && install -d -o root -g despatch -m 0770 %s %s && install -d -o root -g root -m 0750 %s %s %s",
+		shQuote(dataDir),
+		shQuote(updateDir),
+		shQuote(request),
+		shQuote(status),
+		shQuote(lock),
+		shQuote(work),
+		shQuote(backups),
+	)
+}
+
+func describePathState(path string, depth int) string {
+	if depth <= 0 {
+		depth = 1
+	}
+	cur := filepath.Clean(path)
+	parts := make([]string, 0, depth)
+	for i := 0; i < depth; i++ {
+		info, err := os.Stat(cur)
+		if err != nil {
+			parts = append(parts, fmt.Sprintf("%s(err=%v)", cur, err))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s(mode=%#o)", cur, info.Mode().Perm()))
+		}
+		next := filepath.Dir(cur)
+		if next == cur {
+			break
+		}
+		cur = next
+	}
+	return strings.Join(parts, " -> ")
+}
+
+func shQuote(v string) string {
+	return "'" + strings.ReplaceAll(v, "'", "'\"'\"'") + "'"
 }
 
 func (m *Manager) shouldRefresh(ctx context.Context, st *store.Store) bool {

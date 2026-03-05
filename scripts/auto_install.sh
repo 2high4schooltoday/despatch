@@ -2410,12 +2410,14 @@ if ! wait_for_condition "despatch updater path state" 20 1 "${PREFIX[@]}" system
 fi
 if ! run_as_despatch test -w /var/lib/despatch/update/request; then
   err "despatch user cannot write /var/lib/despatch/update/request."
+  err "Run: chown despatch:despatch /var/lib/despatch && chmod 0750 /var/lib/despatch"
   err "Run: chown root:despatch /var/lib/despatch/update /var/lib/despatch/update/request"
   err "Run: chmod 0750 /var/lib/despatch/update && chmod 0770 /var/lib/despatch/update/request"
   exit 1
 fi
 if ! run_as_despatch test -w /var/lib/despatch/update/status; then
   err "despatch user cannot write /var/lib/despatch/update/status."
+  err "Run: chown despatch:despatch /var/lib/despatch && chmod 0750 /var/lib/despatch"
   err "Run: chown root:despatch /var/lib/despatch/update /var/lib/despatch/update/status"
   err "Run: chmod 0750 /var/lib/despatch/update && chmod 0770 /var/lib/despatch/update/status"
   exit 1
