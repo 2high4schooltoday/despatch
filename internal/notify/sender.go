@@ -64,7 +64,11 @@ func PasswordResetFromAddress(cfg config.Config) string {
 
 func NewSender(cfg config.Config) Sender {
 	switch cfg.PasswordResetSender {
+	case "log":
+		return LogSender{baseURL: cfg.PasswordResetBaseURL}
 	case "smtp":
+		fallthrough
+	case "":
 		return SMTPSender{
 			host:               cfg.SMTPHost,
 			port:               cfg.SMTPPort,
@@ -75,7 +79,15 @@ func NewSender(cfg config.Config) Sender {
 			insecureSkipVerify: cfg.SMTPInsecureSkipVerify,
 		}
 	default:
-		return LogSender{baseURL: cfg.PasswordResetBaseURL}
+		return SMTPSender{
+			host:               cfg.SMTPHost,
+			port:               cfg.SMTPPort,
+			from:               PasswordResetFromAddress(cfg),
+			baseURL:            cfg.PasswordResetBaseURL,
+			tls:                cfg.SMTPTLS,
+			startTLS:           cfg.SMTPStartTLS,
+			insecureSkipVerify: cfg.SMTPInsecureSkipVerify,
+		}
 	}
 }
 

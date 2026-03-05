@@ -228,6 +228,39 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (models.User, 
 	return u, nil
 }
 
+func (s *Store) GetUserByRecoveryEmail(ctx context.Context, recoveryEmail string) (models.User, error) {
+	recoveryEmail = strings.ToLower(strings.TrimSpace(recoveryEmail))
+	if recoveryEmail == "" {
+		return models.User{}, ErrNotFound
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,email,recovery_email,mail_login,mfa_preference,legacy_mfa_prompt_pending,mfa_setup_switch_used,mfa_backup_completed,password_hash,role,status,provision_state,provision_error,created_at,approved_at,approved_by,last_login_at
+		 FROM users
+		 WHERE lower(trim(coalesce(recovery_email, ''))) = ?
+		 LIMIT 2`,
+		recoveryEmail,
+	)
+	if err != nil {
+		return models.User{}, err
+	}
+	defer rows.Close()
+
+	if !rows.Next() {
+		return models.User{}, ErrNotFound
+	}
+	u, err := scanUserCore(rows)
+	if err != nil {
+		return models.User{}, err
+	}
+	if rows.Next() {
+		return models.User{}, ErrConflict
+	}
+	if err := rows.Err(); err != nil {
+		return models.User{}, err
+	}
+	return u, nil
+}
+
 func (s *Store) GetUserByID(ctx context.Context, id string) (models.User, error) {
 	u, err := scanUserCore(s.db.QueryRowContext(ctx,
 		`SELECT id,email,recovery_email,mail_login,mfa_preference,legacy_mfa_prompt_pending,mfa_setup_switch_used,mfa_backup_completed,password_hash,role,status,provision_state,provision_error,created_at,approved_at,approved_by,last_login_at

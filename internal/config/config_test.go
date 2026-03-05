@@ -39,6 +39,48 @@ func TestLoadRejectsInvalidDovecotAuthMode(t *testing.T) {
 	}
 }
 
+func TestLoadPasswordResetSenderDefaultsToSMTP(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("PASSWORD_RESET_SENDER", "")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PasswordResetSender != "smtp" {
+		t.Fatalf("expected PASSWORD_RESET_SENDER default smtp, got %q", cfg.PasswordResetSender)
+	}
+}
+
+func TestLoadRejectsInvalidPasswordResetSender(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("PASSWORD_RESET_SENDER", "console")
+	if _, err := Load(); err == nil {
+		t.Fatalf("expected Load to fail for invalid PASSWORD_RESET_SENDER")
+	}
+}
+
+func TestLoadRejectsLogSenderWhenPublicResetEnabled(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("PASSWORD_RESET_SENDER", "log")
+	t.Setenv("PASSWORD_RESET_PUBLIC_ENABLED", "true")
+	if _, err := Load(); err == nil {
+		t.Fatalf("expected Load to fail when public reset is enabled with PASSWORD_RESET_SENDER=log")
+	}
+}
+
+func TestLoadAllowsLogSenderWhenPublicResetDisabled(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("PASSWORD_RESET_SENDER", "log")
+	t.Setenv("PASSWORD_RESET_PUBLIC_ENABLED", "false")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PasswordResetSender != "log" {
+		t.Fatalf("expected sender mode log, got %q", cfg.PasswordResetSender)
+	}
+}
+
 func TestLoadCookieSecureModeLegacyFallback(t *testing.T) {
 	setValidEnv(t)
 	t.Setenv("COOKIE_SECURE_MODE", "")

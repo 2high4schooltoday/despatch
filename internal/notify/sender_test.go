@@ -15,6 +15,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"despatch/internal/config"
 )
 
 type smtpTestCapture struct {
@@ -22,6 +24,26 @@ type smtpTestCapture struct {
 	rcpt         string
 	data         string
 	startTLSSeen bool
+}
+
+func TestNewSenderDefaultsToSMTP(t *testing.T) {
+	s := NewSender(config.Config{
+		PasswordResetSender: "",
+		SMTPHost:            "127.0.0.1",
+		SMTPPort:            2525,
+	})
+	if _, ok := s.(SMTPSender); !ok {
+		t.Fatalf("expected SMTPSender default, got %T", s)
+	}
+}
+
+func TestNewSenderReturnsLogSenderWhenExplicitlyRequested(t *testing.T) {
+	s := NewSender(config.Config{
+		PasswordResetSender: "log",
+	})
+	if _, ok := s.(LogSender); !ok {
+		t.Fatalf("expected LogSender for explicit log mode, got %T", s)
+	}
 }
 
 func TestSMTPSenderHonorsStartTLSConfiguration(t *testing.T) {

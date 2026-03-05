@@ -53,6 +53,8 @@ const (
 	passwordResetSenderStatusReady    = "ready"
 	passwordResetSenderStatusDegraded = "degraded"
 	passwordResetSenderStatusExternal = "external"
+
+	passwordResetSenderReasonLogOnly = "log_delivery_disabled"
 )
 
 type SetupStatus struct {
@@ -487,10 +489,7 @@ func (s *Service) PasswordResetCapabilities(ctx context.Context) PasswordResetCa
 		publicResetEnabled = enabled
 	}
 
-	delivery := strings.TrimSpace(strings.ToLower(s.cfg.PasswordResetSender))
-	if delivery == "" {
-		delivery = "log"
-	}
+	delivery := normalizePasswordResetSender(strings.TrimSpace(strings.ToLower(s.cfg.PasswordResetSender)))
 	if !publicResetEnabled {
 		delivery = "disabled"
 	}
@@ -531,9 +530,12 @@ func (s *Service) EnsurePasswordResetSenderIdentity(ctx context.Context) (passwo
 		Reason:  "",
 		Ready:   true,
 	}
-	delivery := strings.TrimSpace(strings.ToLower(s.cfg.PasswordResetSender))
-	if delivery == "" {
-		delivery = "log"
+	delivery := normalizePasswordResetSender(strings.TrimSpace(strings.ToLower(s.cfg.PasswordResetSender)))
+	if delivery == "log" {
+		state.Status = passwordResetSenderStatusDegraded
+		state.Reason = passwordResetSenderReasonLogOnly
+		state.Ready = false
+		return state, s.persistPasswordResetSenderState(ctx, state, "app")
 	}
 	if delivery != "smtp" {
 		return state, s.persistPasswordResetSenderState(ctx, state, "app")
@@ -630,9 +632,12 @@ func (s *Service) passwordResetSenderState(ctx context.Context) (passwordResetSe
 		return state, nil
 	}
 
-	delivery := strings.TrimSpace(strings.ToLower(s.cfg.PasswordResetSender))
-	if delivery == "" {
-		delivery = "log"
+	delivery := normalizePasswordResetSender(strings.TrimSpace(strings.ToLower(s.cfg.PasswordResetSender)))
+	if delivery == "log" {
+		state.Status = passwordResetSenderStatusDegraded
+		state.Reason = passwordResetSenderReasonLogOnly
+		state.Ready = false
+		return state, nil
 	}
 	if delivery != "smtp" {
 		state.Status = passwordResetSenderStatusReady
@@ -763,11 +768,12 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 		return ErrPasswordResetUnavailable
 	}
 
-	caps := s.PasswordResetCapabilities(ctx)
-	if !caps.SelfServiceEnabled {
+	if state, err := s.EnsurePasswordResetSenderIdentity(ctx); err != nil || !state.Ready {
 		return ErrPasswordResetUnavailable
 	}
-	if state, err := s.EnsurePasswordResetSenderIdentity(ctx); err != nil || !state.Ready {
+
+	caps := s.PasswordResetCapabilities(ctx)
+	if !caps.SelfServiceEnabled {
 		return ErrPasswordResetUnavailable
 	}
 	email = strings.ToLower(strings.TrimSpace(email))
@@ -776,11 +782,18 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 	}
 	u, err := s.st.GetUserByEmail(ctx, email)
 	if err != nil {
-		// don't leak existence
 		if errors.Is(err, store.ErrNotFound) {
-			return nil
+			u, err = s.st.GetUserByRecoveryEmail(ctx, email)
+			if err != nil {
+				// Don't leak presence or ambiguity.
+				if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrConflict) {
+					return nil
+				}
+				return fmt.Errorf("%w: lookup_failed", ErrPasswordResetDelivery)
+			}
+		} else {
+			return fmt.Errorf("%w: lookup_failed", ErrPasswordResetDelivery)
 		}
-		return fmt.Errorf("%w: lookup_failed", ErrPasswordResetDelivery)
 	}
 	if RecoveryEmailNeedsSetup(u.Email, u.RecoveryEmail) {
 		return nil
@@ -942,6 +955,17 @@ func (s *Service) resetPasswordViaPAM(ctx context.Context, u models.User, newPas
 		return ErrPasswordResetHelperFailed
 	}
 	return fmt.Errorf("%w", ErrPasswordResetHelperFailed)
+}
+
+func normalizePasswordResetSender(raw string) string {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "", "smtp":
+		return "smtp"
+	case "log":
+		return "log"
+	default:
+		return "smtp"
+	}
 }
 
 func (s *Service) Mail() mail.Client   { return s.mail }

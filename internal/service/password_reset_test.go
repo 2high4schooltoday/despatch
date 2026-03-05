@@ -22,6 +22,21 @@ type captureResetSender struct {
 	err   error
 }
 
+type testResetProvisioner struct{}
+
+func (testResetProvisioner) UpsertActiveUser(ctx context.Context, email, passwordHash string) error {
+	_ = ctx
+	_ = email
+	_ = passwordHash
+	return nil
+}
+
+func (testResetProvisioner) DisableUser(ctx context.Context, email string) error {
+	_ = ctx
+	_ = email
+	return nil
+}
+
 func (s *captureResetSender) SendPasswordReset(ctx context.Context, toEmail, token string) error {
 	_ = ctx
 	s.calls++
@@ -60,9 +75,9 @@ func newPasswordResetService(t *testing.T, sender *captureResetSender) (*Service
 		PasswordMaxLength:            128,
 		PasswordResetPublicEnabled:   true,
 		PasswordResetTokenTTLMinutes: 30,
-		PasswordResetSender:          "log",
+		PasswordResetSender:          "smtp",
 	}
-	svc := New(cfg, st, mail.NoopClient{}, mail.NoopProvisioner{}, sender)
+	svc := New(cfg, st, mail.NoopClient{}, testResetProvisioner{}, sender)
 	return svc, st
 }
 
@@ -152,5 +167,70 @@ func TestRequestPasswordResetReturnsSoftErrorAndInvalidatesTokenWhenDeliveryFail
 	confirmErr := svc.ConfirmPasswordReset(ctx, sender.token, "ReplacementPass123!")
 	if !errors.Is(confirmErr, ErrInvalidCredentials) {
 		t.Fatalf("expected invalid credentials for invalidated token, got %v", confirmErr)
+	}
+}
+
+func TestRequestPasswordResetAcceptsRecoveryEmailIdentifier(t *testing.T) {
+	ctx := context.Background()
+	sender := &captureResetSender{}
+	svc, st := newPasswordResetService(t, sender)
+
+	pwHash, err := auth.HashPassword("RecoveryIdentifier123!")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	u, err := st.CreateUser(ctx, "account2@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(ctx, u.ID, "recover-lookup@example.net"); err != nil {
+		t.Fatalf("update recovery email: %v", err)
+	}
+
+	if err := svc.RequestPasswordReset(ctx, "recover-lookup@example.net"); err != nil {
+		t.Fatalf("request reset by recovery email: %v", err)
+	}
+	if sender.calls != 1 {
+		t.Fatalf("expected one reset email send, got %d", sender.calls)
+	}
+	if sender.to != "recover-lookup@example.net" {
+		t.Fatalf("expected reset token delivery to recover-lookup@example.net, got %q", sender.to)
+	}
+}
+
+func TestRequestPasswordResetSkipsAmbiguousRecoveryEmailIdentifier(t *testing.T) {
+	ctx := context.Background()
+	sender := &captureResetSender{}
+	svc, st := newPasswordResetService(t, sender)
+
+	pwHash1, err := auth.HashPassword("AmbiguousReset123!")
+	if err != nil {
+		t.Fatalf("hash password 1: %v", err)
+	}
+	u1, err := st.CreateUser(ctx, "ambiguous-1@example.com", pwHash1, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user 1: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(ctx, u1.ID, "shared-recovery@example.net"); err != nil {
+		t.Fatalf("set user 1 recovery email: %v", err)
+	}
+
+	pwHash2, err := auth.HashPassword("AmbiguousReset124!")
+	if err != nil {
+		t.Fatalf("hash password 2: %v", err)
+	}
+	u2, err := st.CreateUser(ctx, "ambiguous-2@example.com", pwHash2, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user 2: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(ctx, u2.ID, "shared-recovery@example.net"); err != nil {
+		t.Fatalf("set user 2 recovery email: %v", err)
+	}
+
+	if err := svc.RequestPasswordReset(ctx, "shared-recovery@example.net"); err != nil {
+		t.Fatalf("request reset by shared recovery email: %v", err)
+	}
+	if sender.calls != 0 {
+		t.Fatalf("expected no reset send for ambiguous recovery email, got %d", sender.calls)
 	}
 }

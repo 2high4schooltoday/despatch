@@ -5935,7 +5935,7 @@ function bindUI() {
     const fd = new FormData(e.target);
     try {
       await api("/api/v1/password/reset/request", { method: "POST", json: { email: fd.get("email") } });
-      setStatus("If the account exists, reset instructions were sent.", "ok");
+      setStatus("If the account or recovery email exists, reset instructions were sent.", "ok");
     } catch (err) {
       if (err.code === "setup_required") {
         await enterSetupIfRequired();

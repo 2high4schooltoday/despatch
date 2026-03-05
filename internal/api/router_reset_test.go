@@ -67,6 +67,20 @@ func (s failingResetSender) SendPasswordReset(ctx context.Context, toEmail, toke
 	return s.err
 }
 
+type captureResetSender struct {
+	calls int
+	to    string
+	token string
+}
+
+func (s *captureResetSender) SendPasswordReset(ctx context.Context, toEmail, token string) error {
+	_ = ctx
+	s.calls++
+	s.to = toEmail
+	s.token = token
+	return nil
+}
+
 func defaultResetTestConfig() config.Config {
 	return config.Config{
 		ListenAddr:                      ":8080",
@@ -81,7 +95,7 @@ func defaultResetTestConfig() config.Config {
 		PasswordMinLength:               12,
 		PasswordMaxLength:               128,
 		DovecotAuthMode:                 "pam",
-		PasswordResetSender:             "log",
+		PasswordResetSender:             "smtp",
 		PasswordResetTokenTTLMinutes:    30,
 		PasswordResetPublicEnabled:      true,
 		PasswordResetRequireMappedLogin: true,
@@ -119,10 +133,10 @@ func TestPublicPasswordResetCapabilities(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
 	}
-	if payload.AuthMode != "pam" || !payload.SelfServiceEnabled || !payload.AdminResetEnabled || payload.Delivery != "log" || payload.TokenTTLMinutes != 30 || payload.RequiresMappedLogin {
+	if payload.AuthMode != "pam" || !payload.SelfServiceEnabled || !payload.AdminResetEnabled || payload.Delivery != "smtp" || payload.TokenTTLMinutes != 30 || payload.RequiresMappedLogin {
 		t.Fatalf("unexpected capabilities payload: %+v", payload)
 	}
-	if payload.SenderStatus != "ready" || payload.SenderAddress == "" || payload.SenderReason != "" {
+	if payload.SenderStatus != "external" || payload.SenderAddress == "" || payload.SenderReason != "external_mailbox_required" {
 		t.Fatalf("unexpected sender diagnostics payload: %+v", payload)
 	}
 }
@@ -156,6 +170,23 @@ func TestPasswordResetRequestReturnsUnavailableWhenDisabled(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPasswordResetRequestReturnsUnavailableWhenLogSenderConfigured(t *testing.T) {
+	cfg := defaultResetTestConfig()
+	cfg.PAMResetHelperEnabled = true
+	cfg.PasswordResetSender = "log"
+	router, _ := newResetRouter(t, cfg)
+
+	body, _ := json.Marshal(map[string]string{"email": "unknown@example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/password/reset/request", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when log sender is configured, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
@@ -201,6 +232,42 @@ func TestPasswordResetRequestReturnsAcceptedOnDeliverySoftFailure(t *testing.T) 
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 on soft delivery failure, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPasswordResetRequestAcceptsRecoveryEmailIdentifier(t *testing.T) {
+	cfg := defaultResetTestConfig()
+	cfg.PAMResetHelperEnabled = true
+	cfg.PasswordResetSender = "smtp"
+	sender := &captureResetSender{}
+	router, st := newResetRouterWithSender(t, cfg, sender)
+
+	pwHash, err := auth.HashPassword("RecoverByIdentifier123!")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	user, err := st.CreateUser(context.Background(), "recover-id@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(context.Background(), user.ID, "recover-id-mail@example.net"); err != nil {
+		t.Fatalf("set recovery email: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"email": "recover-id-mail@example.net"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/password/reset/request", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 on recovery-identifier reset request, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if sender.calls != 1 {
+		t.Fatalf("expected one reset send, got %d", sender.calls)
+	}
+	if sender.to != "recover-id-mail@example.net" {
+		t.Fatalf("expected reset send to recovery email, got %q", sender.to)
 	}
 }
 

@@ -180,7 +180,7 @@ func Load() (Config, error) {
 		HTTPIdleTimeoutSec:                     envInt("HTTP_IDLE_TIMEOUT_SEC", 60),
 		BootstrapAdminEmail:                    env("BOOTSTRAP_ADMIN_EMAIL", ""),
 		BootstrapAdminPassword:                 env("BOOTSTRAP_ADMIN_PASSWORD", ""),
-		PasswordResetSender:                    strings.ToLower(env("PASSWORD_RESET_SENDER", "log")),
+		PasswordResetSender:                    strings.ToLower(env("PASSWORD_RESET_SENDER", "smtp")),
 		PasswordResetFrom:                      env("PASSWORD_RESET_FROM", "no-reply@example.com"),
 		PasswordResetBaseURL:                   env("PASSWORD_RESET_BASE_URL", ""),
 		PasswordResetTokenTTLMinutes:           envInt("PASSWORD_RESET_TOKEN_TTL_MINUTES", 30),
@@ -252,6 +252,16 @@ func Load() (Config, error) {
 		}
 	default:
 		return Config{}, fmt.Errorf("DOVECOT_AUTH_MODE must be one of: sql, pam")
+	}
+	switch cfg.PasswordResetSender {
+	case "", "smtp":
+		cfg.PasswordResetSender = "smtp"
+	case "log":
+		if cfg.PasswordResetPublicEnabled {
+			return Config{}, fmt.Errorf("PASSWORD_RESET_SENDER=log requires PASSWORD_RESET_PUBLIC_ENABLED=false")
+		}
+	default:
+		return Config{}, fmt.Errorf("PASSWORD_RESET_SENDER must be one of: smtp, log")
 	}
 	if strings.TrimSpace(cfg.SessionEncryptKey) == "" ||
 		cfg.SessionEncryptKey == "CHANGE_ME_PRODUCTION_SESSION_KEY" ||

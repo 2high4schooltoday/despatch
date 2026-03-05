@@ -140,12 +140,14 @@ PAM mode notes:
 - In PAM mode, web login is validated against IMAP credentials (Dovecot/PAM), not local hash only.
 - Password reset endpoints use the local privileged helper (`despatch-pam-reset-helper`) when `PAM_RESET_HELPER_ENABLED=true`.
 - Public reset request endpoint remains account-enumeration safe (generic acceptance response when enabled).
+- Public reset request accepts either account email or recovery email as identifier.
 - Recovery email must be different from login email. Existing users with missing/invalid recovery email are prompted after sign-in (soft prompt, skippable per session).
 - PAM password reset now falls back to account email when `mail_login` is unset.
 - In PAM mode, mailbox account creation/provisioning remains external to this app (system/PAM side).
 
 Password reset sender identity:
 - Default sender is `no-reply@<base_domain>` when `PASSWORD_RESET_FROM` is unset or placeholder.
+- Public password reset requires SMTP delivery (`PASSWORD_RESET_SENDER=smtp`). `log` mode is allowed only when public reset is disabled.
 - SQL auth mode auto-provisions sender mailbox identity through the configured auth provisioner.
 - PAM mode marks sender identity as externally managed and reports diagnostics in readiness/capabilities.
 - Password reset SMTP delivery follows `SMTP_TLS` / `SMTP_STARTTLS` / `SMTP_INSECURE_SKIP_VERIFY` runtime settings.
