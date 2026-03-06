@@ -942,7 +942,7 @@ a:focus-visible {
   text-align: left;
   padding: 8px var(--space-3);
   cursor: pointer;
-  border-left: 2px solid transparent;
+  border-left: var(--border-w) solid transparent;
 }
 
 .message-row {
