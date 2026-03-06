@@ -545,43 +545,57 @@
         <input id="compose-from-manual-hidden" name="from_manual" type="hidden" value="">
 
         <header id="compose-toolbar-layer" class="compose-toolbar-layer">
-          <div class="compose-toolbar-cluster" role="toolbar" aria-label="Compose editor toolbar">
-            <button id="compose-tool-undo" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Undo">Un</button>
-            <button id="compose-tool-typography" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Paragraph style">Aa</button>
-            <button id="compose-tool-bold" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Bold">B</button>
-            <button id="compose-tool-italic" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Italic">I</button>
-            <button id="compose-tool-underline" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Underline">U</button>
-            <button id="compose-tool-list" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="List and quote">Ls</button>
-            <button id="compose-tool-link" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Insert link">Lk</button>
-            <button id="compose-tool-attach" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Attach files">At</button>
-            <button id="compose-tool-media" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Insert inline image">Im</button>
-            <button id="compose-tool-clear" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Clear formatting">Tx</button>
-          </div>
-          <div class="compose-toolbar-actions">
-            <button id="btn-compose-send" class="cmd-btn cmd-btn--primary compose-send-btn" type="submit">Send</button>
+          <div class="compose-window-actions compose-window-actions--left">
             <button id="btn-compose-close" class="cmd-btn compose-close-btn" type="button" aria-label="Close compose">Close</button>
+            <span id="compose-draft-state" class="compose-draft-state" aria-live="polite">Draft</span>
+          </div>
+          <div class="compose-window-actions compose-window-actions--right">
+            <button id="compose-tool-attach" class="cmd-btn cmd-btn--dense compose-window-btn" type="button" title="Attach files">Attach</button>
+            <details id="compose-window-more-menu" class="row-menu compose-window-more">
+              <summary id="compose-window-more" class="cmd-btn cmd-btn--dense compose-window-btn" aria-label="More actions">More</summary>
+              <div class="row-menu-body compose-window-more-body">
+                <button id="compose-more-toggle-cc" class="cmd-btn cmd-btn--dense" type="button">Toggle Cc</button>
+                <button id="compose-more-toggle-bcc" class="cmd-btn cmd-btn--dense" type="button">Toggle Bcc</button>
+                <button id="compose-tool-media" class="cmd-btn cmd-btn--dense" type="button">Insert Image</button>
+                <button id="compose-more-toggle-format" class="cmd-btn cmd-btn--dense" type="button">Toggle Formatting</button>
+              </div>
+            </details>
+            <button id="compose-toggle-formatting" class="cmd-btn cmd-btn--dense compose-window-btn" type="button" aria-expanded="false">Formatting</button>
+            <button id="btn-compose-send" class="cmd-btn cmd-btn--primary compose-send-btn" type="submit">Send</button>
           </div>
         </header>
 
         <section class="compose-meta" aria-label="Message metadata">
-          <div class="compose-meta-row">
+          <div class="compose-meta-row compose-meta-row--to">
             <div class="compose-meta-label">To</div>
             <div class="compose-meta-value">
-              <input id="compose-to-input" name="to" type="text" required autocomplete="email" placeholder="recipient@example.com, team@example.com">
+              <div id="compose-to-field" class="compose-token-field compose-token-field--to" data-field="to">
+                <div id="compose-to-chips" class="compose-token-chips"></div>
+                <input id="compose-to-input" name="to" type="text" required autocomplete="email" placeholder="recipient@example.com">
+              </div>
             </div>
-            <button id="compose-toggle-bcc" class="cmd-btn cmd-btn--dense compose-meta-toggle" type="button" aria-label="Show Bcc field">+</button>
+            <div class="compose-meta-tail compose-meta-tail--recipients">
+              <button id="compose-toggle-cc" class="cmd-btn cmd-btn--dense compose-meta-toggle" type="button" aria-label="Show Cc field">+Cc</button>
+              <button id="compose-toggle-bcc" class="cmd-btn cmd-btn--dense compose-meta-toggle" type="button" aria-label="Show Bcc field">+Bcc</button>
+            </div>
           </div>
-          <div class="compose-meta-row">
+          <div id="compose-cc-row" class="compose-meta-row hidden">
             <div class="compose-meta-label">Cc</div>
             <div class="compose-meta-value">
-              <input id="compose-cc-input" name="cc" type="text" autocomplete="off" placeholder="copy@example.com">
+              <div id="compose-cc-field" class="compose-token-field" data-field="cc">
+                <div id="compose-cc-chips" class="compose-token-chips"></div>
+                <input id="compose-cc-input" name="cc" type="text" autocomplete="off" placeholder="copy@example.com">
+              </div>
             </div>
             <span class="compose-meta-tail"></span>
           </div>
           <div id="compose-bcc-row" class="compose-meta-row hidden">
             <div class="compose-meta-label">Bcc</div>
             <div class="compose-meta-value">
-              <input id="compose-bcc-input" name="bcc" type="text" autocomplete="off" placeholder="hidden@example.com">
+              <div id="compose-bcc-field" class="compose-token-field" data-field="bcc">
+                <div id="compose-bcc-chips" class="compose-token-chips"></div>
+                <input id="compose-bcc-input" name="bcc" type="text" autocomplete="off" placeholder="hidden@example.com">
+              </div>
             </div>
             <span class="compose-meta-tail"></span>
           </div>
@@ -592,7 +606,7 @@
             </div>
             <span class="compose-meta-tail"></span>
           </div>
-          <div class="compose-meta-row compose-meta-row--from">
+          <div id="compose-from-row" class="compose-meta-row compose-meta-row--from">
             <div class="compose-meta-label">From</div>
             <div class="compose-meta-value compose-meta-value--from">
               <select id="compose-from-select" autocomplete="off"></select>
@@ -600,21 +614,30 @@
                 <span>Confirm sender email</span>
                 <input id="compose-from-manual" type="email" autocomplete="email" placeholder="you@example.com">
               </label>
-              <p id="compose-from-note" class="hint compose-from-note"></p>
+              <p id="compose-from-note" class="compose-inline-note hidden"></p>
             </div>
             <span class="compose-meta-tail"></span>
           </div>
         </section>
 
         <section class="compose-body-layer">
+          <div id="compose-editor-tools" class="compose-editor-tools hidden" role="toolbar" aria-label="Formatting tools">
+            <button id="compose-tool-undo" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Undo">Undo</button>
+            <button id="compose-tool-typography" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Paragraph style">Style</button>
+            <button id="compose-tool-bold" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Bold">Bold</button>
+            <button id="compose-tool-italic" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Italic">Italic</button>
+            <button id="compose-tool-underline" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Underline">Underline</button>
+            <button id="compose-tool-list" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="List and quote">List</button>
+            <button id="compose-tool-link" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Insert link">Link</button>
+            <button id="compose-tool-clear" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Clear formatting">Clear</button>
+          </div>
           <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write your message"></div>
         </section>
 
-        <section class="compose-assets" aria-label="Attachments">
+        <section id="compose-assets" class="compose-assets hidden" aria-label="Attachments">
           <input id="compose-attachments-input" name="attachments" type="file" multiple class="hidden">
           <input id="compose-inline-images-input" name="inline_images" type="file" accept="image/*" multiple class="hidden">
           <div id="compose-attachment-tray" class="compose-attachment-tray"></div>
-          <p class="hint compose-assets-hint">Attachments and inline images are sent with this message. File data is not persisted in local draft restore.</p>
         </section>
       </form>
     </article>

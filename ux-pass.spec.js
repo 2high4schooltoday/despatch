@@ -45,13 +45,23 @@ test('desktop ux pass', async ({ page }) => {
   await page.waitForTimeout(400);
   await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
   await expect(page.locator('#compose-toolbar-layer')).toBeVisible();
-  await expect(page.locator('#compose-tool-undo')).toBeVisible();
+  await expect(page.locator('#compose-toggle-formatting')).toBeVisible();
+  await expect(page.locator('#compose-editor-tools')).toHaveClass(/hidden/);
+  await page.click('#compose-toggle-formatting');
+  await expect(page.locator('#compose-editor-tools')).not.toHaveClass(/hidden/);
   await expect(page.locator('#compose-tool-bold')).toBeVisible();
   await expect(page.locator('#compose-tool-link')).toBeVisible();
   await expect(page.locator('#compose-to-input')).toBeVisible();
-  await expect(page.locator('#compose-cc-input')).toBeVisible();
+  await expect(page.locator('#compose-cc-row')).toHaveClass(/hidden/);
+  await expect(page.locator('#compose-bcc-row')).toHaveClass(/hidden/);
+  await expect(page.locator('#compose-cc-input')).toBeHidden();
   await expect(page.locator('#compose-subject-input')).toBeVisible();
   await expect(page.locator('#compose-from-manual-wrap')).not.toHaveClass(/hidden/);
+
+  await page.click('#compose-toggle-cc');
+  await expect(page.locator('#compose-cc-row')).not.toHaveClass(/hidden/);
+  await page.click('#compose-toggle-cc');
+  await expect(page.locator('#compose-cc-row')).toHaveClass(/hidden/);
 
   await page.click('#compose-toggle-bcc');
   await expect(page.locator('#compose-bcc-row')).not.toHaveClass(/hidden/);
@@ -63,7 +73,6 @@ test('desktop ux pass', async ({ page }) => {
   await page.fill('#compose-subject-input', 'UX compose check');
   await page.locator('#compose-editor').click();
   await page.keyboard.type('Hello from compose test.');
-  await page.fill('#compose-from-manual', 'admin@example.com');
   await expect(page.locator('#btn-compose-send')).toBeEnabled();
 
   await page.keyboard.press('Escape');

@@ -910,7 +910,10 @@ func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply st
 		req.From = strings.TrimSpace(u.Email)
 	case "manual":
 		manualSender := strings.TrimSpace(decoded.FromManual)
-		if manualSender == "" || !strings.EqualFold(manualSender, strings.TrimSpace(u.Email)) {
+		if manualSender == "" {
+			manualSender = strings.TrimSpace(u.Email)
+		}
+		if !strings.EqualFold(manualSender, strings.TrimSpace(u.Email)) {
 			util.WriteError(w, 400, "invalid_sender_manual", "manual sender must match authenticated account email", middleware.RequestID(r.Context()))
 			return
 		}

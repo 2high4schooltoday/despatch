@@ -53,7 +53,15 @@ const state = {
     selectedIdentityID: "",
     selectedAccountID: "",
     manualFallbackRequired: false,
+    identityLookupError: "",
+    ccVisible: false,
     bccVisible: false,
+    formatToolsVisible: false,
+    recipients: {
+      to: [],
+      cc: [],
+      bcc: [],
+    },
     attachments: [],
     inlineImages: [],
     submitInFlight: false,
@@ -184,8 +192,17 @@ const el = {
   composeDialog: document.getElementById("compose-dialog"),
   composeForm: document.getElementById("form-compose"),
   btnComposeSend: document.getElementById("btn-compose-send"),
+  composeToggleCc: document.getElementById("compose-toggle-cc"),
   composeToggleBcc: document.getElementById("compose-toggle-bcc"),
+  composeCcRow: document.getElementById("compose-cc-row"),
   composeBccRow: document.getElementById("compose-bcc-row"),
+  composeFromRow: document.getElementById("compose-from-row"),
+  composeToField: document.getElementById("compose-to-field"),
+  composeCcField: document.getElementById("compose-cc-field"),
+  composeBccField: document.getElementById("compose-bcc-field"),
+  composeToChips: document.getElementById("compose-to-chips"),
+  composeCcChips: document.getElementById("compose-cc-chips"),
+  composeBccChips: document.getElementById("compose-bcc-chips"),
   composeToInput: document.getElementById("compose-to-input"),
   composeCcInput: document.getElementById("compose-cc-input"),
   composeBccInput: document.getElementById("compose-bcc-input"),
@@ -200,7 +217,15 @@ const el = {
   composeFromManualHiddenInput: document.getElementById("compose-from-manual-hidden"),
   composeBodyTextInput: document.getElementById("compose-body-text"),
   composeBodyHTMLInput: document.getElementById("compose-body-html"),
+  composeDraftState: document.getElementById("compose-draft-state"),
+  composeToggleFormatting: document.getElementById("compose-toggle-formatting"),
+  composeEditorTools: document.getElementById("compose-editor-tools"),
+  composeWindowMoreMenu: document.getElementById("compose-window-more-menu"),
+  composeMoreToggleCc: document.getElementById("compose-more-toggle-cc"),
+  composeMoreToggleBcc: document.getElementById("compose-more-toggle-bcc"),
+  composeMoreToggleFormat: document.getElementById("compose-more-toggle-format"),
   composeEditor: document.getElementById("compose-editor"),
+  composeAssets: document.getElementById("compose-assets"),
   composeAttachmentsInput: document.getElementById("compose-attachments-input"),
   composeInlineImagesInput: document.getElementById("compose-inline-images-input"),
   composeAttachmentTray: document.getElementById("compose-attachment-tray"),
@@ -685,10 +710,17 @@ function composeDraftKey() {
 }
 
 function splitComposeRecipients(raw) {
+  const seen = new Set();
   return String(raw || "")
     .split(/[,\n;]+/)
     .map((item) => item.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((item) => {
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 function composeEditorHTML() {
@@ -700,27 +732,217 @@ function composeEditorText() {
   return text.trim();
 }
 
-function setComposeBccVisible(visible) {
-  state.compose.bccVisible = !!visible;
-  if (!el.composeBccRow) return;
-  el.composeBccRow.classList.toggle("hidden", !state.compose.bccVisible);
-  if (!state.compose.bccVisible && el.composeBccInput) {
-    el.composeBccInput.value = "";
-  }
-  if (el.composeToggleBcc) {
-    el.composeToggleBcc.textContent = state.compose.bccVisible ? "-" : "+";
-    el.composeToggleBcc.setAttribute("aria-label", state.compose.bccVisible ? "Hide Bcc field" : "Show Bcc field");
+function composeAuthEmailValue() {
+  return String(state.compose.authEmail || state.user?.email || "").trim();
+}
+
+function composeResolvedManualSender() {
+  const manual = String(el.composeFromManualInput?.value || "").trim();
+  if (manual !== "") return manual;
+  return composeAuthEmailValue();
+}
+
+function composeRecipientInput(field) {
+  if (field === "to") return el.composeToInput;
+  if (field === "cc") return el.composeCcInput;
+  if (field === "bcc") return el.composeBccInput;
+  return null;
+}
+
+function composeRecipientChipContainer(field) {
+  if (field === "to") return el.composeToChips;
+  if (field === "cc") return el.composeCcChips;
+  if (field === "bcc") return el.composeBccChips;
+  return null;
+}
+
+function setComposeDraftState(text, tone = "muted") {
+  if (!el.composeDraftState) return;
+  el.composeDraftState.textContent = String(text || "Draft");
+  if (tone === "ok") {
+    el.composeDraftState.style.color = "var(--sig-ok)";
+  } else if (tone === "warn") {
+    el.composeDraftState.style.color = "var(--sig-err)";
+  } else {
+    el.composeDraftState.style.color = "var(--fg-muted)";
   }
 }
 
+function setComposeFromNote(text = "", tone = "muted") {
+  if (!el.composeFromNote) return;
+  const msg = String(text || "").trim();
+  el.composeFromNote.classList.remove("compose-inline-note--ok", "compose-inline-note--warn", "compose-inline-note--error");
+  if (msg === "") {
+    el.composeFromNote.textContent = "";
+    el.composeFromNote.classList.add("hidden");
+    updateComposeFromRowVisibility();
+    return;
+  }
+  el.composeFromNote.textContent = msg;
+  el.composeFromNote.classList.remove("hidden");
+  if (tone === "ok") {
+    el.composeFromNote.classList.add("compose-inline-note--ok");
+  } else if (tone === "warn") {
+    el.composeFromNote.classList.add("compose-inline-note--warn");
+  } else if (tone === "error") {
+    el.composeFromNote.classList.add("compose-inline-note--error");
+  }
+  updateComposeFromRowVisibility();
+}
+
+function updateComposeFromRowVisibility() {
+  if (!el.composeFromRow) return;
+  const hasManyIdentities = Array.isArray(state.compose.identities) && state.compose.identities.length > 1;
+  const hasNote = !!(el.composeFromNote && !el.composeFromNote.classList.contains("hidden"));
+  const shouldShow = state.compose.fromMode === "manual" || state.compose.manualFallbackRequired || hasManyIdentities || hasNote;
+  el.composeFromRow.classList.toggle("hidden", !shouldShow);
+}
+
+function serializeComposeRecipients(field) {
+  const rows = Array.isArray(state.compose.recipients[field]) ? state.compose.recipients[field] : [];
+  return rows.map((item) => item.value).join(", ");
+}
+
+function hydrateComposeRecipientTokens(field, raw) {
+  state.compose.recipients[field] = splitComposeRecipients(raw).map((value) => ({
+    value,
+    valid: validEmail(value),
+  }));
+  renderComposeRecipientTokens(field);
+}
+
+function renderComposeRecipientTokens(field) {
+  const wrap = composeRecipientChipContainer(field);
+  if (!wrap) return;
+  wrap.replaceChildren();
+  const rows = Array.isArray(state.compose.recipients[field]) ? state.compose.recipients[field] : [];
+  rows.forEach((item, index) => {
+    const chip = document.createElement("span");
+    chip.className = `compose-token${item.valid ? "" : " compose-token--invalid"}`;
+    chip.setAttribute("role", "listitem");
+    chip.title = item.valid ? item.value : "Invalid email address";
+
+    const text = document.createElement("span");
+    text.textContent = item.value;
+    chip.appendChild(text);
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.className = "compose-token-remove";
+    removeBtn.setAttribute("aria-label", `Remove ${item.value}`);
+    removeBtn.textContent = "x";
+    removeBtn.addEventListener("click", () => {
+      state.compose.recipients[field] = rows.filter((_, i) => i !== index);
+      renderComposeRecipientTokens(field);
+      syncComposeDraftFields();
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+    });
+    chip.appendChild(removeBtn);
+    wrap.appendChild(chip);
+  });
+}
+
+function addComposeRecipientToken(field, rawValue) {
+  const value = String(rawValue || "").trim();
+  if (!value) return false;
+  const list = Array.isArray(state.compose.recipients[field]) ? state.compose.recipients[field] : [];
+  const key = value.toLowerCase();
+  if (list.some((item) => String(item.value || "").toLowerCase() === key)) return false;
+  list.push({ value, valid: validEmail(value) });
+  state.compose.recipients[field] = list;
+  renderComposeRecipientTokens(field);
+  return true;
+}
+
+function commitComposeRecipientInput(field) {
+  const input = composeRecipientInput(field);
+  if (!input) return 0;
+  const chunks = splitComposeRecipients(input.value);
+  let added = 0;
+  for (const item of chunks) {
+    if (addComposeRecipientToken(field, item)) added += 1;
+  }
+  input.value = "";
+  return added;
+}
+
+function commitComposeAllRecipientInputs() {
+  commitComposeRecipientInput("to");
+  if (state.compose.ccVisible) commitComposeRecipientInput("cc");
+  if (state.compose.bccVisible) commitComposeRecipientInput("bcc");
+}
+
+function composeEffectiveRecipients(field) {
+  const out = Array.isArray(state.compose.recipients[field]) ? [...state.compose.recipients[field]] : [];
+  const input = composeRecipientInput(field);
+  const pending = String(input?.value || "").trim();
+  if (pending !== "" && !out.some((item) => String(item.value || "").toLowerCase() === pending.toLowerCase())) {
+    out.push({ value: pending, valid: validEmail(pending), pending: true });
+  }
+  return out;
+}
+
+function setComposeCcVisible(visible, opts = {}) {
+  const clearWhenHidden = opts.clearWhenHidden !== false;
+  state.compose.ccVisible = !!visible;
+  if (el.composeCcRow) {
+    el.composeCcRow.classList.toggle("hidden", !state.compose.ccVisible);
+  }
+  if (el.composeToggleCc) {
+    el.composeToggleCc.textContent = state.compose.ccVisible ? "-Cc" : "+Cc";
+    el.composeToggleCc.setAttribute("aria-label", state.compose.ccVisible ? "Hide Cc field" : "Show Cc field");
+  }
+  if (!state.compose.ccVisible && clearWhenHidden) {
+    state.compose.recipients.cc = [];
+    if (el.composeCcInput) el.composeCcInput.value = "";
+    renderComposeRecipientTokens("cc");
+  }
+}
+
+function setComposeBccVisible(visible, opts = {}) {
+  const clearWhenHidden = opts.clearWhenHidden !== false;
+  state.compose.bccVisible = !!visible;
+  if (el.composeBccRow) {
+    el.composeBccRow.classList.toggle("hidden", !state.compose.bccVisible);
+  }
+  if (el.composeToggleBcc) {
+    el.composeToggleBcc.textContent = state.compose.bccVisible ? "-Bcc" : "+Bcc";
+    el.composeToggleBcc.setAttribute("aria-label", state.compose.bccVisible ? "Hide Bcc field" : "Show Bcc field");
+  }
+  if (!state.compose.bccVisible && clearWhenHidden) {
+    state.compose.recipients.bcc = [];
+    if (el.composeBccInput) el.composeBccInput.value = "";
+    renderComposeRecipientTokens("bcc");
+  }
+}
+
+function setComposeFormatToolsVisible(visible) {
+  state.compose.formatToolsVisible = !!visible;
+  if (el.composeEditorTools) {
+    el.composeEditorTools.classList.toggle("hidden", !state.compose.formatToolsVisible);
+  }
+  if (el.composeToggleFormatting) {
+    el.composeToggleFormatting.setAttribute("aria-expanded", state.compose.formatToolsVisible ? "true" : "false");
+  }
+}
+
+function composeHasInvalidRecipients() {
+  const fields = ["to"];
+  if (state.compose.ccVisible) fields.push("cc");
+  if (state.compose.bccVisible) fields.push("bcc");
+  return fields.some((field) => composeEffectiveRecipients(field).some((item) => !item.valid));
+}
+
 function composeCanSubmit() {
-  const toCount = splitComposeRecipients(el.composeToInput?.value || "").length;
+  const toRows = composeEffectiveRecipients("to");
+  const toCount = toRows.filter((item) => item.valid).length;
   const subjectOk = String(el.composeSubjectInput?.value || "").trim() !== "";
   const hasBody = composeEditorText() !== "";
-  if (toCount === 0 || !subjectOk || !hasBody) return false;
+  if (toCount === 0 || !subjectOk || !hasBody || composeHasInvalidRecipients()) return false;
   if (state.compose.fromMode === "manual") {
-    const authEmail = String(state.compose.authEmail || state.user?.email || "").trim().toLowerCase();
-    const manual = String(el.composeFromManualInput?.value || "").trim().toLowerCase();
+    const authEmail = composeAuthEmailValue().toLowerCase();
+    const manual = composeResolvedManualSender().toLowerCase();
     if (!authEmail || manual !== authEmail) return false;
   }
   return true;
@@ -732,6 +954,19 @@ function updateComposeSubmitState() {
     el.btnComposeSend.disabled = disabled;
     el.btnComposeSend.textContent = state.compose.submitInFlight ? "Sending..." : "Send";
   }
+  if (state.compose.submitInFlight) {
+    setComposeDraftState("Sending", "muted");
+    return;
+  }
+  if (composeHasInvalidRecipients()) {
+    setComposeDraftState("Fix address", "warn");
+    return;
+  }
+  if (composeCanSubmit()) {
+    setComposeDraftState("Ready", "ok");
+    return;
+  }
+  setComposeDraftState("Draft", "muted");
 }
 
 function updateComposeFromFields() {
@@ -739,7 +974,7 @@ function updateComposeFromFields() {
   if (el.composeIdentityIDInput) el.composeIdentityIDInput.value = state.compose.selectedIdentityID || "";
   if (el.composeAccountIDInput) el.composeAccountIDInput.value = state.compose.selectedAccountID || "";
   if (el.composeFromManualHiddenInput) {
-    el.composeFromManualHiddenInput.value = String(el.composeFromManualInput?.value || "").trim();
+    el.composeFromManualHiddenInput.value = composeResolvedManualSender();
   }
 }
 
@@ -758,9 +993,12 @@ function syncComposeDraftFields() {
 function saveComposeDraft(form) {
   if (!form) return;
   const payload = {
-    to: String(el.composeToInput?.value || ""),
-    cc: String(el.composeCcInput?.value || ""),
-    bcc: String(el.composeBccInput?.value || ""),
+    to: serializeComposeRecipients("to"),
+    cc: serializeComposeRecipients("cc"),
+    bcc: serializeComposeRecipients("bcc"),
+    to_pending: String(el.composeToInput?.value || ""),
+    cc_pending: String(el.composeCcInput?.value || ""),
+    bcc_pending: String(el.composeBccInput?.value || ""),
     subject: String(el.composeSubjectInput?.value || ""),
     body_text: composeEditorText(),
     body_html: composeEditorHTML(),
@@ -768,7 +1006,9 @@ function saveComposeDraft(form) {
     identity_id: state.compose.selectedIdentityID,
     account_id: state.compose.selectedAccountID,
     from_manual: String(el.composeFromManualInput?.value || ""),
+    cc_visible: state.compose.ccVisible,
     bcc_visible: state.compose.bccVisible,
+    format_tools_visible: state.compose.formatToolsVisible,
   };
   localStorage.setItem(composeDraftKey(), JSON.stringify(payload));
 }
@@ -783,9 +1023,12 @@ function restoreComposeDraft(form) {
   if (!raw) return;
   try {
     const draft = JSON.parse(raw);
-    if (typeof draft.to === "string" && el.composeToInput) el.composeToInput.value = draft.to;
-    if (typeof draft.cc === "string" && el.composeCcInput) el.composeCcInput.value = draft.cc;
-    if (typeof draft.bcc === "string" && el.composeBccInput) el.composeBccInput.value = draft.bcc;
+    if (typeof draft.to === "string") hydrateComposeRecipientTokens("to", draft.to);
+    if (typeof draft.cc === "string") hydrateComposeRecipientTokens("cc", draft.cc);
+    if (typeof draft.bcc === "string") hydrateComposeRecipientTokens("bcc", draft.bcc);
+    if (typeof draft.to_pending === "string" && el.composeToInput) el.composeToInput.value = draft.to_pending;
+    if (typeof draft.cc_pending === "string" && el.composeCcInput) el.composeCcInput.value = draft.cc_pending;
+    if (typeof draft.bcc_pending === "string" && el.composeBccInput) el.composeBccInput.value = draft.bcc_pending;
     if (typeof draft.subject === "string" && el.composeSubjectInput) el.composeSubjectInput.value = draft.subject;
     if (typeof draft.body_html === "string" && draft.body_html.trim() !== "" && el.composeEditor) {
       el.composeEditor.innerHTML = draft.body_html;
@@ -799,7 +1042,9 @@ function restoreComposeDraft(form) {
     state.compose.fromMode = typeof draft.from_mode === "string" ? draft.from_mode : state.compose.fromMode;
     state.compose.selectedIdentityID = typeof draft.identity_id === "string" ? draft.identity_id : "";
     state.compose.selectedAccountID = typeof draft.account_id === "string" ? draft.account_id : "";
-    setComposeBccVisible(Boolean(draft.bcc_visible));
+    setComposeCcVisible(Boolean(draft.cc_visible || state.compose.recipients.cc.length > 0 || String(draft.cc_pending || "").trim() !== ""), { clearWhenHidden: false });
+    setComposeBccVisible(Boolean(draft.bcc_visible || state.compose.recipients.bcc.length > 0 || String(draft.bcc_pending || "").trim() !== ""), { clearWhenHidden: false });
+    setComposeFormatToolsVisible(Boolean(draft.format_tools_visible));
   } catch {
     localStorage.removeItem(composeDraftKey());
   }
@@ -844,6 +1089,9 @@ function renderComposeAttachmentTray() {
     chip.appendChild(removeBtn);
     el.composeAttachmentTray.appendChild(chip);
   }
+  if (el.composeAssets) {
+    el.composeAssets.classList.toggle("hidden", rows.length === 0);
+  }
 }
 
 function addComposeFiles(files, kind = "attachment") {
@@ -861,6 +1109,7 @@ function addComposeFiles(files, kind = "attachment") {
   }
   renderComposeAttachmentTray();
   syncComposeDraftFields();
+  saveComposeDraft(el.composeForm);
 }
 
 function setComposeFromMode(mode) {
@@ -870,7 +1119,22 @@ function setComposeFromMode(mode) {
   }
   if (el.composeFromManualInput) {
     el.composeFromManualInput.disabled = state.compose.fromMode !== "manual";
+    if (state.compose.fromMode === "manual" && String(el.composeFromManualInput.value || "").trim() === "") {
+      el.composeFromManualInput.value = composeAuthEmailValue();
+    }
   }
+  if (state.compose.fromMode === "manual") {
+    const authEmail = composeAuthEmailValue().toLowerCase();
+    const manual = composeResolvedManualSender().toLowerCase();
+    if (manual !== "" && manual === authEmail) {
+      setComposeFromNote("");
+    } else if (manual === "") {
+      setComposeFromNote("Using authenticated sender by default.", "warn");
+    } else {
+      setComposeFromNote("Sender must exactly match your authenticated email.", "error");
+    }
+  }
+  updateComposeFromRowVisibility();
   updateComposeFromFields();
   updateComposeSubmitState();
 }
@@ -883,12 +1147,13 @@ function renderComposeFromControls() {
     setComposeFromMode("manual");
     const option = document.createElement("option");
     option.value = "";
-    option.textContent = "Manual confirmation required";
+    option.textContent = "Authenticated sender";
     el.composeFromSelect.appendChild(option);
     el.composeFromSelect.disabled = true;
-    if (el.composeFromNote) {
-      el.composeFromNote.textContent = "Identity data unavailable. Type your authenticated email to confirm sender.";
-      el.composeFromNote.style.color = "var(--fg-muted)";
+    if (state.compose.identityLookupError) {
+      setComposeFromNote("Identity lookup unavailable. Using authenticated sender.", "warn");
+    } else {
+      setComposeFromNote("");
     }
     updateComposeFromFields();
     return;
@@ -919,10 +1184,8 @@ function renderComposeFromControls() {
     state.compose.selectedAccountID = String(chosen.account_id || "");
   }
   setComposeFromMode("identity");
-  if (el.composeFromNote) {
-    el.composeFromNote.textContent = "Sender is selected from your configured account identities.";
-    el.composeFromNote.style.color = "var(--fg-muted)";
-  }
+  setComposeFromNote("");
+  updateComposeFromRowVisibility();
   updateComposeFromFields();
 }
 
@@ -930,6 +1193,7 @@ async function loadComposeIdentities() {
   state.compose.authEmail = String(state.user?.email || "").trim();
   state.compose.identities = [];
   state.compose.manualFallbackRequired = false;
+  state.compose.identityLookupError = "";
   try {
     const payload = await api("/api/v1/compose/identities");
     state.compose.authEmail = String(payload.auth_email || state.user?.email || "").trim();
@@ -938,10 +1202,7 @@ async function loadComposeIdentities() {
   } catch (err) {
     state.compose.identities = [];
     state.compose.manualFallbackRequired = true;
-    if (el.composeFromNote) {
-      el.composeFromNote.textContent = `Identity lookup failed: ${err.message}`;
-      el.composeFromNote.style.color = "var(--sig-err)";
-    }
+    state.compose.identityLookupError = String(err.message || "lookup failed");
   }
   renderComposeFromControls();
 }
@@ -1022,13 +1283,28 @@ async function openComposeOverlay(trigger = null) {
   el.composeOverlay.classList.remove("hidden");
   el.composeOverlay.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
+  if (el.composeWindowMoreMenu) {
+    el.composeWindowMoreMenu.removeAttribute("open");
+  }
 
   state.compose.submitInFlight = false;
+  state.compose.recipients.to = [];
+  state.compose.recipients.cc = [];
+  state.compose.recipients.bcc = [];
+  if (el.composeForm) el.composeForm.reset();
+  if (el.composeToInput) el.composeToInput.value = "";
+  if (el.composeCcInput) el.composeCcInput.value = "";
+  if (el.composeBccInput) el.composeBccInput.value = "";
+  renderComposeRecipientTokens("to");
+  renderComposeRecipientTokens("cc");
+  renderComposeRecipientTokens("bcc");
+  setComposeCcVisible(false);
   clearComposeAssets();
   setComposeBccVisible(false);
-  if (el.composeEditor && !el.composeEditor.innerHTML.trim()) {
-    el.composeEditor.innerHTML = "";
-  }
+  setComposeFormatToolsVisible(false);
+  setComposeFromNote("");
+  setComposeDraftState("Draft", "muted");
+  if (el.composeEditor) el.composeEditor.innerHTML = "";
   restoreComposeDraft(el.composeForm);
   await loadComposeIdentities();
   syncComposeDraftFields();
@@ -1045,6 +1321,9 @@ function closeComposeOverlay(restoreFocus = true) {
   el.composeOverlay.setAttribute("aria-hidden", "true");
   document.body.style.overflow = state.ui.modalOpen || state.ui.mfaModalOpen ? "hidden" : "";
   state.compose.submitInFlight = false;
+  if (el.composeWindowMoreMenu) {
+    el.composeWindowMoreMenu.removeAttribute("open");
+  }
   clearComposeAssets();
   if (restoreFocus && state.ui.composeLastTrigger && typeof state.ui.composeLastTrigger.focus === "function") {
     state.ui.composeLastTrigger.focus();
@@ -4417,14 +4696,17 @@ async function sendCompose(form) {
   if (!state.user) {
     throw new Error("Sign in required");
   }
+  commitComposeAllRecipientInputs();
   syncComposeDraftFields();
   saveComposeDraft(form);
 
   const mp = new FormData();
-  mp.append("to", String(el.composeToInput?.value || ""));
-  mp.append("cc", String(el.composeCcInput?.value || ""));
+  mp.append("to", serializeComposeRecipients("to"));
+  if (state.compose.ccVisible) {
+    mp.append("cc", serializeComposeRecipients("cc"));
+  }
   if (state.compose.bccVisible) {
-    mp.append("bcc", String(el.composeBccInput?.value || ""));
+    mp.append("bcc", serializeComposeRecipients("bcc"));
   }
   mp.append("subject", String(el.composeSubjectInput?.value || ""));
   mp.append("body", composeEditorText());
@@ -4435,7 +4717,7 @@ async function sendCompose(form) {
     mp.append("account_id", state.compose.selectedAccountID || "");
   }
   if (state.compose.fromMode === "manual") {
-    mp.append("from_manual", String(el.composeFromManualInput?.value || "").trim());
+    mp.append("from_manual", composeResolvedManualSender());
   }
 
   for (const item of state.compose.attachments) {
@@ -6323,8 +6605,15 @@ function bindUI() {
     el.composeForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       if (state.compose.submitInFlight) return;
+      commitComposeAllRecipientInputs();
+      syncComposeDraftFields();
+      saveComposeDraft(el.composeForm);
       if (!composeCanSubmit()) {
-        setStatus("Compose is incomplete. Fill To, Subject, and message body before sending.", "error");
+        if (composeHasInvalidRecipients()) {
+          setStatus("Fix invalid recipient addresses before sending.", "error");
+        } else {
+          setStatus("Compose is incomplete. Fill To, Subject, and message body before sending.", "error");
+        }
         return;
       }
       state.compose.submitInFlight = true;
@@ -6334,9 +6623,19 @@ function bindUI() {
         setStatus("Message sent.", "ok");
         e.target.reset();
         clearComposeDraft();
+        state.compose.recipients.to = [];
+        state.compose.recipients.cc = [];
+        state.compose.recipients.bcc = [];
+        renderComposeRecipientTokens("to");
+        renderComposeRecipientTokens("cc");
+        renderComposeRecipientTokens("bcc");
         if (el.composeEditor) el.composeEditor.innerHTML = "";
         if (el.composeFromManualInput) el.composeFromManualInput.value = "";
+        setComposeCcVisible(false);
         setComposeBccVisible(false);
+        setComposeFormatToolsVisible(false);
+        setComposeFromNote("");
+        setComposeDraftState("Draft", "muted");
         clearComposeAssets();
         closeComposeOverlay(true);
         await loadMessages();
@@ -6418,6 +6717,72 @@ function bindUI() {
     el.composeForm.addEventListener("change", persistDraft);
   }
 
+  const popLastComposeRecipientToken = (field) => {
+    const rows = Array.isArray(state.compose.recipients[field]) ? state.compose.recipients[field] : [];
+    if (rows.length === 0) return false;
+    rows.pop();
+    state.compose.recipients[field] = rows;
+    renderComposeRecipientTokens(field);
+    syncComposeDraftFields();
+    saveComposeDraft(el.composeForm);
+    updateComposeSubmitState();
+    return true;
+  };
+
+  const bindComposeRecipientInput = (field, input) => {
+    if (!input) return;
+    input.addEventListener("input", () => {
+      const value = String(input.value || "").trim();
+      const chunks = splitComposeRecipients(value);
+      const single = chunks.length === 1 ? chunks[0] : "";
+      input.classList.toggle("compose-input-invalid", single !== "" && !validEmail(single));
+      updateComposeSubmitState();
+    });
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "," || event.key === ";" || event.key === "Enter") {
+        event.preventDefault();
+        commitComposeRecipientInput(field);
+        input.classList.remove("compose-input-invalid");
+        syncComposeDraftFields();
+        saveComposeDraft(el.composeForm);
+        updateComposeSubmitState();
+        return;
+      }
+      if (event.key === "Tab") {
+        commitComposeRecipientInput(field);
+        input.classList.remove("compose-input-invalid");
+        syncComposeDraftFields();
+        saveComposeDraft(el.composeForm);
+        updateComposeSubmitState();
+        return;
+      }
+      if (event.key === "Backspace" && String(input.value || "").trim() === "") {
+        popLastComposeRecipientToken(field);
+      }
+    });
+    input.addEventListener("blur", () => {
+      commitComposeRecipientInput(field);
+      input.classList.remove("compose-input-invalid");
+      syncComposeDraftFields();
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+    });
+    input.addEventListener("paste", (event) => {
+      const text = event.clipboardData?.getData("text/plain") || "";
+      if (!text) return;
+      event.preventDefault();
+      splitComposeRecipients(text).forEach((item) => addComposeRecipientToken(field, item));
+      input.classList.remove("compose-input-invalid");
+      syncComposeDraftFields();
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+    });
+  };
+
+  bindComposeRecipientInput("to", el.composeToInput);
+  bindComposeRecipientInput("cc", el.composeCcInput);
+  bindComposeRecipientInput("bcc", el.composeBccInput);
+
   if (el.composeEditor) {
     el.composeEditor.addEventListener("input", () => {
       syncComposeDraftFields();
@@ -6433,6 +6798,15 @@ function bindUI() {
     });
   }
 
+  if (el.composeToggleCc) {
+    el.composeToggleCc.addEventListener("click", () => {
+      setComposeCcVisible(!state.compose.ccVisible);
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+      if (state.compose.ccVisible && el.composeCcInput) el.composeCcInput.focus();
+    });
+  }
+
   if (el.composeToggleBcc) {
     el.composeToggleBcc.addEventListener("click", () => {
       setComposeBccVisible(!state.compose.bccVisible);
@@ -6442,34 +6816,70 @@ function bindUI() {
     });
   }
 
+  if (el.composeToggleFormatting) {
+    el.composeToggleFormatting.addEventListener("click", () => {
+      setComposeFormatToolsVisible(!state.compose.formatToolsVisible);
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+      if (state.compose.formatToolsVisible && el.composeEditor) {
+        el.composeEditor.focus();
+      }
+    });
+  }
+
+  if (el.composeMoreToggleCc) {
+    el.composeMoreToggleCc.addEventListener("click", () => {
+      setComposeCcVisible(!state.compose.ccVisible);
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+      if (el.composeWindowMoreMenu) el.composeWindowMoreMenu.removeAttribute("open");
+    });
+  }
+
+  if (el.composeMoreToggleBcc) {
+    el.composeMoreToggleBcc.addEventListener("click", () => {
+      setComposeBccVisible(!state.compose.bccVisible);
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+      if (el.composeWindowMoreMenu) el.composeWindowMoreMenu.removeAttribute("open");
+    });
+  }
+
+  if (el.composeMoreToggleFormat) {
+    el.composeMoreToggleFormat.addEventListener("click", () => {
+      setComposeFormatToolsVisible(!state.compose.formatToolsVisible);
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+      if (el.composeWindowMoreMenu) el.composeWindowMoreMenu.removeAttribute("open");
+    });
+  }
+
   if (el.composeFromSelect) {
     el.composeFromSelect.addEventListener("change", () => {
       const selectedOption = el.composeFromSelect.selectedOptions[0] || null;
       state.compose.selectedIdentityID = String(selectedOption?.value || "");
       state.compose.selectedAccountID = String(selectedOption?.dataset.accountId || "");
       setComposeFromMode("identity");
+      setComposeFromNote("");
       saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
     });
   }
 
   if (el.composeFromManualInput) {
     el.composeFromManualInput.addEventListener("input", () => {
-      setComposeFromMode("manual");
-      const authEmail = String(state.compose.authEmail || state.user?.email || "").trim().toLowerCase();
-      const manual = String(el.composeFromManualInput.value || "").trim().toLowerCase();
-      if (el.composeFromNote) {
-        if (manual === "") {
-          el.composeFromNote.textContent = "Type your authenticated email to confirm sender.";
-          el.composeFromNote.style.color = "var(--fg-muted)";
-        } else if (manual === authEmail) {
-          el.composeFromNote.textContent = "Sender confirmed.";
-          el.composeFromNote.style.color = "var(--sig-ok)";
-        } else {
-          el.composeFromNote.textContent = "Sender must exactly match your authenticated email.";
-          el.composeFromNote.style.color = "var(--sig-err)";
-        }
+      if (state.compose.fromMode !== "manual") {
+        setComposeFromMode("manual");
+      }
+      const authEmail = composeAuthEmailValue().toLowerCase();
+      const manualRaw = String(el.composeFromManualInput.value || "").trim().toLowerCase();
+      if (manualRaw === "" || manualRaw === authEmail) {
+        setComposeFromNote("");
+      } else {
+        setComposeFromNote("Sender must exactly match your authenticated email.", "error");
       }
       saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
     });
   }
 
@@ -6516,7 +6926,10 @@ function bindUI() {
     el.composeToolAttach.addEventListener("click", () => el.composeAttachmentsInput.click());
   }
   if (el.composeToolMedia && el.composeInlineImagesInput) {
-    el.composeToolMedia.addEventListener("click", () => el.composeInlineImagesInput.click());
+    el.composeToolMedia.addEventListener("click", () => {
+      if (el.composeWindowMoreMenu) el.composeWindowMoreMenu.removeAttribute("open");
+      el.composeInlineImagesInput.click();
+    });
   }
   if (el.composeAttachmentsInput) {
     el.composeAttachmentsInput.addEventListener("change", (event) => {
@@ -6534,8 +6947,14 @@ function bindUI() {
       updateComposeSubmitState();
     });
   }
-  setComposeBccVisible(state.compose.bccVisible);
+  renderComposeRecipientTokens("to");
+  renderComposeRecipientTokens("cc");
+  renderComposeRecipientTokens("bcc");
+  setComposeCcVisible(state.compose.ccVisible, { clearWhenHidden: false });
+  setComposeBccVisible(state.compose.bccVisible, { clearWhenHidden: false });
+  setComposeFormatToolsVisible(state.compose.formatToolsVisible);
   renderComposeAttachmentTray();
+  setComposeDraftState("Draft", "muted");
   updateComposeSubmitState();
 
   if (el.btnComposeOpen) {

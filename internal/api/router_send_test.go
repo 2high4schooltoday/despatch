@@ -343,6 +343,21 @@ func TestSendManualFromRequiresAuthenticatedEmail(t *testing.T) {
 	if req.From != "admin@example.com" {
 		t.Fatalf("expected forced manual sender admin@example.com, got %q", req.From)
 	}
+
+	autoBody, _ := json.Marshal(map[string]any{
+		"to":        []string{"alice@example.com"},
+		"subject":   "manual-auto",
+		"body":      "body",
+		"from_mode": "manual",
+	})
+	autoRec := postSendJSON(t, router, sessionCookie, csrfCookie, autoBody)
+	if autoRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", autoRec.Code, autoRec.Body.String())
+	}
+	_, autoReq := despatch.snapshot()
+	if autoReq.From != "admin@example.com" {
+		t.Fatalf("expected auto-manual sender fallback admin@example.com, got %q", autoReq.From)
+	}
 }
 
 func TestSendIdentityModeUsesAccountIdentity(t *testing.T) {
