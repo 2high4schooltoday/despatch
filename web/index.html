@@ -535,18 +535,87 @@
 
   <div id="compose-overlay" class="compose-overlay hidden" aria-hidden="true">
     <article id="compose-dialog" class="compose-dialog panel" role="dialog" aria-modal="true" aria-labelledby="compose-title">
-      <header class="compose-header">
-        <h2 id="compose-title">New Message</h2>
-        <button id="btn-compose-close" class="cmd-btn" type="button" aria-label="Close compose">Close</button>
-      </header>
-      <form id="form-compose" class="stack compose-form">
-        <label>To (comma separated)<input name="to" type="text" required autocomplete="email"></label>
-        <label>Subject<input name="subject" type="text" required autocomplete="off"></label>
-        <label>Body<textarea name="body" rows="10" required autocomplete="off"></textarea></label>
-        <label class="file-field">Attachments<input name="attachments" type="file" multiple></label>
-        <div class="actions compose-actions">
-          <button class="cmd-btn cmd-btn--primary" type="submit">Send</button>
-        </div>
+      <h2 id="compose-title" class="compose-title">New Message</h2>
+      <form id="form-compose" class="compose-form" novalidate>
+        <input id="compose-body-text" name="body" type="hidden">
+        <input id="compose-body-html" name="body_html" type="hidden">
+        <input id="compose-from-mode" name="from_mode" type="hidden" value="default">
+        <input id="compose-identity-id" name="identity_id" type="hidden" value="">
+        <input id="compose-account-id" name="account_id" type="hidden" value="">
+        <input id="compose-from-manual-hidden" name="from_manual" type="hidden" value="">
+
+        <header id="compose-toolbar-layer" class="compose-toolbar-layer">
+          <div class="compose-toolbar-cluster" role="toolbar" aria-label="Compose editor toolbar">
+            <button id="compose-tool-undo" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Undo">Un</button>
+            <button id="compose-tool-typography" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Paragraph style">Aa</button>
+            <button id="compose-tool-bold" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Bold">B</button>
+            <button id="compose-tool-italic" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Italic">I</button>
+            <button id="compose-tool-underline" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Underline">U</button>
+            <button id="compose-tool-list" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="List and quote">Ls</button>
+            <button id="compose-tool-link" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Insert link">Lk</button>
+            <button id="compose-tool-attach" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Attach files">At</button>
+            <button id="compose-tool-media" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Insert inline image">Im</button>
+            <button id="compose-tool-clear" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Clear formatting">Tx</button>
+          </div>
+          <div class="compose-toolbar-actions">
+            <button id="btn-compose-send" class="cmd-btn cmd-btn--primary compose-send-btn" type="submit">Send</button>
+            <button id="btn-compose-close" class="cmd-btn compose-close-btn" type="button" aria-label="Close compose">Close</button>
+          </div>
+        </header>
+
+        <section class="compose-meta" aria-label="Message metadata">
+          <div class="compose-meta-row">
+            <div class="compose-meta-label">To</div>
+            <div class="compose-meta-value">
+              <input id="compose-to-input" name="to" type="text" required autocomplete="email" placeholder="recipient@example.com, team@example.com">
+            </div>
+            <button id="compose-toggle-bcc" class="cmd-btn cmd-btn--dense compose-meta-toggle" type="button" aria-label="Show Bcc field">+</button>
+          </div>
+          <div class="compose-meta-row">
+            <div class="compose-meta-label">Cc</div>
+            <div class="compose-meta-value">
+              <input id="compose-cc-input" name="cc" type="text" autocomplete="off" placeholder="copy@example.com">
+            </div>
+            <span class="compose-meta-tail"></span>
+          </div>
+          <div id="compose-bcc-row" class="compose-meta-row hidden">
+            <div class="compose-meta-label">Bcc</div>
+            <div class="compose-meta-value">
+              <input id="compose-bcc-input" name="bcc" type="text" autocomplete="off" placeholder="hidden@example.com">
+            </div>
+            <span class="compose-meta-tail"></span>
+          </div>
+          <div class="compose-meta-row">
+            <div class="compose-meta-label">Subject</div>
+            <div class="compose-meta-value">
+              <input id="compose-subject-input" name="subject" type="text" required autocomplete="off" placeholder="Subject">
+            </div>
+            <span class="compose-meta-tail"></span>
+          </div>
+          <div class="compose-meta-row compose-meta-row--from">
+            <div class="compose-meta-label">From</div>
+            <div class="compose-meta-value compose-meta-value--from">
+              <select id="compose-from-select" autocomplete="off"></select>
+              <label id="compose-from-manual-wrap" class="compose-from-manual hidden">
+                <span>Confirm sender email</span>
+                <input id="compose-from-manual" type="email" autocomplete="email" placeholder="you@example.com">
+              </label>
+              <p id="compose-from-note" class="hint compose-from-note"></p>
+            </div>
+            <span class="compose-meta-tail"></span>
+          </div>
+        </section>
+
+        <section class="compose-body-layer">
+          <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write your message"></div>
+        </section>
+
+        <section class="compose-assets" aria-label="Attachments">
+          <input id="compose-attachments-input" name="attachments" type="file" multiple class="hidden">
+          <input id="compose-inline-images-input" name="inline_images" type="file" accept="image/*" multiple class="hidden">
+          <div id="compose-attachment-tray" class="compose-attachment-tray"></div>
+          <p class="hint compose-assets-hint">Attachments and inline images are sent with this message. File data is not persisted in local draft restore.</p>
+        </section>
       </form>
     </article>
   </div>

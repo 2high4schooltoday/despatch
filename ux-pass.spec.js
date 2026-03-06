@@ -1,5 +1,14 @@
 const { test, expect } = require('@playwright/test');
 
+async function dismissRecoveryPromptIfPresent(page) {
+  const overlay = page.locator('#ui-modal-overlay');
+  if (!(await overlay.isVisible())) return;
+  const title = (await page.locator('#ui-modal-title').textContent() || '').trim();
+  if (!/set recovery email/i.test(title)) return;
+  await page.click('#ui-modal-cancel');
+  await expect(overlay).toHaveClass(/hidden/);
+}
+
 test('desktop ux pass', async ({ page }) => {
   const consoleErrors = [];
   const dialogs = [];
@@ -19,6 +28,7 @@ test('desktop ux pass', async ({ page }) => {
   await page.fill('#form-login input[name="password"]', 'SecretPass123!');
   await page.click('#form-login button[type="submit"]');
   await page.waitForTimeout(1200);
+  await dismissRecoveryPromptIfPresent(page);
   await page.click('#tab-mail');
   await page.waitForTimeout(600);
 
@@ -32,8 +42,30 @@ test('desktop ux pass', async ({ page }) => {
   await page.keyboard.press('Enter');
   await page.locator('#mail-pane-reader').click();
   await page.keyboard.press('c');
-  await page.waitForTimeout(250);
+  await page.waitForTimeout(400);
   await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#compose-toolbar-layer')).toBeVisible();
+  await expect(page.locator('#compose-tool-undo')).toBeVisible();
+  await expect(page.locator('#compose-tool-bold')).toBeVisible();
+  await expect(page.locator('#compose-tool-link')).toBeVisible();
+  await expect(page.locator('#compose-to-input')).toBeVisible();
+  await expect(page.locator('#compose-cc-input')).toBeVisible();
+  await expect(page.locator('#compose-subject-input')).toBeVisible();
+  await expect(page.locator('#compose-from-manual-wrap')).not.toHaveClass(/hidden/);
+
+  await page.click('#compose-toggle-bcc');
+  await expect(page.locator('#compose-bcc-row')).not.toHaveClass(/hidden/);
+  await page.click('#compose-toggle-bcc');
+  await expect(page.locator('#compose-bcc-row')).toHaveClass(/hidden/);
+
+  await expect(page.locator('#btn-compose-send')).toBeDisabled();
+  await page.fill('#compose-to-input', 'alice@example.com');
+  await page.fill('#compose-subject-input', 'UX compose check');
+  await page.locator('#compose-editor').click();
+  await page.keyboard.type('Hello from compose test.');
+  await page.fill('#compose-from-manual', 'admin@example.com');
+  await expect(page.locator('#btn-compose-send')).toBeEnabled();
+
   await page.keyboard.press('Escape');
   await page.waitForTimeout(250);
 
@@ -109,6 +141,7 @@ test('mobile ux pass', async ({ browser }) => {
   await page.fill('#form-login input[name="password"]', 'SecretPass123!');
   await page.click('#form-login button[type="submit"]');
   await page.waitForTimeout(1200);
+  await dismissRecoveryPromptIfPresent(page);
   await page.click('#tab-mail');
   await page.waitForTimeout(600);
 

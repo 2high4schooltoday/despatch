@@ -48,13 +48,18 @@ type SendAttachment struct {
 	Filename    string
 	ContentType string
 	Data        []byte
+	Inline      bool
+	ContentID   string
 }
 
 type SendRequest struct {
 	From        string           `json:"from"`
 	To          []string         `json:"to"`
+	CC          []string         `json:"cc,omitempty"`
+	BCC         []string         `json:"bcc,omitempty"`
 	Subject     string           `json:"subject"`
 	Body        string           `json:"body"`
+	BodyHTML    string           `json:"body_html,omitempty"`
 	InReplyToID string           `json:"in_reply_to_id,omitempty"`
 	Attachments []SendAttachment `json:"-"`
 }

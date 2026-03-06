@@ -45,6 +45,19 @@ const state = {
     widgetBlocked: false,
     widgetError: "",
   },
+  compose: {
+    authEmail: "",
+    identities: [],
+    fromMode: "default",
+    typographyMode: "p",
+    selectedIdentityID: "",
+    selectedAccountID: "",
+    manualFallbackRequired: false,
+    bccVisible: false,
+    attachments: [],
+    inlineImages: [],
+    submitInFlight: false,
+  },
   ui: {
     activeAuthTask: "login",
     composeOpen: false,
@@ -170,6 +183,37 @@ const el = {
   composeOverlay: document.getElementById("compose-overlay"),
   composeDialog: document.getElementById("compose-dialog"),
   composeForm: document.getElementById("form-compose"),
+  btnComposeSend: document.getElementById("btn-compose-send"),
+  composeToggleBcc: document.getElementById("compose-toggle-bcc"),
+  composeBccRow: document.getElementById("compose-bcc-row"),
+  composeToInput: document.getElementById("compose-to-input"),
+  composeCcInput: document.getElementById("compose-cc-input"),
+  composeBccInput: document.getElementById("compose-bcc-input"),
+  composeSubjectInput: document.getElementById("compose-subject-input"),
+  composeFromSelect: document.getElementById("compose-from-select"),
+  composeFromManualWrap: document.getElementById("compose-from-manual-wrap"),
+  composeFromManualInput: document.getElementById("compose-from-manual"),
+  composeFromNote: document.getElementById("compose-from-note"),
+  composeFromModeInput: document.getElementById("compose-from-mode"),
+  composeIdentityIDInput: document.getElementById("compose-identity-id"),
+  composeAccountIDInput: document.getElementById("compose-account-id"),
+  composeFromManualHiddenInput: document.getElementById("compose-from-manual-hidden"),
+  composeBodyTextInput: document.getElementById("compose-body-text"),
+  composeBodyHTMLInput: document.getElementById("compose-body-html"),
+  composeEditor: document.getElementById("compose-editor"),
+  composeAttachmentsInput: document.getElementById("compose-attachments-input"),
+  composeInlineImagesInput: document.getElementById("compose-inline-images-input"),
+  composeAttachmentTray: document.getElementById("compose-attachment-tray"),
+  composeToolUndo: document.getElementById("compose-tool-undo"),
+  composeToolTypography: document.getElementById("compose-tool-typography"),
+  composeToolBold: document.getElementById("compose-tool-bold"),
+  composeToolItalic: document.getElementById("compose-tool-italic"),
+  composeToolUnderline: document.getElementById("compose-tool-underline"),
+  composeToolList: document.getElementById("compose-tool-list"),
+  composeToolLink: document.getElementById("compose-tool-link"),
+  composeToolAttach: document.getElementById("compose-tool-attach"),
+  composeToolMedia: document.getElementById("compose-tool-media"),
+  composeToolClear: document.getElementById("compose-tool-clear"),
   uiModalOverlay: document.getElementById("ui-modal-overlay"),
   uiModalCard: document.getElementById("ui-modal-card"),
   uiModalTitle: document.getElementById("ui-modal-title"),
@@ -640,13 +684,91 @@ function composeDraftKey() {
   return "despatch.compose.draft.v1";
 }
 
+function splitComposeRecipients(raw) {
+  return String(raw || "")
+    .split(/[,\n;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function composeEditorHTML() {
+  return String(el.composeEditor?.innerHTML || "");
+}
+
+function composeEditorText() {
+  const text = String(el.composeEditor?.textContent || "").replace(/\u00a0/g, " ");
+  return text.trim();
+}
+
+function setComposeBccVisible(visible) {
+  state.compose.bccVisible = !!visible;
+  if (!el.composeBccRow) return;
+  el.composeBccRow.classList.toggle("hidden", !state.compose.bccVisible);
+  if (!state.compose.bccVisible && el.composeBccInput) {
+    el.composeBccInput.value = "";
+  }
+  if (el.composeToggleBcc) {
+    el.composeToggleBcc.textContent = state.compose.bccVisible ? "-" : "+";
+    el.composeToggleBcc.setAttribute("aria-label", state.compose.bccVisible ? "Hide Bcc field" : "Show Bcc field");
+  }
+}
+
+function composeCanSubmit() {
+  const toCount = splitComposeRecipients(el.composeToInput?.value || "").length;
+  const subjectOk = String(el.composeSubjectInput?.value || "").trim() !== "";
+  const hasBody = composeEditorText() !== "";
+  if (toCount === 0 || !subjectOk || !hasBody) return false;
+  if (state.compose.fromMode === "manual") {
+    const authEmail = String(state.compose.authEmail || state.user?.email || "").trim().toLowerCase();
+    const manual = String(el.composeFromManualInput?.value || "").trim().toLowerCase();
+    if (!authEmail || manual !== authEmail) return false;
+  }
+  return true;
+}
+
+function updateComposeSubmitState() {
+  const disabled = state.compose.submitInFlight || !composeCanSubmit();
+  if (el.btnComposeSend) {
+    el.btnComposeSend.disabled = disabled;
+    el.btnComposeSend.textContent = state.compose.submitInFlight ? "Sending..." : "Send";
+  }
+}
+
+function updateComposeFromFields() {
+  if (el.composeFromModeInput) el.composeFromModeInput.value = state.compose.fromMode;
+  if (el.composeIdentityIDInput) el.composeIdentityIDInput.value = state.compose.selectedIdentityID || "";
+  if (el.composeAccountIDInput) el.composeAccountIDInput.value = state.compose.selectedAccountID || "";
+  if (el.composeFromManualHiddenInput) {
+    el.composeFromManualHiddenInput.value = String(el.composeFromManualInput?.value || "").trim();
+  }
+}
+
+function syncComposeBodyFields() {
+  const htmlBody = composeEditorHTML();
+  const textBody = composeEditorText();
+  if (el.composeBodyHTMLInput) el.composeBodyHTMLInput.value = htmlBody;
+  if (el.composeBodyTextInput) el.composeBodyTextInput.value = textBody;
+}
+
+function syncComposeDraftFields() {
+  syncComposeBodyFields();
+  updateComposeFromFields();
+}
+
 function saveComposeDraft(form) {
   if (!form) return;
-  const fd = new FormData(form);
   const payload = {
-    to: String(fd.get("to") || ""),
-    subject: String(fd.get("subject") || ""),
-    body: String(fd.get("body") || ""),
+    to: String(el.composeToInput?.value || ""),
+    cc: String(el.composeCcInput?.value || ""),
+    bcc: String(el.composeBccInput?.value || ""),
+    subject: String(el.composeSubjectInput?.value || ""),
+    body_text: composeEditorText(),
+    body_html: composeEditorHTML(),
+    from_mode: state.compose.fromMode,
+    identity_id: state.compose.selectedIdentityID,
+    account_id: state.compose.selectedAccountID,
+    from_manual: String(el.composeFromManualInput?.value || ""),
+    bcc_visible: state.compose.bccVisible,
   };
   localStorage.setItem(composeDraftKey(), JSON.stringify(payload));
 }
@@ -661,33 +783,258 @@ function restoreComposeDraft(form) {
   if (!raw) return;
   try {
     const draft = JSON.parse(raw);
-    if (typeof draft.to === "string") form.elements.to.value = draft.to;
-    if (typeof draft.subject === "string") form.elements.subject.value = draft.subject;
-    if (typeof draft.body === "string") form.elements.body.value = draft.body;
+    if (typeof draft.to === "string" && el.composeToInput) el.composeToInput.value = draft.to;
+    if (typeof draft.cc === "string" && el.composeCcInput) el.composeCcInput.value = draft.cc;
+    if (typeof draft.bcc === "string" && el.composeBccInput) el.composeBccInput.value = draft.bcc;
+    if (typeof draft.subject === "string" && el.composeSubjectInput) el.composeSubjectInput.value = draft.subject;
+    if (typeof draft.body_html === "string" && draft.body_html.trim() !== "" && el.composeEditor) {
+      el.composeEditor.innerHTML = draft.body_html;
+    } else if (typeof draft.body_text === "string" && draft.body_text.trim() !== "" && el.composeEditor) {
+      const lines = draft.body_text.split(/\r?\n/);
+      el.composeEditor.innerHTML = lines.map((line) => `<p>${escapeHtml(line || "")}</p>`).join("");
+    }
+    if (typeof draft.from_manual === "string" && el.composeFromManualInput) {
+      el.composeFromManualInput.value = draft.from_manual;
+    }
+    state.compose.fromMode = typeof draft.from_mode === "string" ? draft.from_mode : state.compose.fromMode;
+    state.compose.selectedIdentityID = typeof draft.identity_id === "string" ? draft.identity_id : "";
+    state.compose.selectedAccountID = typeof draft.account_id === "string" ? draft.account_id : "";
+    setComposeBccVisible(Boolean(draft.bcc_visible));
   } catch {
     localStorage.removeItem(composeDraftKey());
   }
+  syncComposeDraftFields();
+  updateComposeSubmitState();
+}
+
+function clearComposeAssets() {
+  state.compose.attachments = [];
+  state.compose.inlineImages = [];
+  if (el.composeAttachmentsInput) el.composeAttachmentsInput.value = "";
+  if (el.composeInlineImagesInput) el.composeInlineImagesInput.value = "";
+  renderComposeAttachmentTray();
+}
+
+function renderComposeAttachmentTray() {
+  if (!el.composeAttachmentTray) return;
+  el.composeAttachmentTray.replaceChildren();
+  const rows = [
+    ...state.compose.attachments.map((item) => ({ ...item, kind: "ATT" })),
+    ...state.compose.inlineImages.map((item) => ({ ...item, kind: "IMG" })),
+  ];
+  for (const item of rows) {
+    const chip = document.createElement("span");
+    chip.className = "compose-attachment-chip";
+    chip.textContent = `${item.kind} ${item.name} (${Math.max(1, Math.round((item.size || 0) / 1024))} KB)`;
+
+    const removeBtn = document.createElement("button");
+    removeBtn.type = "button";
+    removeBtn.textContent = "x";
+    removeBtn.setAttribute("aria-label", `Remove ${item.name}`);
+    removeBtn.addEventListener("click", () => {
+      if (item.kind === "ATT") {
+        state.compose.attachments = state.compose.attachments.filter((x) => x.id !== item.id);
+      } else {
+        state.compose.inlineImages = state.compose.inlineImages.filter((x) => x.id !== item.id);
+      }
+      renderComposeAttachmentTray();
+      updateComposeSubmitState();
+    });
+
+    chip.appendChild(removeBtn);
+    el.composeAttachmentTray.appendChild(chip);
+  }
+}
+
+function addComposeFiles(files, kind = "attachment") {
+  if (!files || files.length === 0) return;
+  const list = Array.from(files);
+  for (const file of list) {
+    const id = `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    if (kind === "inline") {
+      const cid = `compose-inline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      state.compose.inlineImages.push({ id, cid, file, name: file.name, size: file.size });
+      insertComposeHTMLAtCaret(`<img src="cid:${cid}" alt="${escapeHtml(file.name)}">`);
+    } else {
+      state.compose.attachments.push({ id, file, name: file.name, size: file.size });
+    }
+  }
+  renderComposeAttachmentTray();
+  syncComposeDraftFields();
+}
+
+function setComposeFromMode(mode) {
+  state.compose.fromMode = mode;
+  if (el.composeFromManualWrap) {
+    el.composeFromManualWrap.classList.toggle("hidden", state.compose.fromMode !== "manual");
+  }
+  if (el.composeFromManualInput) {
+    el.composeFromManualInput.disabled = state.compose.fromMode !== "manual";
+  }
+  updateComposeFromFields();
+  updateComposeSubmitState();
+}
+
+function renderComposeFromControls() {
+  if (!el.composeFromSelect) return;
+  el.composeFromSelect.replaceChildren();
+  const items = Array.isArray(state.compose.identities) ? state.compose.identities : [];
+  if (items.length === 0) {
+    setComposeFromMode("manual");
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Manual confirmation required";
+    el.composeFromSelect.appendChild(option);
+    el.composeFromSelect.disabled = true;
+    if (el.composeFromNote) {
+      el.composeFromNote.textContent = "Identity data unavailable. Type your authenticated email to confirm sender.";
+      el.composeFromNote.style.color = "var(--fg-muted)";
+    }
+    updateComposeFromFields();
+    return;
+  }
+
+  el.composeFromSelect.disabled = false;
+  for (const item of items) {
+    const label = [String(item.identity_display_name || "").trim(), String(item.from_email || "").trim()]
+      .filter(Boolean)
+      .join(" - ");
+    const accountLabel = String(item.account_display_name || item.account_login || "").trim();
+    const opt = document.createElement("option");
+    opt.value = String(item.identity_id || "");
+    opt.textContent = accountLabel ? `${accountLabel}: ${label}` : label;
+    opt.dataset.accountId = String(item.account_id || "");
+    opt.dataset.fromEmail = String(item.from_email || "");
+    if (item.identity_is_default || item.account_is_default) opt.selected = true;
+    el.composeFromSelect.appendChild(opt);
+  }
+
+  const chosen = state.compose.selectedIdentityID
+    ? items.find((item) => String(item.identity_id) === state.compose.selectedIdentityID)
+    : items.find((item) => item.identity_is_default || item.account_is_default) || items[0];
+
+  if (chosen) {
+    el.composeFromSelect.value = String(chosen.identity_id || "");
+    state.compose.selectedIdentityID = String(chosen.identity_id || "");
+    state.compose.selectedAccountID = String(chosen.account_id || "");
+  }
+  setComposeFromMode("identity");
+  if (el.composeFromNote) {
+    el.composeFromNote.textContent = "Sender is selected from your configured account identities.";
+    el.composeFromNote.style.color = "var(--fg-muted)";
+  }
+  updateComposeFromFields();
+}
+
+async function loadComposeIdentities() {
+  state.compose.authEmail = String(state.user?.email || "").trim();
+  state.compose.identities = [];
+  state.compose.manualFallbackRequired = false;
+  try {
+    const payload = await api("/api/v1/compose/identities");
+    state.compose.authEmail = String(payload.auth_email || state.user?.email || "").trim();
+    state.compose.identities = Array.isArray(payload.items) ? payload.items : [];
+    state.compose.manualFallbackRequired = !!payload.manual_fallback_required;
+  } catch (err) {
+    state.compose.identities = [];
+    state.compose.manualFallbackRequired = true;
+    if (el.composeFromNote) {
+      el.composeFromNote.textContent = `Identity lookup failed: ${err.message}`;
+      el.composeFromNote.style.color = "var(--sig-err)";
+    }
+  }
+  renderComposeFromControls();
 }
 
 function composeFocusableElements() {
   if (!el.composeDialog) return [];
-  return Array.from(el.composeDialog.querySelectorAll("button, [href], input, textarea, select, [tabindex]:not([tabindex='-1'])"))
+  return Array.from(el.composeDialog.querySelectorAll("button, [href], input, textarea, select, [contenteditable='true'], [tabindex]:not([tabindex='-1'])"))
     .filter((node) => !node.disabled && node.offsetParent !== null);
 }
 
-function openComposeOverlay(trigger = null) {
+function insertComposeHTMLAtCaret(htmlContent) {
+  if (!el.composeEditor) return;
+  el.composeEditor.focus();
+  if (document.queryCommandSupported && document.queryCommandSupported("insertHTML")) {
+    document.execCommand("insertHTML", false, htmlContent);
+  } else {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) {
+      el.composeEditor.insertAdjacentHTML("beforeend", htmlContent);
+    } else {
+      const range = selection.getRangeAt(0);
+      range.deleteContents();
+      const temp = document.createElement("div");
+      temp.innerHTML = htmlContent;
+      const fragment = document.createDocumentFragment();
+      while (temp.firstChild) fragment.appendChild(temp.firstChild);
+      range.insertNode(fragment);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }
+  syncComposeDraftFields();
+  updateComposeSubmitState();
+}
+
+function runComposeCommand(command, value = null) {
+  if (!el.composeEditor) return;
+  el.composeEditor.focus();
+  document.execCommand(command, false, value);
+  syncComposeDraftFields();
+  updateComposeSubmitState();
+}
+
+function cycleComposeTypographyMode() {
+  const next = state.compose.typographyMode === "p" ? "h3" : "p";
+  state.compose.typographyMode = next;
+  runComposeCommand("formatBlock", `<${next}>`);
+}
+
+async function promptComposeLink() {
+  const result = await openUIModal({
+    title: "Insert Link",
+    body: "Enter a URL to attach to selected text.",
+    inputLabel: "URL",
+    inputType: "url",
+    mode: "prompt",
+    trigger: el.composeToolLink,
+    confirmText: "Insert",
+    cancelText: "Cancel",
+  });
+  if (!result?.confirmed) {
+    if (el.composeEditor) el.composeEditor.focus();
+    return;
+  }
+  const url = String(result.value || "").trim();
+  if (!url) {
+    if (el.composeEditor) el.composeEditor.focus();
+    return;
+  }
+  runComposeCommand("createLink", url);
+}
+
+async function openComposeOverlay(trigger = null) {
   if (!el.composeOverlay) return;
   state.ui.composeOpen = true;
   state.ui.composeLastTrigger = trigger || document.activeElement || null;
   el.composeOverlay.classList.remove("hidden");
   el.composeOverlay.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
-  if (el.composeForm) {
-    restoreComposeDraft(el.composeForm);
-    const toInput = el.composeForm.elements.to;
-    if (toInput && typeof toInput.focus === "function") {
-      toInput.focus();
-    }
+
+  state.compose.submitInFlight = false;
+  clearComposeAssets();
+  setComposeBccVisible(false);
+  if (el.composeEditor && !el.composeEditor.innerHTML.trim()) {
+    el.composeEditor.innerHTML = "";
+  }
+  restoreComposeDraft(el.composeForm);
+  await loadComposeIdentities();
+  syncComposeDraftFields();
+  updateComposeSubmitState();
+  if (el.composeToInput && typeof el.composeToInput.focus === "function") {
+    el.composeToInput.focus();
   }
 }
 
@@ -697,6 +1044,8 @@ function closeComposeOverlay(restoreFocus = true) {
   el.composeOverlay.classList.add("hidden");
   el.composeOverlay.setAttribute("aria-hidden", "true");
   document.body.style.overflow = state.ui.modalOpen || state.ui.mfaModalOpen ? "hidden" : "";
+  state.compose.submitInFlight = false;
+  clearComposeAssets();
   if (restoreFocus && state.ui.composeLastTrigger && typeof state.ui.composeLastTrigger.focus === "function") {
     state.ui.composeLastTrigger.focus();
   }
@@ -812,7 +1161,7 @@ async function showPromptModal(opts) {
     cancelText: opts?.cancelText || "Cancel",
     trigger: opts?.trigger || null,
   });
-  if (!out || !out.confirmed) return "";
+  if (!out || !out.confirmed) return null;
   return String(out.value || "");
 }
 
@@ -4068,27 +4417,36 @@ async function sendCompose(form) {
   if (!state.user) {
     throw new Error("Sign in required");
   }
+  syncComposeDraftFields();
   saveComposeDraft(form);
-  const fd = new FormData(form);
-  const files = form.querySelector("input[name='attachments']").files;
 
-  if (files && files.length > 0) {
-    const mp = new FormData();
-    mp.append("to", fd.get("to"));
-    mp.append("subject", fd.get("subject"));
-    mp.append("body", fd.get("body"));
-    for (const f of files) mp.append("attachments", f);
-    await api("/api/v1/messages/send", { method: "POST", body: mp });
-  } else {
-    await api("/api/v1/messages/send", {
-      method: "POST",
-      json: {
-        to: String(fd.get("to")).split(",").map((s) => s.trim()).filter(Boolean),
-        subject: String(fd.get("subject") || ""),
-        body: String(fd.get("body") || ""),
-      },
-    });
+  const mp = new FormData();
+  mp.append("to", String(el.composeToInput?.value || ""));
+  mp.append("cc", String(el.composeCcInput?.value || ""));
+  if (state.compose.bccVisible) {
+    mp.append("bcc", String(el.composeBccInput?.value || ""));
   }
+  mp.append("subject", String(el.composeSubjectInput?.value || ""));
+  mp.append("body", composeEditorText());
+  mp.append("body_html", composeEditorHTML());
+  mp.append("from_mode", state.compose.fromMode);
+  if (state.compose.fromMode === "identity") {
+    mp.append("identity_id", state.compose.selectedIdentityID || "");
+    mp.append("account_id", state.compose.selectedAccountID || "");
+  }
+  if (state.compose.fromMode === "manual") {
+    mp.append("from_manual", String(el.composeFromManualInput?.value || "").trim());
+  }
+
+  for (const item of state.compose.attachments) {
+    mp.append("attachments", item.file, item.name);
+  }
+  for (const item of state.compose.inlineImages) {
+    mp.append("inline_images", item.file, item.name);
+    mp.append("inline_image_cids", item.cid);
+  }
+
+  await api("/api/v1/messages/send", { method: "POST", body: mp });
   clearComposeDraft();
 }
 
@@ -5189,7 +5547,7 @@ async function handleMailKeyboard(event) {
 
   if (event.key.toLowerCase() === "c") {
     event.preventDefault();
-    openComposeOverlay(el.btnComposeOpen);
+    void openComposeOverlay(el.btnComposeOpen);
     return;
   }
 
@@ -5961,24 +6319,44 @@ function bindUI() {
     }
   });
 
-  document.getElementById("form-compose").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    try {
-      await sendCompose(e.target);
-      setStatus("Message sent.", "ok");
-      e.target.reset();
-      clearComposeDraft();
-      closeComposeOverlay(true);
-      await loadMessages();
-    } catch (err) {
-      if (err.code === "smtp_sender_rejected") {
-        const requestRef = err.requestID ? ` (request ${err.requestID})` : "";
-        setStatus(`SMTP sender policy rejected this message. On Ubuntu, check Postfix sender-login policy and users.mail_login mapping.${requestRef}`, "error");
+  if (el.composeForm) {
+    el.composeForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      if (state.compose.submitInFlight) return;
+      if (!composeCanSubmit()) {
+        setStatus("Compose is incomplete. Fill To, Subject, and message body before sending.", "error");
         return;
       }
-      setStatus(err.message, "error");
-    }
-  });
+      state.compose.submitInFlight = true;
+      updateComposeSubmitState();
+      try {
+        await sendCompose(e.target);
+        setStatus("Message sent.", "ok");
+        e.target.reset();
+        clearComposeDraft();
+        if (el.composeEditor) el.composeEditor.innerHTML = "";
+        if (el.composeFromManualInput) el.composeFromManualInput.value = "";
+        setComposeBccVisible(false);
+        clearComposeAssets();
+        closeComposeOverlay(true);
+        await loadMessages();
+      } catch (err) {
+        if (err.code === "smtp_sender_rejected") {
+          const requestRef = err.requestID ? ` (request ${err.requestID})` : "";
+          setStatus(`SMTP sender policy rejected this message. On Ubuntu, check Postfix sender-login policy and users.mail_login mapping.${requestRef}`, "error");
+          return;
+        }
+        if (err.code === "invalid_sender_manual") {
+          setStatus("Manual sender must exactly match your authenticated account email.", "error");
+          return;
+        }
+        setStatus(err.message, "error");
+      } finally {
+        state.compose.submitInFlight = false;
+        updateComposeSubmitState();
+      }
+    });
+  }
 
   if (el.btnUpdateCheck) {
     el.btnUpdateCheck.onclick = async () => {
@@ -6031,15 +6409,139 @@ function bindUI() {
 
   if (el.composeForm) {
     restoreComposeDraft(el.composeForm);
-    const persistDraft = () => saveComposeDraft(el.composeForm);
+    const persistDraft = () => {
+      syncComposeDraftFields();
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+    };
     el.composeForm.addEventListener("input", persistDraft);
     el.composeForm.addEventListener("change", persistDraft);
   }
 
+  if (el.composeEditor) {
+    el.composeEditor.addEventListener("input", () => {
+      syncComposeDraftFields();
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+    });
+    el.composeEditor.addEventListener("paste", (event) => {
+      event.preventDefault();
+      const text = event.clipboardData?.getData("text/plain") || "";
+      if (text) {
+        insertComposeHTMLAtCaret(escapeHtml(text).replace(/\n/g, "<br>"));
+      }
+    });
+  }
+
+  if (el.composeToggleBcc) {
+    el.composeToggleBcc.addEventListener("click", () => {
+      setComposeBccVisible(!state.compose.bccVisible);
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+      if (state.compose.bccVisible && el.composeBccInput) el.composeBccInput.focus();
+    });
+  }
+
+  if (el.composeFromSelect) {
+    el.composeFromSelect.addEventListener("change", () => {
+      const selectedOption = el.composeFromSelect.selectedOptions[0] || null;
+      state.compose.selectedIdentityID = String(selectedOption?.value || "");
+      state.compose.selectedAccountID = String(selectedOption?.dataset.accountId || "");
+      setComposeFromMode("identity");
+      saveComposeDraft(el.composeForm);
+    });
+  }
+
+  if (el.composeFromManualInput) {
+    el.composeFromManualInput.addEventListener("input", () => {
+      setComposeFromMode("manual");
+      const authEmail = String(state.compose.authEmail || state.user?.email || "").trim().toLowerCase();
+      const manual = String(el.composeFromManualInput.value || "").trim().toLowerCase();
+      if (el.composeFromNote) {
+        if (manual === "") {
+          el.composeFromNote.textContent = "Type your authenticated email to confirm sender.";
+          el.composeFromNote.style.color = "var(--fg-muted)";
+        } else if (manual === authEmail) {
+          el.composeFromNote.textContent = "Sender confirmed.";
+          el.composeFromNote.style.color = "var(--sig-ok)";
+        } else {
+          el.composeFromNote.textContent = "Sender must exactly match your authenticated email.";
+          el.composeFromNote.style.color = "var(--sig-err)";
+        }
+      }
+      saveComposeDraft(el.composeForm);
+    });
+  }
+
+  if (el.composeToolUndo) {
+    el.composeToolUndo.addEventListener("click", () => runComposeCommand("undo"));
+  }
+  if (el.composeToolTypography) {
+    el.composeToolTypography.addEventListener("click", () => cycleComposeTypographyMode());
+  }
+  if (el.composeToolBold) {
+    el.composeToolBold.addEventListener("click", () => runComposeCommand("bold"));
+  }
+  if (el.composeToolItalic) {
+    el.composeToolItalic.addEventListener("click", () => runComposeCommand("italic"));
+  }
+  if (el.composeToolUnderline) {
+    el.composeToolUnderline.addEventListener("click", () => runComposeCommand("underline"));
+  }
+  if (el.composeToolList) {
+    el.composeToolList.addEventListener("click", (event) => {
+      if (event.altKey) {
+        runComposeCommand("formatBlock", "<blockquote>");
+        return;
+      }
+      if (event.shiftKey) {
+        runComposeCommand("insertOrderedList");
+        return;
+      }
+      runComposeCommand("insertUnorderedList");
+    });
+  }
+  if (el.composeToolLink) {
+    el.composeToolLink.addEventListener("click", () => {
+      void promptComposeLink();
+    });
+  }
+  if (el.composeToolClear) {
+    el.composeToolClear.addEventListener("click", () => {
+      runComposeCommand("removeFormat");
+      runComposeCommand("unlink");
+    });
+  }
+  if (el.composeToolAttach && el.composeAttachmentsInput) {
+    el.composeToolAttach.addEventListener("click", () => el.composeAttachmentsInput.click());
+  }
+  if (el.composeToolMedia && el.composeInlineImagesInput) {
+    el.composeToolMedia.addEventListener("click", () => el.composeInlineImagesInput.click());
+  }
+  if (el.composeAttachmentsInput) {
+    el.composeAttachmentsInput.addEventListener("change", (event) => {
+      addComposeFiles(event.target.files || [], "attachment");
+      event.target.value = "";
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+    });
+  }
+  if (el.composeInlineImagesInput) {
+    el.composeInlineImagesInput.addEventListener("change", (event) => {
+      addComposeFiles(event.target.files || [], "inline");
+      event.target.value = "";
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+    });
+  }
+  setComposeBccVisible(state.compose.bccVisible);
+  renderComposeAttachmentTray();
+  updateComposeSubmitState();
+
   if (el.btnComposeOpen) {
     el.btnComposeOpen.onclick = () => {
       if (!state.user || state.setup.required) return;
-      openComposeOverlay(el.btnComposeOpen);
+      void openComposeOverlay(el.btnComposeOpen);
     };
   }
   if (el.btnComposeClose) {

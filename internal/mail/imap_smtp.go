@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"html"
 	"io"
 	"io/fs"
 	"mime/multipart"
@@ -12,6 +13,7 @@ import (
 	"net"
 	"net/smtp"
 	"net/textproto"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -268,7 +270,10 @@ func (c *IMAPSMTPClient) Search(ctx context.Context, user, pass, mailbox, query 
 }
 
 func (c *IMAPSMTPClient) Send(ctx context.Context, user, pass string, req SendRequest) error {
-	if len(req.To) == 0 {
+	req.To = normalizedRecipients(req.To)
+	req.CC = normalizedRecipients(req.CC)
+	req.BCC = normalizedRecipients(req.BCC)
+	if len(mergeRecipients(req.To, req.CC, req.BCC)) == 0 {
 		return fmt.Errorf("at least one recipient is required")
 	}
 	if req.From == "" {
@@ -291,11 +296,15 @@ func (c *IMAPSMTPClient) sendWithSenderFallback(
 	raw []byte,
 	sendFunc func(context.Context, string, string, string, []string, []byte) error,
 ) error {
+	allRecipients := mergeRecipients(req.To, req.CC, req.BCC)
+	if len(allRecipients) == 0 {
+		return fmt.Errorf("at least one recipient is required")
+	}
 	envelopeFrom := strings.TrimSpace(req.From)
 	if envelopeFrom == "" {
 		envelopeFrom = strings.TrimSpace(user)
 	}
-	err := sendFunc(ctx, user, pass, envelopeFrom, req.To, raw)
+	err := sendFunc(ctx, user, pass, envelopeFrom, allRecipients, raw)
 	if err == nil {
 		return nil
 	}
@@ -304,7 +313,7 @@ func (c *IMAPSMTPClient) sendWithSenderFallback(
 	}
 	authIdentity := strings.TrimSpace(user)
 	if authIdentity != "" && !strings.EqualFold(envelopeFrom, authIdentity) {
-		retryErr := sendFunc(ctx, user, pass, authIdentity, req.To, raw)
+		retryErr := sendFunc(ctx, user, pass, authIdentity, allRecipients, raw)
 		if retryErr == nil {
 			return nil
 		}
@@ -513,12 +522,35 @@ func (c *IMAPSMTPClient) sendSMTP(ctx context.Context, user, pass, from string, 
 }
 
 func buildRFC822(req SendRequest) ([]byte, error) {
+	to := normalizedRecipients(req.To)
+	cc := normalizedRecipients(req.CC)
+	bodyText := strings.TrimSpace(req.Body)
+	bodyHTML := strings.TrimSpace(req.BodyHTML)
+	if bodyText == "" && bodyHTML != "" {
+		bodyText = plainTextFromHTML(bodyHTML)
+	}
+	if bodyText == "" {
+		bodyText = req.Body
+	}
+	inlineAttachments := make([]SendAttachment, 0, len(req.Attachments))
+	regularAttachments := make([]SendAttachment, 0, len(req.Attachments))
+	for _, item := range req.Attachments {
+		if item.Inline && strings.TrimSpace(item.ContentID) != "" {
+			inlineAttachments = append(inlineAttachments, item)
+		} else {
+			regularAttachments = append(regularAttachments, item)
+		}
+	}
+
 	var buf bytes.Buffer
 	mixed := multipart.NewWriter(&buf)
 	boundary := mixed.Boundary()
 
 	fmt.Fprintf(&buf, "From: %s\r\n", req.From)
-	fmt.Fprintf(&buf, "To: %s\r\n", strings.Join(req.To, ", "))
+	fmt.Fprintf(&buf, "To: %s\r\n", strings.Join(to, ", "))
+	if len(cc) > 0 {
+		fmt.Fprintf(&buf, "Cc: %s\r\n", strings.Join(cc, ", "))
+	}
 	fmt.Fprintf(&buf, "Subject: %s\r\n", req.Subject)
 	fmt.Fprintf(&buf, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
 	if req.InReplyToID != "" {
@@ -528,39 +560,74 @@ func buildRFC822(req SendRequest) ([]byte, error) {
 	fmt.Fprintf(&buf, "Content-Type: multipart/mixed; boundary=%q\r\n", boundary)
 	fmt.Fprintf(&buf, "\r\n")
 
-	inlineHeader := make(textproto.MIMEHeader)
-	inlineHeader.Set("Content-Type", "text/plain; charset=utf-8")
-	inlineHeader.Set("Content-Transfer-Encoding", "quoted-printable")
-	p, err := mixed.CreatePart(inlineHeader)
-	if err != nil {
-		return nil, err
-	}
-	qp := quotedprintable.NewWriter(p)
-	if _, err := qp.Write([]byte(req.Body)); err != nil {
-		return nil, err
-	}
-	if err := qp.Close(); err != nil {
-		return nil, err
-	}
-
-	for _, a := range req.Attachments {
-		h := make(textproto.MIMEHeader)
-		ct := a.ContentType
-		if ct == "" {
-			ct = "application/octet-stream"
-		}
-		h.Set("Content-Type", fmt.Sprintf("%s; name=%q", ct, a.Filename))
-		h.Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", a.Filename))
-		h.Set("Content-Transfer-Encoding", "base64")
-		w, err := mixed.CreatePart(h)
+	if bodyHTML != "" {
+		altBuf := bytes.Buffer{}
+		alt := multipart.NewWriter(&altBuf)
+		plainPart, err := alt.CreatePart(textPartHeader("text/plain; charset=utf-8"))
 		if err != nil {
 			return nil, err
 		}
-		enc := base64NewLineEncoder(w)
-		if _, err := enc.Write(a.Data); err != nil {
+		if err := writeQuotedPrintablePart(plainPart, bodyText); err != nil {
 			return nil, err
 		}
-		if err := enc.Close(); err != nil {
+		htmlPart, err := alt.CreatePart(textPartHeader("text/html; charset=utf-8"))
+		if err != nil {
+			return nil, err
+		}
+		if err := writeQuotedPrintablePart(htmlPart, bodyHTML); err != nil {
+			return nil, err
+		}
+		if err := alt.Close(); err != nil {
+			return nil, err
+		}
+
+		relatedBuf := bytes.Buffer{}
+		related := multipart.NewWriter(&relatedBuf)
+		altHeader := make(textproto.MIMEHeader)
+		altHeader.Set("Content-Type", fmt.Sprintf("multipart/alternative; boundary=%q", alt.Boundary()))
+		altPart, err := related.CreatePart(altHeader)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := altPart.Write(altBuf.Bytes()); err != nil {
+			return nil, err
+		}
+		for _, a := range inlineAttachments {
+			if err := writeAttachmentPart(related, a, true); err != nil {
+				return nil, err
+			}
+		}
+		if err := related.Close(); err != nil {
+			return nil, err
+		}
+
+		relatedHeader := make(textproto.MIMEHeader)
+		relatedHeader.Set("Content-Type", fmt.Sprintf("multipart/related; boundary=%q", related.Boundary()))
+		relatedPart, err := mixed.CreatePart(relatedHeader)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := relatedPart.Write(relatedBuf.Bytes()); err != nil {
+			return nil, err
+		}
+	} else {
+		bodyHeader := textPartHeader("text/plain; charset=utf-8")
+		p, err := mixed.CreatePart(bodyHeader)
+		if err != nil {
+			return nil, err
+		}
+		if err := writeQuotedPrintablePart(p, bodyText); err != nil {
+			return nil, err
+		}
+		for _, a := range inlineAttachments {
+			if err := writeAttachmentPart(mixed, a, false); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	for _, a := range regularAttachments {
+		if err := writeAttachmentPart(mixed, a, false); err != nil {
 			return nil, err
 		}
 	}
@@ -569,6 +636,132 @@ func buildRFC822(req SendRequest) ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func textPartHeader(contentType string) textproto.MIMEHeader {
+	out := make(textproto.MIMEHeader)
+	out.Set("Content-Type", contentType)
+	out.Set("Content-Transfer-Encoding", "quoted-printable")
+	return out
+}
+
+func writeQuotedPrintablePart(part io.Writer, body string) error {
+	qp := quotedprintable.NewWriter(part)
+	if _, err := qp.Write([]byte(body)); err != nil {
+		return err
+	}
+	return qp.Close()
+}
+
+func writeAttachmentPart(writer *multipart.Writer, a SendAttachment, treatInline bool) error {
+	h := make(textproto.MIMEHeader)
+	ct := strings.TrimSpace(a.ContentType)
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	filename := strings.TrimSpace(a.Filename)
+	if filename == "" {
+		if treatInline {
+			filename = "inline.bin"
+		} else {
+			filename = "attachment.bin"
+		}
+	}
+	h.Set("Content-Type", fmt.Sprintf("%s; name=%q", ct, filename))
+	disposition := "attachment"
+	if treatInline && strings.TrimSpace(a.ContentID) != "" {
+		disposition = "inline"
+		h.Set("Content-ID", fmt.Sprintf("<%s>", normalizeContentID(a.ContentID)))
+	}
+	h.Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, filename))
+	h.Set("Content-Transfer-Encoding", "base64")
+	part, err := writer.CreatePart(h)
+	if err != nil {
+		return err
+	}
+	enc := base64NewLineEncoder(part)
+	if _, err := enc.Write(a.Data); err != nil {
+		return err
+	}
+	return enc.Close()
+}
+
+func normalizeContentID(v string) string {
+	v = strings.TrimSpace(v)
+	v = strings.TrimPrefix(v, "<")
+	v = strings.TrimSuffix(v, ">")
+	if v == "" {
+		return "inline"
+	}
+	return v
+}
+
+func mergeRecipients(to, cc, bcc []string) []string {
+	out := make([]string, 0, len(to)+len(cc)+len(bcc))
+	seen := make(map[string]struct{}, len(out))
+	appendUnique := func(items []string) {
+		for _, item := range items {
+			value := strings.TrimSpace(item)
+			if value == "" {
+				continue
+			}
+			key := strings.ToLower(value)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	appendUnique(to)
+	appendUnique(cc)
+	appendUnique(bcc)
+	return out
+}
+
+func normalizedRecipients(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		value := strings.TrimSpace(item)
+		if value == "" {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
+}
+
+var (
+	htmlTagPattern        = regexp.MustCompile(`(?s)<[^>]+>`)
+	htmlBreakTagPattern   = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`)
+	htmlCloseBlockPattern = regexp.MustCompile(`(?i)</\s*(p|div|li|h[1-6]|tr|table|blockquote)\s*>`)
+	htmlOpenLiPattern     = regexp.MustCompile(`(?i)<\s*li[^>]*>`)
+)
+
+func plainTextFromHTML(rawHTML string) string {
+	s := strings.ReplaceAll(rawHTML, "\r\n", "\n")
+	s = htmlBreakTagPattern.ReplaceAllString(s, "\n")
+	s = htmlCloseBlockPattern.ReplaceAllString(s, "\n")
+	s = htmlOpenLiPattern.ReplaceAllString(s, "- ")
+	s = htmlTagPattern.ReplaceAllString(s, " ")
+	s = html.UnescapeString(s)
+	lines := strings.Split(s, "\n")
+	normalized := make([]string, 0, len(lines))
+	blankCount := 0
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			blankCount++
+			if blankCount > 1 {
+				continue
+			}
+			normalized = append(normalized, "")
+			continue
+		}
+		blankCount = 0
+		normalized = append(normalized, line)
+	}
+	return strings.TrimSpace(strings.Join(normalized, "\n"))
 }
 
 type base64LineEncoder struct {

@@ -165,6 +165,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Get("/mailboxes", h.ListMailboxes)
 				r.Get("/messages", h.ListMessages)
 				r.Get("/messages/{id}", h.GetMessage)
+				r.Get("/compose/identities", h.ComposeIdentities)
 				r.Get("/search", h.Search)
 				r.Get("/attachments/{id}", h.GetAttachment)
 
@@ -839,14 +840,59 @@ func (h *Handlers) ForwardMessage(w http.ResponseWriter, r *http.Request) {
 	h.handleSend(w, r, chi.URLParam(r, "id"))
 }
 
-func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply string) {
+func (h *Handlers) ComposeIdentities(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
-	pass, err := h.sessionMailPassword(r)
+	accounts, err := h.svc.Store().ListMailAccounts(r.Context(), u.ID)
 	if err != nil {
-		h.writeMailAuthError(w, r, err)
+		util.WriteError(w, 500, "compose_identities_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	req, err := decodeSendRequest(w, r)
+
+	type composeIdentityItem struct {
+		AccountID         string `json:"account_id"`
+		AccountDisplay    string `json:"account_display_name"`
+		AccountLogin      string `json:"account_login"`
+		AccountIsDefault  bool   `json:"account_is_default"`
+		IdentityID        string `json:"identity_id"`
+		IdentityDisplay   string `json:"identity_display_name"`
+		IdentityFromEmail string `json:"from_email"`
+		IdentityIsDefault bool   `json:"identity_is_default"`
+	}
+	items := make([]composeIdentityItem, 0, len(accounts))
+	for _, account := range accounts {
+		identities, err := h.svc.Store().ListMailIdentities(r.Context(), account.ID)
+		if err != nil {
+			util.WriteError(w, 500, "compose_identities_failed", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		for _, identity := range identities {
+			fromEmail := strings.TrimSpace(identity.FromEmail)
+			if fromEmail == "" {
+				continue
+			}
+			items = append(items, composeIdentityItem{
+				AccountID:         account.ID,
+				AccountDisplay:    strings.TrimSpace(account.DisplayName),
+				AccountLogin:      strings.TrimSpace(account.Login),
+				AccountIsDefault:  account.IsDefault,
+				IdentityID:        identity.ID,
+				IdentityDisplay:   strings.TrimSpace(identity.DisplayName),
+				IdentityFromEmail: fromEmail,
+				IdentityIsDefault: identity.IsDefault,
+			})
+		}
+	}
+
+	util.WriteJSON(w, 200, map[string]any{
+		"auth_email":               strings.TrimSpace(u.Email),
+		"manual_fallback_required": len(items) == 0,
+		"items":                    items,
+	})
+}
+
+func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply string) {
+	u, _ := middleware.User(r.Context())
+	decoded, err := decodeSendRequest(w, r)
 	if err != nil {
 		if errors.Is(err, errJSONTooLarge) {
 			writeJSONDecodeError(w, r, err)
@@ -855,11 +901,80 @@ func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply st
 		util.WriteError(w, 400, "bad_request", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	// Sender is server-owned to prevent client-side From spoofing.
-	req.From = u.Email
+	req := decoded.Request
 	req.InReplyToID = inReply
-	mailLogin := service.MailIdentity(u)
-	if err := h.svc.Mail().Send(r.Context(), mailLogin, pass, req); err != nil {
+
+	sendAccountID := ""
+	switch decoded.FromMode {
+	case "", "default":
+		req.From = strings.TrimSpace(u.Email)
+	case "manual":
+		manualSender := strings.TrimSpace(decoded.FromManual)
+		if manualSender == "" || !strings.EqualFold(manualSender, strings.TrimSpace(u.Email)) {
+			util.WriteError(w, 400, "invalid_sender_manual", "manual sender must match authenticated account email", middleware.RequestID(r.Context()))
+			return
+		}
+		req.From = strings.TrimSpace(u.Email)
+	case "identity":
+		if strings.TrimSpace(decoded.IdentityID) == "" {
+			util.WriteError(w, 400, "sender_identity_required", "identity_id is required when from_mode=identity", middleware.RequestID(r.Context()))
+			return
+		}
+		identity, err := h.svc.Store().GetMailIdentityByID(r.Context(), strings.TrimSpace(decoded.IdentityID))
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				util.WriteError(w, 404, "sender_identity_not_found", "identity not found", middleware.RequestID(r.Context()))
+				return
+			}
+			util.WriteError(w, 500, "sender_identity_lookup_failed", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		account, err := h.svc.Store().GetMailAccountByID(r.Context(), u.ID, identity.AccountID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				util.WriteError(w, 403, "sender_identity_forbidden", "identity does not belong to current user", middleware.RequestID(r.Context()))
+				return
+			}
+			util.WriteError(w, 500, "sender_identity_lookup_failed", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		fromEmail := strings.TrimSpace(identity.FromEmail)
+		if fromEmail == "" {
+			util.WriteError(w, 400, "sender_identity_invalid", "selected identity is missing from_email", middleware.RequestID(r.Context()))
+			return
+		}
+		req.From = fromEmail
+		sendAccountID = strings.TrimSpace(account.ID)
+	default:
+		util.WriteError(w, 400, "invalid_from_mode", "from_mode must be one of default, manual, identity", middleware.RequestID(r.Context()))
+		return
+	}
+
+	if sendAccountID == "" && strings.TrimSpace(decoded.AccountID) != "" {
+		accountID := strings.TrimSpace(decoded.AccountID)
+		if _, err := h.svc.Store().GetMailAccountByID(r.Context(), u.ID, accountID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				util.WriteError(w, 403, "sender_account_forbidden", "account does not belong to current user", middleware.RequestID(r.Context()))
+				return
+			}
+			util.WriteError(w, 500, "sender_account_lookup_failed", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		sendAccountID = accountID
+	}
+
+	if sendAccountID != "" {
+		err = h.v2SendWithAccount(r.Context(), u, sendAccountID, req)
+	} else {
+		pass, passErr := h.sessionMailPassword(r)
+		if passErr != nil {
+			h.writeMailAuthError(w, r, passErr)
+			return
+		}
+		mailLogin := service.MailIdentity(u)
+		err = h.svc.Mail().Send(r.Context(), mailLogin, pass, req)
+	}
+	if err != nil {
 		if errors.Is(err, mail.ErrSMTPSenderRejected) {
 			util.WriteError(w, 422, "smtp_sender_rejected", err.Error(), middleware.RequestID(r.Context()))
 			return
@@ -1674,23 +1789,39 @@ func (h *Handlers) clearAuthCookies(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func decodeSendRequest(w http.ResponseWriter, r *http.Request) (mail.SendRequest, error) {
+type decodedSendRequest struct {
+	Request    mail.SendRequest
+	FromMode   string
+	IdentityID string
+	AccountID  string
+	FromManual string
+}
+
+func decodeSendRequest(w http.ResponseWriter, r *http.Request) (decodedSendRequest, error) {
 	ct := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "multipart/form-data") {
 		if err := r.ParseMultipartForm(maxUploadAttachmentBytes); err != nil {
-			return mail.SendRequest{}, err
+			return decodedSendRequest{}, err
 		}
-		to := splitCSV(r.FormValue("to"))
-		req := mail.SendRequest{
-			To:      to,
-			Subject: r.FormValue("subject"),
-			Body:    r.FormValue("body"),
+		req := decodedSendRequest{
+			Request: mail.SendRequest{
+				To:       splitCSV(r.FormValue("to")),
+				CC:       splitCSV(r.FormValue("cc")),
+				BCC:      splitCSV(r.FormValue("bcc")),
+				Subject:  r.FormValue("subject"),
+				Body:     r.FormValue("body"),
+				BodyHTML: r.FormValue("body_html"),
+			},
+			FromMode:   strings.ToLower(strings.TrimSpace(r.FormValue("from_mode"))),
+			IdentityID: strings.TrimSpace(r.FormValue("identity_id")),
+			AccountID:  strings.TrimSpace(r.FormValue("account_id")),
+			FromManual: strings.TrimSpace(r.FormValue("from_manual")),
 		}
 		files := r.MultipartForm.File["attachments"]
 		var totalBytes int64
 		for _, fh := range files {
 			if fh.Size > maxUploadAttachmentBytes {
-				return mail.SendRequest{}, errors.New("attachment exceeds per-file size limit")
+				return decodedSendRequest{}, errors.New("attachment exceeds per-file size limit")
 			}
 			f, err := fh.Open()
 			if err != nil {
@@ -1703,31 +1834,99 @@ func decodeSendRequest(w http.ResponseWriter, r *http.Request) (mail.SendRequest
 			}
 			totalBytes += int64(len(data))
 			if totalBytes > maxUploadTotalBytes {
-				return mail.SendRequest{}, errors.New("attachments exceed total size limit")
+				return decodedSendRequest{}, errors.New("attachments exceed total size limit")
 			}
-			req.Attachments = append(req.Attachments, mail.SendAttachment{Filename: fh.Filename, ContentType: fh.Header.Get("Content-Type"), Data: data})
+			req.Request.Attachments = append(req.Request.Attachments, mail.SendAttachment{
+				Filename:    fh.Filename,
+				ContentType: fh.Header.Get("Content-Type"),
+				Data:        data,
+			})
+		}
+		inlineFiles := r.MultipartForm.File["inline_images"]
+		inlineCIDs := r.MultipartForm.Value["inline_image_cids"]
+		for i, fh := range inlineFiles {
+			if fh.Size > maxUploadAttachmentBytes {
+				return decodedSendRequest{}, errors.New("attachment exceeds per-file size limit")
+			}
+			f, err := fh.Open()
+			if err != nil {
+				continue
+			}
+			data, err := io.ReadAll(io.LimitReader(f, maxUploadAttachmentBytes))
+			_ = f.Close()
+			if err != nil {
+				continue
+			}
+			totalBytes += int64(len(data))
+			if totalBytes > maxUploadTotalBytes {
+				return decodedSendRequest{}, errors.New("attachments exceed total size limit")
+			}
+			contentID := ""
+			if i < len(inlineCIDs) {
+				contentID = strings.TrimSpace(inlineCIDs[i])
+			}
+			if contentID == "" {
+				contentID = fmt.Sprintf("inline-image-%d", i+1)
+			}
+			req.Request.Attachments = append(req.Request.Attachments, mail.SendAttachment{
+				Filename:    fh.Filename,
+				ContentType: fh.Header.Get("Content-Type"),
+				Data:        data,
+				Inline:      true,
+				ContentID:   contentID,
+			})
 		}
 		return req, nil
 	}
 	var req struct {
-		To      []string `json:"to"`
-		Subject string   `json:"subject"`
-		Body    string   `json:"body"`
+		To         []string `json:"to"`
+		CC         []string `json:"cc"`
+		BCC        []string `json:"bcc"`
+		Subject    string   `json:"subject"`
+		Body       string   `json:"body"`
+		BodyHTML   string   `json:"body_html"`
+		FromMode   string   `json:"from_mode"`
+		IdentityID string   `json:"identity_id"`
+		AccountID  string   `json:"account_id"`
+		FromManual string   `json:"from_manual"`
 	}
 	if err := decodeJSON(w, r, &req, jsonLimitLarge, false); err != nil {
-		return mail.SendRequest{}, err
+		return decodedSendRequest{}, err
 	}
-	return mail.SendRequest{To: req.To, Subject: req.Subject, Body: req.Body}, nil
+	return decodedSendRequest{
+		Request: mail.SendRequest{
+			To:       normalizeAddressList(req.To),
+			CC:       normalizeAddressList(req.CC),
+			BCC:      normalizeAddressList(req.BCC),
+			Subject:  req.Subject,
+			Body:     req.Body,
+			BodyHTML: req.BodyHTML,
+		},
+		FromMode:   strings.ToLower(strings.TrimSpace(req.FromMode)),
+		IdentityID: strings.TrimSpace(req.IdentityID),
+		AccountID:  strings.TrimSpace(req.AccountID),
+		FromManual: strings.TrimSpace(req.FromManual),
+	}, nil
 }
 
 func splitCSV(v string) []string {
-	parts := strings.Split(v, ",")
+	parts := strings.FieldsFunc(v, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n'
+	})
 	out := make([]string, 0, len(parts))
 	for _, p := range parts {
 		p = strings.TrimSpace(p)
 		if p != "" {
 			out = append(out, p)
 		}
+	}
+	return out
+}
+
+func normalizeAddressList(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		out = append(out, splitCSV(item)...)
 	}
 	return out
 }

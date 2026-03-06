@@ -1687,9 +1687,12 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sendReq := mail.SendRequest{
-		To:      splitCSV(draft.ToValue),
-		Subject: draft.Subject,
-		Body:    draft.BodyText,
+		To:       splitCSV(draft.ToValue),
+		CC:       splitCSV(draft.CCValue),
+		BCC:      splitCSV(draft.BCCValue),
+		Subject:  draft.Subject,
+		Body:     draft.BodyText,
+		BodyHTML: draft.BodyHTML,
 	}
 	cryptoJSON := strings.TrimSpace(draft.CryptoOptions)
 	if len(sendReqPayload.CryptoOptions) > 0 {
@@ -1738,7 +1741,9 @@ func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sendReq := mail.SendRequest{
-		To:      recipients,
+		To:      req.To,
+		CC:      req.CC,
+		BCC:     req.BCC,
 		Subject: req.Subject,
 		Body:    req.Body,
 	}
@@ -2976,7 +2981,9 @@ func (h *Handlers) V2GetQuota(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) v2SendWithAccount(ctx context.Context, u models.User, accountID string, req mail.SendRequest) error {
-	req.From = u.Email
+	if strings.TrimSpace(req.From) == "" {
+		req.From = u.Email
+	}
 	if strings.TrimSpace(accountID) == "" {
 		pass, err := h.sessionMailPasswordFromContext(ctx)
 		if err != nil {

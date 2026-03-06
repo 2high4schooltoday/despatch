@@ -81,6 +81,9 @@ Run these before packaging a release:
 - Mail and Compose are unified:
   - mailbox + message list + viewer stay in one Mail workspace
   - compose opens as an elevated modal panel from `New Message`
+  - compose uses a layered toolbar + metadata + canvas layout with rich-text editing controls
+  - compose supports `To/Cc/Bcc`, inline image embedding, regular attachments, and sender identity selection
+  - compose falls back to manual sender confirmation when account identities are unavailable
   - compose draft is persisted locally until successful send
 
 ## Auto installer (recommended)
@@ -377,7 +380,8 @@ Base: `/api/v1`
   - `GET /mailboxes`
   - `GET /messages`
   - `GET /messages/{id}`
-  - `POST /messages/send`
+  - `GET /compose/identities` (returns `auth_email`, `manual_fallback_required`, identity list from accounts/identities)
+  - `POST /messages/send` (supports legacy payload and extended fields: `cc`, `bcc`, `body_html`, `from_mode`, `identity_id`, `account_id`, `from_manual`, multipart `inline_images` + `inline_image_cids`)
   - `POST /messages/{id}/reply`
   - `POST /messages/{id}/forward`
   - `POST /messages/{id}/flags`

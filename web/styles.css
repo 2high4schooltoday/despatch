@@ -51,6 +51,9 @@ html[data-theme="paper-light"] {
 
   --row-h-desktop: 36px;
   --row-h-mobile: 42px;
+  --compose-label-track: 84px;
+  --compose-meta-row-h: 46px;
+  --compose-toolbar-h: 44px;
   --reader-meta-row-h: 34px;
   --reader-body-min-h: 220px;
   --reader-body-max-h: 48vh;
@@ -1348,32 +1351,245 @@ a:focus-visible {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.72);
-  padding: var(--space-4);
+  padding: var(--space-4) clamp(16px, 3vw, 36px);
   display: grid;
   place-items: center;
   z-index: 60;
 }
 
 .compose-dialog {
-  width: min(860px, 100%);
-  max-height: calc(100vh - 48px);
-  overflow: auto;
+  width: min(1020px, 100%);
+  height: min(860px, calc(100vh - 52px));
+  max-height: calc(100vh - 52px);
   border: var(--border-w) solid var(--line-0);
   background: var(--bg-1);
+  padding: 0;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  animation: compose-dialog-enter 160ms ease-out both;
 }
 
-.compose-header {
-  display: flex;
+.compose-title {
+  display: none;
+}
+
+.compose-form {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+}
+
+.compose-toolbar-layer {
+  display: grid;
+  grid-template-columns: 1fr auto;
   align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-3) var(--space-2);
   border-bottom: var(--border-w) solid var(--line-1);
-  padding-bottom: var(--space-2);
-  margin-bottom: var(--space-3);
 }
 
-.compose-actions {
-  justify-content: flex-end;
+.compose-toolbar-cluster {
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: var(--border-w) solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-2) 60%, transparent);
+  min-height: var(--compose-toolbar-h);
+  padding: 4px 6px;
+}
+
+.compose-tool-btn {
+  min-height: calc(var(--compose-toolbar-h) - 10px);
+  min-width: 36px;
+  padding: 0 8px;
+  border-color: var(--line-1);
+  color: var(--fg-1);
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 0.8rem;
+}
+
+.compose-toolbar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.compose-send-btn {
+  min-width: 124px;
+}
+
+.compose-close-btn {
+  border-color: var(--line-1);
+  color: var(--fg-1);
+}
+
+.compose-meta {
+  display: grid;
+  border-bottom: var(--border-w) solid var(--line-1);
+}
+
+.compose-meta-row {
+  min-height: var(--compose-meta-row-h);
+  display: grid;
+  grid-template-columns: var(--compose-label-track) minmax(0, 1fr) 34px;
+  align-items: center;
+  border-top: var(--border-w) solid var(--line-2);
+}
+
+.compose-meta-row:first-child {
+  border-top: 0;
+}
+
+.compose-meta-label {
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 0.72rem;
+  padding: 0 var(--space-3);
+}
+
+.compose-meta-value {
+  min-width: 0;
+  padding-right: var(--space-2);
+}
+
+.compose-meta-value input,
+.compose-meta-value select {
+  min-height: calc(var(--compose-meta-row-h) - 10px);
+  border: 0;
+  border-bottom: var(--border-w) solid transparent;
+  background: transparent;
+  padding: 0 var(--space-1);
+  color: var(--fg-0);
+}
+
+.compose-meta-value input:focus-visible,
+.compose-meta-value select:focus-visible {
+  outline: none;
+  border-bottom-color: var(--line-0);
+}
+
+.compose-meta-toggle {
+  min-height: 28px;
+  min-width: 28px;
+  padding: 0;
+  margin-right: var(--space-2);
+  border-color: var(--line-1);
+  color: var(--fg-1);
+}
+
+.compose-meta-tail {
+  display: block;
+}
+
+.compose-meta-value--from {
+  display: grid;
+  gap: var(--space-1);
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.compose-from-manual {
+  display: grid;
+  gap: 3px;
+}
+
+.compose-from-manual span {
+  color: var(--fg-muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0 var(--space-1);
+}
+
+.compose-from-note {
+  min-height: 1.2em;
+  padding: 0 var(--space-1);
+}
+
+.compose-body-layer {
+  min-height: 0;
+  padding: var(--space-3);
+  border-top: var(--border-w) solid transparent;
+}
+
+.compose-editor {
+  min-height: 100%;
+  height: 100%;
+  max-height: 100%;
+  overflow: auto;
+  padding: var(--space-2) var(--space-1);
+  color: var(--fg-0);
+  line-height: 1.5;
+  outline: 0;
+}
+
+.compose-editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--fg-muted);
+}
+
+.compose-editor p {
+  margin: 0 0 0.8em;
+}
+
+.compose-editor p:last-child {
+  margin-bottom: 0;
+}
+
+.compose-assets {
+  border-top: var(--border-w) solid var(--line-1);
+  padding: var(--space-2) var(--space-3) var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.compose-attachment-tray {
+  min-height: var(--ctrl-h-dense);
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.compose-attachment-chip {
+  min-height: 26px;
+  border: var(--border-w) solid var(--line-1);
+  color: var(--fg-1);
+  background: var(--bg-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.compose-attachment-chip button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.compose-assets-hint {
+  font-size: 0.74rem;
+}
+
+@keyframes compose-dialog-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .ui-modal {
@@ -1891,6 +2107,45 @@ button.setting-list-item {
   .oobe-window,
   .auth-window {
     min-height: 0;
+  }
+
+  .compose-overlay {
+    padding: 0;
+    place-items: stretch;
+  }
+
+  .compose-dialog {
+    width: 100%;
+    height: 100%;
+    max-height: 100vh;
+    border-left: 0;
+    border-right: 0;
+    border-top: 0;
+  }
+
+  .compose-toolbar-layer {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    background: var(--bg-1);
+    grid-template-columns: 1fr;
+    justify-items: stretch;
+    gap: var(--space-2);
+  }
+
+  .compose-toolbar-cluster {
+    justify-self: stretch;
+    justify-content: center;
+    flex-wrap: wrap;
+  }
+
+  .compose-toolbar-actions {
+    justify-content: flex-end;
+  }
+
+  .compose-meta-row {
+    grid-template-columns: 72px minmax(0, 1fr) 30px;
+    min-height: 44px;
   }
 
   .oobe-content {
