@@ -543,6 +543,7 @@
         <input id="compose-identity-id" name="identity_id" type="hidden" value="">
         <input id="compose-account-id" name="account_id" type="hidden" value="">
         <input id="compose-from-manual-hidden" name="from_manual" type="hidden" value="">
+        <input id="compose-attachments-input" name="attachments" type="file" multiple class="hidden">
 
         <header id="compose-toolbar-layer" class="compose-toolbar-layer">
           <div class="compose-window-actions compose-window-actions--left">
@@ -551,15 +552,6 @@
           </div>
           <div class="compose-window-actions compose-window-actions--right">
             <button id="compose-tool-attach" class="cmd-btn cmd-btn--dense compose-window-btn" type="button" title="Attach files">Attach</button>
-            <details id="compose-window-more-menu" class="row-menu compose-window-more">
-              <summary id="compose-window-more" class="cmd-btn cmd-btn--dense compose-window-btn" aria-label="More actions">More</summary>
-              <div class="row-menu-body compose-window-more-body">
-                <button id="compose-more-toggle-cc" class="cmd-btn cmd-btn--dense" type="button">Toggle Cc</button>
-                <button id="compose-more-toggle-bcc" class="cmd-btn cmd-btn--dense" type="button">Toggle Bcc</button>
-                <button id="compose-tool-media" class="cmd-btn cmd-btn--dense" type="button">Insert Image</button>
-                <button id="compose-more-toggle-format" class="cmd-btn cmd-btn--dense" type="button">Toggle Formatting</button>
-              </div>
-            </details>
             <button id="compose-toggle-formatting" class="cmd-btn cmd-btn--dense compose-window-btn" type="button" aria-expanded="false">Formatting</button>
             <button id="btn-compose-send" class="cmd-btn cmd-btn--primary compose-send-btn" type="submit">Send</button>
           </div>
@@ -606,12 +598,11 @@
             </div>
             <span class="compose-meta-tail"></span>
           </div>
-          <div id="compose-from-row" class="compose-meta-row compose-meta-row--from">
+          <div id="compose-from-row" class="compose-meta-row compose-meta-row--from hidden">
             <div class="compose-meta-label">From</div>
             <div class="compose-meta-value compose-meta-value--from">
               <select id="compose-from-select" autocomplete="off"></select>
               <label id="compose-from-manual-wrap" class="compose-from-manual hidden">
-                <span>Confirm sender email</span>
                 <input id="compose-from-manual" type="email" autocomplete="email" placeholder="you@example.com">
               </label>
               <p id="compose-from-note" class="compose-inline-note hidden"></p>
@@ -632,12 +623,6 @@
             <button id="compose-tool-clear" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Clear formatting">Clear</button>
           </div>
           <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write your message"></div>
-        </section>
-
-        <section id="compose-assets" class="compose-assets hidden" aria-label="Attachments">
-          <input id="compose-attachments-input" name="attachments" type="file" multiple class="hidden">
-          <input id="compose-inline-images-input" name="inline_images" type="file" accept="image/*" multiple class="hidden">
-          <div id="compose-attachment-tray" class="compose-attachment-tray"></div>
         </section>
       </form>
     </article>

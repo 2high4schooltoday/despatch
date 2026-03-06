@@ -220,15 +220,8 @@ const el = {
   composeDraftState: document.getElementById("compose-draft-state"),
   composeToggleFormatting: document.getElementById("compose-toggle-formatting"),
   composeEditorTools: document.getElementById("compose-editor-tools"),
-  composeWindowMoreMenu: document.getElementById("compose-window-more-menu"),
-  composeMoreToggleCc: document.getElementById("compose-more-toggle-cc"),
-  composeMoreToggleBcc: document.getElementById("compose-more-toggle-bcc"),
-  composeMoreToggleFormat: document.getElementById("compose-more-toggle-format"),
   composeEditor: document.getElementById("compose-editor"),
-  composeAssets: document.getElementById("compose-assets"),
   composeAttachmentsInput: document.getElementById("compose-attachments-input"),
-  composeInlineImagesInput: document.getElementById("compose-inline-images-input"),
-  composeAttachmentTray: document.getElementById("compose-attachment-tray"),
   composeToolUndo: document.getElementById("compose-tool-undo"),
   composeToolTypography: document.getElementById("compose-tool-typography"),
   composeToolBold: document.getElementById("compose-tool-bold"),
@@ -237,7 +230,6 @@ const el = {
   composeToolList: document.getElementById("compose-tool-list"),
   composeToolLink: document.getElementById("compose-tool-link"),
   composeToolAttach: document.getElementById("compose-tool-attach"),
-  composeToolMedia: document.getElementById("compose-tool-media"),
   composeToolClear: document.getElementById("compose-tool-clear"),
   uiModalOverlay: document.getElementById("ui-modal-overlay"),
   uiModalCard: document.getElementById("ui-modal-card"),
@@ -706,7 +698,7 @@ function routeToAuthWithMessage(message, code = "") {
 }
 
 function composeDraftKey() {
-  return "despatch.compose.draft.v1";
+  return "despatch.compose.draft.v2";
 }
 
 function splitComposeRecipients(raw) {
@@ -723,13 +715,89 @@ function splitComposeRecipients(raw) {
     });
 }
 
+function composeMissingMediaLabel(kind) {
+  return kind === "attachment" ? "[Attachment unavailable after draft restore]" : "[Inline image unavailable after draft restore]";
+}
+
+function composeCreateMissingMediaNode(doc, kind) {
+  const node = doc.createElement("span");
+  node.className = "compose-inline-missing-media";
+  node.setAttribute("contenteditable", "false");
+  node.dataset.composeMissingMedia = kind;
+  node.textContent = composeMissingMediaLabel(kind);
+  return node;
+}
+
+function composeEditorSnapshot(mode = "live") {
+  const root = document.createElement("div");
+  root.innerHTML = String(el.composeEditor?.innerHTML || "");
+  const inlineByID = new Map(
+    (Array.isArray(state.compose.inlineImages) ? state.compose.inlineImages : []).map((item) => [String(item.id || ""), item]),
+  );
+
+  const chips = Array.from(root.querySelectorAll("[data-compose-attachment-id]"));
+  for (const chip of chips) {
+    if (mode === "draft") {
+      chip.replaceWith(composeCreateMissingMediaNode(root.ownerDocument, "attachment"));
+    } else {
+      chip.remove();
+    }
+  }
+
+  const images = Array.from(root.querySelectorAll("img"));
+  for (const img of images) {
+    const inlineID = String(img.getAttribute("data-compose-inline-image-id") || "");
+    const src = String(img.getAttribute("src") || "");
+    const isInlineNode = inlineID !== "";
+    if (isInlineNode) {
+      const inline = inlineByID.get(inlineID) || null;
+      if (mode === "send") {
+        if (inline && inline.cid) {
+          img.setAttribute("src", `cid:${inline.cid}`);
+        } else {
+          img.replaceWith(composeCreateMissingMediaNode(root.ownerDocument, "image"));
+          continue;
+        }
+      } else if (mode === "draft") {
+        img.replaceWith(composeCreateMissingMediaNode(root.ownerDocument, "image"));
+        continue;
+      }
+    } else if (mode === "draft" && (/^blob:/i.test(src) || /^cid:/i.test(src))) {
+      img.replaceWith(composeCreateMissingMediaNode(root.ownerDocument, "image"));
+      continue;
+    }
+    img.removeAttribute("data-compose-inline-image-id");
+    img.removeAttribute("data-compose-inline-image-cid");
+    img.removeAttribute("contenteditable");
+    img.classList.remove("compose-inline-image");
+  }
+
+  if (mode === "send") {
+    for (const node of root.querySelectorAll("[data-compose-missing-media]")) {
+      node.remove();
+    }
+  }
+
+  const html = root.innerHTML.trim();
+  const text = String(root.textContent || "").replace(/\u00a0/g, " ").trim();
+  const hasMedia = root.querySelector("img") !== null;
+  return {
+    html,
+    text,
+    hasContent: text !== "" || hasMedia,
+  };
+}
+
 function composeEditorHTML() {
-  return String(el.composeEditor?.innerHTML || "");
+  return composeEditorSnapshot("draft").html;
 }
 
 function composeEditorText() {
-  const text = String(el.composeEditor?.textContent || "").replace(/\u00a0/g, " ");
-  return text.trim();
+  return composeEditorSnapshot("live").text;
+}
+
+function composeEditorHasContent() {
+  return composeEditorSnapshot("live").hasContent;
 }
 
 function composeAuthEmailValue() {
@@ -794,7 +862,7 @@ function updateComposeFromRowVisibility() {
   if (!el.composeFromRow) return;
   const hasManyIdentities = Array.isArray(state.compose.identities) && state.compose.identities.length > 1;
   const hasNote = !!(el.composeFromNote && !el.composeFromNote.classList.contains("hidden"));
-  const shouldShow = state.compose.fromMode === "manual" || state.compose.manualFallbackRequired || hasManyIdentities || hasNote;
+  const shouldShow = hasManyIdentities || hasNote;
   el.composeFromRow.classList.toggle("hidden", !shouldShow);
 }
 
@@ -938,7 +1006,7 @@ function composeCanSubmit() {
   const toRows = composeEffectiveRecipients("to");
   const toCount = toRows.filter((item) => item.valid).length;
   const subjectOk = String(el.composeSubjectInput?.value || "").trim() !== "";
-  const hasBody = composeEditorText() !== "";
+  const hasBody = composeEditorHasContent();
   if (toCount === 0 || !subjectOk || !hasBody || composeHasInvalidRecipients()) return false;
   if (state.compose.fromMode === "manual") {
     const authEmail = composeAuthEmailValue().toLowerCase();
@@ -1032,6 +1100,7 @@ function restoreComposeDraft(form) {
     if (typeof draft.subject === "string" && el.composeSubjectInput) el.composeSubjectInput.value = draft.subject;
     if (typeof draft.body_html === "string" && draft.body_html.trim() !== "" && el.composeEditor) {
       el.composeEditor.innerHTML = draft.body_html;
+      normalizeComposeEditorDraftMedia();
     } else if (typeof draft.body_text === "string" && draft.body_text.trim() !== "" && el.composeEditor) {
       const lines = draft.body_text.split(/\r?\n/);
       el.composeEditor.innerHTML = lines.map((line) => `<p>${escapeHtml(line || "")}</p>`).join("");
@@ -1052,64 +1121,158 @@ function restoreComposeDraft(form) {
   updateComposeSubmitState();
 }
 
-function clearComposeAssets() {
+function composeID(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function composeFileLooksInlineImage(file) {
+  const type = String(file?.type || "").toLowerCase();
+  if (type.startsWith("image/")) return true;
+  const name = String(file?.name || "").toLowerCase();
+  return /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)$/i.test(name);
+}
+
+function revokeComposeInlineImageBlobURL(item) {
+  const blobURL = String(item?.blobURL || "").trim();
+  if (!blobURL) return;
+  try {
+    URL.revokeObjectURL(blobURL);
+  } catch {
+    // Best effort cleanup only.
+  }
+}
+
+function normalizeComposeEditorDraftMedia() {
+  if (!el.composeEditor) return;
+  const chips = Array.from(el.composeEditor.querySelectorAll("[data-compose-attachment-id]"));
+  for (const chip of chips) {
+    chip.replaceWith(composeCreateMissingMediaNode(document, "attachment"));
+  }
+  const images = Array.from(el.composeEditor.querySelectorAll("img"));
+  for (const img of images) {
+    const src = String(img.getAttribute("src") || "");
+    const isDraftInlineImage = img.hasAttribute("data-compose-inline-image-id") || /^blob:/i.test(src) || /^cid:/i.test(src);
+    if (isDraftInlineImage) {
+      img.replaceWith(composeCreateMissingMediaNode(document, "image"));
+    }
+  }
+}
+
+function clearComposeAssets(options = {}) {
+  const removeEditorNodes = options.removeEditorNodes !== false;
+  for (const item of state.compose.inlineImages) {
+    revokeComposeInlineImageBlobURL(item);
+  }
   state.compose.attachments = [];
   state.compose.inlineImages = [];
   if (el.composeAttachmentsInput) el.composeAttachmentsInput.value = "";
-  if (el.composeInlineImagesInput) el.composeInlineImagesInput.value = "";
-  renderComposeAttachmentTray();
-}
-
-function renderComposeAttachmentTray() {
-  if (!el.composeAttachmentTray) return;
-  el.composeAttachmentTray.replaceChildren();
-  const rows = [
-    ...state.compose.attachments.map((item) => ({ ...item, kind: "ATT" })),
-    ...state.compose.inlineImages.map((item) => ({ ...item, kind: "IMG" })),
-  ];
-  for (const item of rows) {
-    const chip = document.createElement("span");
-    chip.className = "compose-attachment-chip";
-    chip.textContent = `${item.kind} ${item.name} (${Math.max(1, Math.round((item.size || 0) / 1024))} KB)`;
-
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.textContent = "x";
-    removeBtn.setAttribute("aria-label", `Remove ${item.name}`);
-    removeBtn.addEventListener("click", () => {
-      if (item.kind === "ATT") {
-        state.compose.attachments = state.compose.attachments.filter((x) => x.id !== item.id);
-      } else {
-        state.compose.inlineImages = state.compose.inlineImages.filter((x) => x.id !== item.id);
-      }
-      renderComposeAttachmentTray();
-      updateComposeSubmitState();
-    });
-
-    chip.appendChild(removeBtn);
-    el.composeAttachmentTray.appendChild(chip);
-  }
-  if (el.composeAssets) {
-    el.composeAssets.classList.toggle("hidden", rows.length === 0);
-  }
-}
-
-function addComposeFiles(files, kind = "attachment") {
-  if (!files || files.length === 0) return;
-  const list = Array.from(files);
-  for (const file of list) {
-    const id = `${kind}-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-    if (kind === "inline") {
-      const cid = `compose-inline-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      state.compose.inlineImages.push({ id, cid, file, name: file.name, size: file.size });
-      insertComposeHTMLAtCaret(`<img src="cid:${cid}" alt="${escapeHtml(file.name)}">`);
-    } else {
-      state.compose.attachments.push({ id, file, name: file.name, size: file.size });
+  if (removeEditorNodes && el.composeEditor) {
+    for (const node of el.composeEditor.querySelectorAll("[data-compose-attachment-id], img[data-compose-inline-image-id]")) {
+      node.remove();
     }
   }
-  renderComposeAttachmentTray();
+}
+
+function removeComposeAttachmentByID(id, options = {}) {
+  const removeEditorNode = options.removeEditorNode !== false;
+  state.compose.attachments = state.compose.attachments.filter((item) => item.id !== id);
+  if (removeEditorNode && el.composeEditor) {
+    for (const node of el.composeEditor.querySelectorAll(`[data-compose-attachment-id="${id}"]`)) {
+      node.remove();
+    }
+  }
+}
+
+function removeComposeInlineImageByID(id, options = {}) {
+  const removeEditorNode = options.removeEditorNode !== false;
+  const keep = [];
+  for (const item of state.compose.inlineImages) {
+    if (item.id === id) {
+      revokeComposeInlineImageBlobURL(item);
+      continue;
+    }
+    keep.push(item);
+  }
+  state.compose.inlineImages = keep;
+  if (removeEditorNode && el.composeEditor) {
+    for (const node of el.composeEditor.querySelectorAll(`img[data-compose-inline-image-id="${id}"]`)) {
+      node.remove();
+    }
+  }
+}
+
+function cleanupComposeInlineReferences() {
+  if (!el.composeEditor) return false;
+  let changed = false;
+  const attachmentIDs = new Set(
+    Array.from(el.composeEditor.querySelectorAll("[data-compose-attachment-id]"))
+      .map((node) => String(node.getAttribute("data-compose-attachment-id") || "")),
+  );
+  const inlineIDs = new Set(
+    Array.from(el.composeEditor.querySelectorAll("img[data-compose-inline-image-id]"))
+      .map((node) => String(node.getAttribute("data-compose-inline-image-id") || "")),
+  );
+
+  if (state.compose.attachments.some((item) => !attachmentIDs.has(item.id))) {
+    state.compose.attachments = state.compose.attachments.filter((item) => attachmentIDs.has(item.id));
+    changed = true;
+  }
+
+  if (state.compose.inlineImages.some((item) => !inlineIDs.has(item.id))) {
+    const keep = [];
+    for (const item of state.compose.inlineImages) {
+      if (!inlineIDs.has(item.id)) {
+        revokeComposeInlineImageBlobURL(item);
+        changed = true;
+        continue;
+      }
+      keep.push(item);
+    }
+    state.compose.inlineImages = keep;
+  }
+  return changed;
+}
+
+function addComposeAttachmentChipToEditor(item) {
+  const sizeKB = Math.max(1, Math.round((item.size || 0) / 1024));
+  const label = `${item.name} (${sizeKB} KB)`;
+  const html = `<span class="compose-inline-chip" contenteditable="false" data-compose-attachment-id="${escapeHtml(item.id)}"><span class="compose-inline-chip-label">${escapeHtml(label)}</span><button type="button" class="compose-inline-chip-remove" data-compose-attachment-remove="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.name)}">x</button></span>&nbsp;`;
+  insertComposeHTMLAtCaret(html);
+}
+
+function addComposeInlineImageToEditor(item) {
+  const html = `<img class="compose-inline-image" src="${escapeHtml(item.blobURL)}" alt="${escapeHtml(item.name || "inline image")}" data-compose-inline-image-id="${escapeHtml(item.id)}" data-compose-inline-image-cid="${escapeHtml(item.cid)}" contenteditable="false">&nbsp;`;
+  insertComposeHTMLAtCaret(html);
+}
+
+function addComposeFiles(files) {
+  if (!files || files.length === 0) return;
+  for (const file of Array.from(files)) {
+    if (composeFileLooksInlineImage(file)) {
+      const item = {
+        id: composeID("compose-inline"),
+        cid: composeID("cid"),
+        file,
+        name: file.name,
+        size: file.size,
+        blobURL: URL.createObjectURL(file),
+      };
+      state.compose.inlineImages.push(item);
+      addComposeInlineImageToEditor(item);
+      continue;
+    }
+    const item = {
+      id: composeID("compose-attachment"),
+      file,
+      name: file.name,
+      size: file.size,
+    };
+    state.compose.attachments.push(item);
+    addComposeAttachmentChipToEditor(item);
+  }
   syncComposeDraftFields();
   saveComposeDraft(el.composeForm);
+  updateComposeSubmitState();
 }
 
 function setComposeFromMode(mode) {
@@ -1126,13 +1289,15 @@ function setComposeFromMode(mode) {
   if (state.compose.fromMode === "manual") {
     const authEmail = composeAuthEmailValue().toLowerCase();
     const manual = composeResolvedManualSender().toLowerCase();
-    if (manual !== "" && manual === authEmail) {
-      setComposeFromNote("");
-    } else if (manual === "") {
-      setComposeFromNote("Using authenticated sender by default.", "warn");
-    } else {
+    if (manual !== "" && manual !== authEmail) {
       setComposeFromNote("Sender must exactly match your authenticated email.", "error");
+    } else if (state.compose.identityLookupError) {
+      setComposeFromNote("Identity lookup unavailable. Using authenticated sender.", "warn");
+    } else {
+      setComposeFromNote("");
     }
+  } else if (state.compose.fromMode === "identity") {
+    setComposeFromNote("");
   }
   updateComposeFromRowVisibility();
   updateComposeFromFields();
@@ -1220,7 +1385,8 @@ function insertComposeHTMLAtCaret(htmlContent) {
     document.execCommand("insertHTML", false, htmlContent);
   } else {
     const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0) {
+    const inEditor = selection && el.composeEditor.contains(selection.anchorNode);
+    if (!selection || selection.rangeCount === 0 || !inEditor) {
       el.composeEditor.insertAdjacentHTML("beforeend", htmlContent);
     } else {
       const range = selection.getRangeAt(0);
@@ -1276,6 +1442,18 @@ async function promptComposeLink() {
   runComposeCommand("createLink", url);
 }
 
+function focusComposeEditorAtEnd() {
+  if (!el.composeEditor) return;
+  el.composeEditor.focus();
+  const selection = window.getSelection();
+  if (!selection) return;
+  const range = document.createRange();
+  range.selectNodeContents(el.composeEditor);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 async function openComposeOverlay(trigger = null) {
   if (!el.composeOverlay) return;
   state.ui.composeOpen = true;
@@ -1283,11 +1461,9 @@ async function openComposeOverlay(trigger = null) {
   el.composeOverlay.classList.remove("hidden");
   el.composeOverlay.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
-  if (el.composeWindowMoreMenu) {
-    el.composeWindowMoreMenu.removeAttribute("open");
-  }
 
   state.compose.submitInFlight = false;
+  state.compose.authEmail = String(state.user?.email || "").trim();
   state.compose.recipients.to = [];
   state.compose.recipients.cc = [];
   state.compose.recipients.bcc = [];
@@ -1299,7 +1475,7 @@ async function openComposeOverlay(trigger = null) {
   renderComposeRecipientTokens("cc");
   renderComposeRecipientTokens("bcc");
   setComposeCcVisible(false);
-  clearComposeAssets();
+  clearComposeAssets({ removeEditorNodes: false });
   setComposeBccVisible(false);
   setComposeFormatToolsVisible(false);
   setComposeFromNote("");
@@ -1309,9 +1485,7 @@ async function openComposeOverlay(trigger = null) {
   await loadComposeIdentities();
   syncComposeDraftFields();
   updateComposeSubmitState();
-  if (el.composeToInput && typeof el.composeToInput.focus === "function") {
-    el.composeToInput.focus();
-  }
+  focusComposeEditorAtEnd();
 }
 
 function closeComposeOverlay(restoreFocus = true) {
@@ -1321,9 +1495,6 @@ function closeComposeOverlay(restoreFocus = true) {
   el.composeOverlay.setAttribute("aria-hidden", "true");
   document.body.style.overflow = state.ui.modalOpen || state.ui.mfaModalOpen ? "hidden" : "";
   state.compose.submitInFlight = false;
-  if (el.composeWindowMoreMenu) {
-    el.composeWindowMoreMenu.removeAttribute("open");
-  }
   clearComposeAssets();
   if (restoreFocus && state.ui.composeLastTrigger && typeof state.ui.composeLastTrigger.focus === "function") {
     state.ui.composeLastTrigger.focus();
@@ -4697,8 +4868,10 @@ async function sendCompose(form) {
     throw new Error("Sign in required");
   }
   commitComposeAllRecipientInputs();
+  cleanupComposeInlineReferences();
   syncComposeDraftFields();
   saveComposeDraft(form);
+  const bodySnapshot = composeEditorSnapshot("send");
 
   const mp = new FormData();
   mp.append("to", serializeComposeRecipients("to"));
@@ -4709,8 +4882,8 @@ async function sendCompose(form) {
     mp.append("bcc", serializeComposeRecipients("bcc"));
   }
   mp.append("subject", String(el.composeSubjectInput?.value || ""));
-  mp.append("body", composeEditorText());
-  mp.append("body_html", composeEditorHTML());
+  mp.append("body", bodySnapshot.text);
+  mp.append("body_html", bodySnapshot.html);
   mp.append("from_mode", state.compose.fromMode);
   if (state.compose.fromMode === "identity") {
     mp.append("identity_id", state.compose.selectedIdentityID || "");
@@ -6606,6 +6779,7 @@ function bindUI() {
       e.preventDefault();
       if (state.compose.submitInFlight) return;
       commitComposeAllRecipientInputs();
+      cleanupComposeInlineReferences();
       syncComposeDraftFields();
       saveComposeDraft(el.composeForm);
       if (!composeCanSubmit()) {
@@ -6785,6 +6959,20 @@ function bindUI() {
 
   if (el.composeEditor) {
     el.composeEditor.addEventListener("input", () => {
+      cleanupComposeInlineReferences();
+      syncComposeDraftFields();
+      saveComposeDraft(el.composeForm);
+      updateComposeSubmitState();
+    });
+    el.composeEditor.addEventListener("click", (event) => {
+      const removeButton = event.target instanceof Element
+        ? event.target.closest("[data-compose-attachment-remove]")
+        : null;
+      if (!removeButton) return;
+      event.preventDefault();
+      const attachmentID = String(removeButton.getAttribute("data-compose-attachment-remove") || "");
+      if (!attachmentID) return;
+      removeComposeAttachmentByID(attachmentID);
       syncComposeDraftFields();
       saveComposeDraft(el.composeForm);
       updateComposeSubmitState();
@@ -6824,33 +7012,6 @@ function bindUI() {
       if (state.compose.formatToolsVisible && el.composeEditor) {
         el.composeEditor.focus();
       }
-    });
-  }
-
-  if (el.composeMoreToggleCc) {
-    el.composeMoreToggleCc.addEventListener("click", () => {
-      setComposeCcVisible(!state.compose.ccVisible);
-      saveComposeDraft(el.composeForm);
-      updateComposeSubmitState();
-      if (el.composeWindowMoreMenu) el.composeWindowMoreMenu.removeAttribute("open");
-    });
-  }
-
-  if (el.composeMoreToggleBcc) {
-    el.composeMoreToggleBcc.addEventListener("click", () => {
-      setComposeBccVisible(!state.compose.bccVisible);
-      saveComposeDraft(el.composeForm);
-      updateComposeSubmitState();
-      if (el.composeWindowMoreMenu) el.composeWindowMoreMenu.removeAttribute("open");
-    });
-  }
-
-  if (el.composeMoreToggleFormat) {
-    el.composeMoreToggleFormat.addEventListener("click", () => {
-      setComposeFormatToolsVisible(!state.compose.formatToolsVisible);
-      saveComposeDraft(el.composeForm);
-      updateComposeSubmitState();
-      if (el.composeWindowMoreMenu) el.composeWindowMoreMenu.removeAttribute("open");
     });
   }
 
@@ -6925,26 +7086,10 @@ function bindUI() {
   if (el.composeToolAttach && el.composeAttachmentsInput) {
     el.composeToolAttach.addEventListener("click", () => el.composeAttachmentsInput.click());
   }
-  if (el.composeToolMedia && el.composeInlineImagesInput) {
-    el.composeToolMedia.addEventListener("click", () => {
-      if (el.composeWindowMoreMenu) el.composeWindowMoreMenu.removeAttribute("open");
-      el.composeInlineImagesInput.click();
-    });
-  }
   if (el.composeAttachmentsInput) {
     el.composeAttachmentsInput.addEventListener("change", (event) => {
-      addComposeFiles(event.target.files || [], "attachment");
+      addComposeFiles(event.target.files || []);
       event.target.value = "";
-      saveComposeDraft(el.composeForm);
-      updateComposeSubmitState();
-    });
-  }
-  if (el.composeInlineImagesInput) {
-    el.composeInlineImagesInput.addEventListener("change", (event) => {
-      addComposeFiles(event.target.files || [], "inline");
-      event.target.value = "";
-      saveComposeDraft(el.composeForm);
-      updateComposeSubmitState();
     });
   }
   renderComposeRecipientTokens("to");
@@ -6953,7 +7098,6 @@ function bindUI() {
   setComposeCcVisible(state.compose.ccVisible, { clearWhenHidden: false });
   setComposeBccVisible(state.compose.bccVisible, { clearWhenHidden: false });
   setComposeFormatToolsVisible(state.compose.formatToolsVisible);
-  renderComposeAttachmentTray();
   setComposeDraftState("Draft", "muted");
   updateComposeSubmitState();
 

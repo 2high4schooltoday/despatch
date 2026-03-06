@@ -51,9 +51,9 @@ html[data-theme="paper-light"] {
 
   --row-h-desktop: 36px;
   --row-h-mobile: 42px;
-  --compose-label-track: 84px;
-  --compose-meta-row-h: 46px;
-  --compose-toolbar-h: 44px;
+  --compose-label-track: 72px;
+  --compose-meta-row-h: 34px;
+  --compose-toolbar-h: 38px;
   --reader-meta-row-h: 34px;
   --reader-body-min-h: 220px;
   --reader-body-max-h: 48vh;
@@ -1376,22 +1376,22 @@ a:focus-visible {
 .compose-form {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr);
 }
 
 .compose-toolbar-layer {
   display: grid;
   grid-template-columns: 1fr auto;
   align-items: center;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  gap: 6px;
+  padding: 6px var(--space-3);
   border-bottom: var(--border-w) solid var(--line-1);
 }
 
 .compose-window-actions {
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: 6px;
 }
 
 .compose-window-actions--right {
@@ -1400,59 +1400,46 @@ a:focus-visible {
 
 .compose-window-btn,
 .compose-close-btn {
-  min-height: 30px;
+  min-height: 28px;
   border-color: var(--line-1);
   color: var(--fg-1);
-}
-
-.compose-window-more summary {
-  min-height: 30px;
-  border-color: var(--line-1);
-  color: var(--fg-1);
-}
-
-.compose-window-more-body {
-  min-width: 184px;
-}
-
-.compose-window-more-body .cmd-btn {
-  justify-content: flex-start;
 }
 
 .compose-draft-state {
-  color: var(--fg-muted);
-  font-size: 0.7rem;
+  color: color-mix(in srgb, var(--fg-muted) 76%, transparent);
+  font-size: 0.62rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
 
 .compose-send-btn {
-  min-width: 136px;
+  min-height: 30px;
+  min-width: 108px;
   font-weight: 700;
 }
 
 .compose-tool-btn {
-  min-height: 28px;
-  min-width: 58px;
-  padding: 0 8px;
+  min-height: 26px;
+  min-width: 54px;
+  padding: 0 7px;
   border-color: var(--line-1);
   color: var(--fg-1);
   text-transform: none;
   letter-spacing: 0.02em;
-  font-size: 0.8rem;
+  font-size: 0.76rem;
 }
 
 .compose-meta {
   display: grid;
-  border-bottom: var(--border-w) solid var(--line-1);
+  border-bottom: var(--border-w) solid var(--line-2);
 }
 
 .compose-meta-row {
-  min-height: 42px;
+  min-height: var(--compose-meta-row-h);
   display: grid;
   grid-template-columns: var(--compose-label-track) minmax(0, 1fr) auto;
   align-items: center;
-  border-top: var(--border-w) solid var(--line-2);
+  border-top: var(--border-w) solid color-mix(in srgb, var(--line-2) 72%, transparent);
 }
 
 .compose-meta-row:first-child {
@@ -1460,22 +1447,22 @@ a:focus-visible {
 }
 
 .compose-meta-label {
-  color: var(--fg-muted);
+  color: color-mix(in srgb, var(--fg-muted) 72%, transparent);
   text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 0.7rem;
+  letter-spacing: 0.07em;
+  font-size: 0.62rem;
   padding: 0 var(--space-3);
 }
 
 .compose-meta-value {
   min-width: 0;
-  padding-right: var(--space-2);
+  padding-right: var(--space-1);
 }
 
 .compose-meta-value input,
 .compose-meta-value select {
   width: 100%;
-  min-height: 30px;
+  min-height: 26px;
   border: 0;
   background: transparent;
   padding: 0 2px;
@@ -1489,32 +1476,32 @@ a:focus-visible {
 }
 
 .compose-meta-toggle {
-  min-height: 24px;
-  min-width: 40px;
-  padding: 0 7px;
+  min-height: 22px;
+  min-width: 36px;
+  padding: 0 6px;
   border-color: var(--line-1);
   color: var(--fg-1);
-  font-size: 0.68rem;
+  font-size: 0.62rem;
 }
 
 .compose-meta-tail {
   display: block;
-  padding-right: var(--space-3);
+  padding-right: var(--space-2);
 }
 
 .compose-meta-tail--recipients {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
 }
 
 .compose-token-field {
-  min-height: 34px;
+  min-height: 26px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
-  padding: 2px 0;
+  padding: 1px 0;
 }
 
 .compose-token-field > input {
@@ -1546,15 +1533,15 @@ a:focus-visible {
 }
 
 .compose-token {
-  min-height: 24px;
+  min-height: 20px;
   border: var(--border-w) solid var(--line-1);
   background: var(--bg-2);
   color: var(--fg-1);
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 0 6px;
-  font-size: 0.7rem;
+  gap: 4px;
+  padding: 0 5px;
+  font-size: 0.66rem;
 }
 
 .compose-token--invalid {
@@ -1572,33 +1559,24 @@ a:focus-visible {
 }
 
 .compose-meta-row--from {
-  min-height: 44px;
+  min-height: var(--compose-meta-row-h);
 }
 
 .compose-meta-value--from {
   display: grid;
-  gap: 4px;
-  padding-top: 4px;
-  padding-bottom: 4px;
+  gap: 2px;
 }
 
 .compose-from-manual {
-  display: grid;
-  gap: 3px;
-}
-
-.compose-from-manual span {
-  color: var(--fg-muted);
-  font-size: 0.68rem;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  padding: 0 var(--space-1);
+  display: block;
 }
 
 .compose-inline-note {
-  font-size: 0.72rem;
-  color: var(--fg-muted);
-  padding: 0 var(--space-1);
+  margin: 0;
+  font-size: 0.64rem;
+  color: color-mix(in srgb, var(--fg-muted) 82%, transparent);
+  letter-spacing: 0.03em;
+  padding: 0 2px 1px;
 }
 
 .compose-inline-note--ok {
@@ -1612,19 +1590,18 @@ a:focus-visible {
 
 .compose-body-layer {
   min-height: 0;
-  padding: 0 var(--space-3) var(--space-3);
+  padding: 2px var(--space-3) var(--space-3);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: var(--space-2);
+  gap: 4px;
 }
 
 .compose-editor-tools {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   flex-wrap: wrap;
-  padding: var(--space-2) 0 0;
-  border-top: var(--border-w) solid var(--line-2);
+  padding: 4px 0;
   border-bottom: var(--border-w) solid var(--line-2);
 }
 
@@ -1632,7 +1609,7 @@ a:focus-visible {
   min-height: 0;
   height: 100%;
   overflow: auto;
-  padding: var(--space-2) 2px;
+  padding: 2px 1px;
   color: var(--fg-0);
   line-height: 1.5;
   outline: 0;
@@ -1640,53 +1617,69 @@ a:focus-visible {
 
 .compose-editor:empty::before {
   content: attr(data-placeholder);
-  color: var(--fg-muted);
+  color: color-mix(in srgb, var(--fg-muted) 78%, transparent);
 }
 
 .compose-editor p {
-  margin: 0 0 0.8em;
+  margin: 0 0 0.72em;
 }
 
 .compose-editor p:last-child {
   margin-bottom: 0;
 }
 
-.compose-assets {
-  border-top: var(--border-w) solid var(--line-1);
-  padding: var(--space-2) var(--space-3);
-  display: grid;
-  gap: var(--space-1);
-}
-
-.compose-attachment-tray {
-  min-height: 0;
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  align-items: center;
-}
-
-.compose-attachment-chip {
-  min-height: 26px;
-  border: var(--border-w) solid var(--line-1);
-  color: var(--fg-1);
-  background: var(--bg-2);
+.compose-inline-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 0 8px;
-  font-size: 0.72rem;
-  letter-spacing: 0.06em;
+  gap: 5px;
+  min-height: 22px;
+  border: var(--border-w) solid var(--line-1);
+  background: var(--bg-2);
+  color: var(--fg-1);
+  padding: 0 6px;
+  margin: 0 1px;
+  vertical-align: baseline;
+  white-space: nowrap;
+}
+
+.compose-inline-chip-label {
+  font-size: 0.64rem;
+  letter-spacing: 0.04em;
   text-transform: uppercase;
 }
 
-.compose-attachment-chip button {
+.compose-inline-chip-remove {
   border: 0;
   background: transparent;
   color: inherit;
   font: inherit;
+  font-size: 0.7rem;
+  line-height: 1;
   cursor: pointer;
   padding: 0;
+}
+
+.compose-inline-image {
+  display: inline-block;
+  max-width: min(72%, 460px);
+  max-height: 280px;
+  height: auto;
+  width: auto;
+  margin: 2px 1px;
+  border: var(--border-w) solid var(--line-1);
+}
+
+.compose-inline-missing-media {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  border: var(--border-w) solid color-mix(in srgb, var(--line-1) 70%, transparent);
+  color: color-mix(in srgb, var(--fg-muted) 84%, transparent);
+  padding: 0 5px;
+  margin: 0 1px;
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 @keyframes compose-dialog-enter {
@@ -2237,7 +2230,8 @@ button.setting-list-item {
     z-index: 2;
     background: var(--bg-1);
     grid-template-columns: 1fr auto;
-    gap: var(--space-2);
+    gap: 4px;
+    padding: 6px var(--space-2);
   }
 
   .compose-window-actions--left {
@@ -2249,8 +2243,8 @@ button.setting-list-item {
   }
 
   .compose-meta-row {
-    grid-template-columns: 62px minmax(0, 1fr) auto;
-    min-height: 44px;
+    grid-template-columns: 56px minmax(0, 1fr) auto;
+    min-height: 36px;
   }
 
   .compose-meta-tail {

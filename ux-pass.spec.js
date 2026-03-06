@@ -45,6 +45,9 @@ test('desktop ux pass', async ({ page }) => {
   await page.waitForTimeout(400);
   await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
   await expect(page.locator('#compose-toolbar-layer')).toBeVisible();
+  await expect(page.locator('#compose-window-more-menu')).toHaveCount(0);
+  await expect(page.locator('#compose-toolbar-layer .compose-window-actions--right > button')).toHaveCount(3);
+  await expect(page.locator('#compose-tool-attach')).toBeVisible();
   await expect(page.locator('#compose-toggle-formatting')).toBeVisible();
   await expect(page.locator('#compose-editor-tools')).toHaveClass(/hidden/);
   await page.click('#compose-toggle-formatting');
@@ -56,7 +59,11 @@ test('desktop ux pass', async ({ page }) => {
   await expect(page.locator('#compose-bcc-row')).toHaveClass(/hidden/);
   await expect(page.locator('#compose-cc-input')).toBeHidden();
   await expect(page.locator('#compose-subject-input')).toBeVisible();
-  await expect(page.locator('#compose-from-manual-wrap')).not.toHaveClass(/hidden/);
+  const fromRowVisible = await page.locator('#compose-from-row').isVisible();
+  if (fromRowVisible) {
+    await expect(page.locator('#compose-from-manual-wrap')).toHaveClass(/hidden/);
+  }
+  await expect(page.locator('#compose-from-note')).toHaveClass(/hidden/);
 
   await page.click('#compose-toggle-cc');
   await expect(page.locator('#compose-cc-row')).not.toHaveClass(/hidden/);
@@ -71,6 +78,21 @@ test('desktop ux pass', async ({ page }) => {
   await expect(page.locator('#btn-compose-send')).toBeDisabled();
   await page.fill('#compose-to-input', 'alice@example.com');
   await page.fill('#compose-subject-input', 'UX compose check');
+  await page.setInputFiles('#compose-attachments-input', {
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('attachment body'),
+  });
+  await expect(page.locator('#compose-editor [data-compose-attachment-id]')).toHaveCount(1);
+  await expect(page.locator('#compose-assets')).toHaveCount(0);
+  await page.setInputFiles('#compose-attachments-input', {
+    name: 'inline.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAgMBgJ4M3hQAAAAASUVORK5CYII=', 'base64'),
+  });
+  const inlinePreview = page.locator('#compose-editor img[data-compose-inline-image-id]').first();
+  await expect(inlinePreview).toBeVisible();
+  await expect(inlinePreview).toHaveAttribute('src', /^blob:/);
   await page.locator('#compose-editor').click();
   await page.keyboard.type('Hello from compose test.');
   await expect(page.locator('#btn-compose-send')).toBeEnabled();
