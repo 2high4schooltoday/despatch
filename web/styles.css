@@ -793,6 +793,29 @@ a:focus-visible {
   gap: var(--space-1);
 }
 
+.mail-commandbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border: var(--border-w) solid var(--line-1);
+}
+
+.mail-commandbar-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mail-commandbar-search {
+  display: grid;
+  grid-template-columns: minmax(180px, 280px) auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
 .mail-layout {
   display: grid;
   grid-template-columns: 220px minmax(300px, 1fr) minmax(360px, 1.2fr);
@@ -805,16 +828,16 @@ a:focus-visible {
   display: grid;
   grid-template-rows: auto 1fr;
   min-height: 0;
-  border-right: var(--border-w) solid var(--line-1);
+  border-right: var(--border-w) solid var(--line-2);
   padding: 0;
 }
 
 .mail-pane--messages {
-  grid-template-rows: auto auto 1fr;
+  grid-template-rows: auto 1fr;
 }
 
 .mail-pane--reader {
-  grid-template-rows: auto auto minmax(var(--reader-body-min-h), 1fr) auto auto;
+  grid-template-rows: auto auto auto minmax(var(--reader-body-min-h), 1fr) auto;
   min-height: 0;
 }
 
@@ -829,19 +852,11 @@ a:focus-visible {
   justify-content: space-between;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
-  border-bottom: var(--border-w) solid var(--line-1);
+  border-bottom: var(--border-w) solid var(--line-2);
 }
 
 .mail-nav-back {
   display: none;
-}
-
-.searchbar {
-  border-bottom: var(--border-w) solid var(--line-2);
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
 }
 
 .mailbox-list,
@@ -853,56 +868,94 @@ a:focus-visible {
   min-height: 0;
 }
 
-.mailbox-row,
-.message-row {
-  border-bottom: var(--border-w) solid var(--line-2);
+.mailbox-section {
+  padding: var(--space-2) 0 var(--space-1);
+}
+
+.mailbox-section-title {
+  color: var(--fg-muted);
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0 var(--space-3);
+  margin-bottom: 6px;
+}
+
+.mailbox-row {
+  margin-bottom: 2px;
 }
 
 .mailbox-list button {
   width: 100%;
-  min-height: var(--row-h-desktop);
+  min-height: 34px;
   border: 0;
   background: transparent;
   color: var(--fg-1);
   font: inherit;
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
   text-align: left;
-  padding: 0 var(--space-3);
+  padding: 0 var(--space-3) 0 calc(var(--space-3) + 4px);
   cursor: pointer;
+  border-left: var(--border-w) solid transparent;
+}
+
+.mailbox-name {
+  color: var(--fg-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mailbox-meta {
+  color: var(--fg-muted);
+  font-size: 0.76rem;
 }
 
 .mailbox-list button:hover {
-  background: var(--line-2);
+  background: color-mix(in srgb, var(--line-2) 60%, transparent);
 }
 
 .mailbox-list button.active {
-  background: var(--fg-0);
-  color: var(--bg-0);
+  background: color-mix(in srgb, var(--line-0) 16%, transparent);
+  border-left-color: var(--line-0);
 }
 
 .message-row-btn {
   width: 100%;
-  min-height: var(--row-h-desktop);
+  min-height: 68px;
   border: 0;
   background: transparent;
   color: inherit;
   font: inherit;
   display: grid;
-  grid-template-columns: 8px minmax(96px, 148px) 1fr auto;
-  align-items: center;
-  gap: var(--space-2);
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  grid-template-areas:
+    "mark from date"
+    "mark subject date"
+    "mark preview date";
+  align-items: baseline;
+  column-gap: var(--space-2);
+  row-gap: 2px;
   text-align: left;
-  padding: 0 var(--space-3);
+  padding: 8px var(--space-3);
   cursor: pointer;
+  border-left: 2px solid transparent;
+}
+
+.message-row {
+  margin: 4px 0;
 }
 
 .message-mark {
+  grid-area: mark;
   width: 6px;
   height: 6px;
-  border: var(--border-w) solid var(--line-2);
+  border: var(--border-w) solid var(--line-1);
+  margin-top: 8px;
+  align-self: start;
 }
 
 .message-row.is-unread .message-mark {
@@ -912,24 +965,36 @@ a:focus-visible {
 
 .message-from,
 .message-subject,
-.message-date {
+.message-date,
+.message-preview {
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
 .message-from {
+  grid-area: from;
   color: var(--fg-0);
+  font-weight: 600;
 }
 
 .message-subject {
+  grid-area: subject;
   color: var(--fg-1);
 }
 
+.message-preview {
+  grid-area: preview;
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+
 .message-date {
+  grid-area: date;
   color: var(--fg-muted);
   font-size: 0.78rem;
   text-align: right;
+  align-self: start;
 }
 
 .message-row.is-unread .message-from,
@@ -938,18 +1003,19 @@ a:focus-visible {
 }
 
 .message-row:hover .message-row-btn {
-  background: var(--line-2);
+  background: color-mix(in srgb, var(--line-2) 50%, transparent);
 }
 
 .message-row.active .message-row-btn {
-  background: var(--fg-0);
-  color: var(--bg-0);
+  background: color-mix(in srgb, var(--line-0) 14%, transparent);
+  border-left-color: var(--line-0);
 }
 
-.message-row.active .message-date,
 .message-row.active .message-subject,
-.message-row.active .message-from {
-  color: var(--bg-0);
+.message-row.active .message-from,
+.message-row.active .message-date,
+.message-row.active .message-preview {
+  color: var(--fg-0);
 }
 
 .message-empty {
@@ -967,24 +1033,37 @@ a:focus-visible {
   outline: none;
 }
 
-.meta {
+.reader-header {
+  padding: var(--space-2) var(--space-3);
   border-bottom: var(--border-w) solid var(--line-2);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.reader-subject {
+  font-size: 1.04rem;
+  color: var(--fg-0);
+  letter-spacing: 0.01em;
+}
+
+.meta {
+  display: grid;
+  gap: 2px;
 }
 
 .meta > div {
-  min-height: var(--reader-meta-row-h);
+  min-height: 24px;
   display: grid;
-  grid-template-columns: var(--reader-label-track) minmax(0, 1fr);
+  grid-template-columns: 64px minmax(0, 1fr);
   align-items: center;
-  padding: 0 var(--space-3);
-  border-top: var(--border-w) solid var(--line-2);
+  gap: var(--space-2);
 }
 
 .meta-label {
   color: var(--fg-muted);
-  text-transform: uppercase;
   font-size: 0.72rem;
   letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .meta-value {
@@ -996,6 +1075,46 @@ a:focus-visible {
   text-overflow: ellipsis;
 }
 
+.thread-context {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.thread-position {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+
+.thread-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reader-view-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 var(--space-3) var(--space-2);
+  border-bottom: var(--border-w) solid var(--line-2);
+}
+
+.reader-view-controls .cmd-btn.is-active {
+  border-color: var(--line-0);
+  color: var(--fg-0);
+  background: color-mix(in srgb, var(--line-0) 14%, transparent);
+}
+
+.reader-body-host {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .message-body {
   margin: 0;
   padding: var(--space-3);
@@ -1004,14 +1123,25 @@ a:focus-visible {
   height: 100%;
   max-height: none;
   line-height: 1.45;
-  border-bottom: var(--border-w) solid var(--line-2);
+}
+
+.message-body-html-wrap {
+  height: 100%;
+  min-height: 0;
+}
+
+.message-body-html {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
 }
 
 .attachments {
   padding: var(--space-1) var(--space-3);
   display: grid;
   gap: var(--space-1);
-  border-bottom: var(--border-w) solid var(--line-2);
+  border-top: var(--border-w) solid var(--line-2);
   align-content: center;
   min-height: var(--ctrl-h-dense);
 }
@@ -1022,45 +1152,6 @@ a:focus-visible {
 
 .attachments a {
   font-size: 0.84rem;
-}
-
-.reader-commands {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0;
-  padding: 0;
-  border-top: var(--border-w) solid var(--line-2);
-  background: var(--bg-2);
-}
-
-.reader-commands .cmd-btn {
-  min-height: var(--ctrl-h-std);
-  border: 0;
-  border-left: var(--border-w) solid var(--line-1);
-  background: transparent;
-  color: var(--fg-1);
-  letter-spacing: 0.1em;
-}
-
-.reader-commands .cmd-btn:first-child {
-  border-left: 0;
-}
-
-.reader-commands .cmd-btn:hover,
-.reader-commands .cmd-btn:focus-visible {
-  background: var(--fg-0);
-  color: var(--bg-0);
-}
-
-.reader-commands .cmd-btn--danger {
-  color: var(--sig-err);
-  border-left-color: var(--sig-err);
-}
-
-.reader-commands .cmd-btn--danger:hover,
-.reader-commands .cmd-btn--danger:focus-visible {
-  background: color-mix(in srgb, var(--sig-err) 16%, transparent);
-  color: var(--sig-err);
 }
 
 .admin-layout {
@@ -2083,6 +2174,15 @@ button.setting-list-item {
     margin: var(--space-4) auto;
   }
 
+  .mail-commandbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .mail-commandbar-search {
+    grid-template-columns: 1fr auto;
+  }
+
   .mail-layout {
     grid-template-columns: 190px minmax(260px, 1fr) minmax(290px, 1fr);
   }
@@ -2183,11 +2283,19 @@ button.setting-list-item {
   .data-table th,
   .data-table td {
     min-height: var(--row-h-mobile);
-    height: var(--row-h-mobile);
   }
 
   .message-row-btn {
-    grid-template-columns: 8px minmax(84px, 130px) 1fr auto;
+    grid-template-columns: 10px minmax(0, 1fr) auto;
+    padding: 7px var(--space-2);
+  }
+
+  .mail-commandbar-actions {
+    justify-content: flex-start;
+  }
+
+  .mail-commandbar-search {
+    grid-template-columns: 1fr auto;
   }
 
   .workspace-header {

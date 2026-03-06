@@ -3,6 +3,13 @@ const state = {
   mailbox: "INBOX",
   messages: [],
   selectedMessage: null,
+  selectedMessageSummary: null,
+  thread: {
+    id: "",
+    items: [],
+    index: -1,
+    truncated: false,
+  },
   theme: "machine-dark",
   auth: {
     lastUnauthorizedAtMs: 0,
@@ -62,6 +69,10 @@ const state = {
       cc: [],
       bcc: [],
     },
+    sendContext: {
+      mode: "send",
+      messageID: "",
+    },
     attachments: [],
     inlineImages: [],
     submitInFlight: false,
@@ -76,6 +87,7 @@ const state = {
     mfaModalLastTrigger: null,
     activeMailPane: "mailboxes",
     activeKeyboardPane: "mailboxes",
+    readerViewMode: "plain",
     activeSettingsSection: "signin",
     activeAdminSection: "system",
     settingsNav: {
@@ -179,10 +191,20 @@ const el = {
   mailboxes: document.getElementById("mailboxes"),
   messages: document.getElementById("messages"),
   meta: document.getElementById("message-meta"),
-  body: document.getElementById("message-body"),
+  messageSubjectAnchor: document.getElementById("message-subject-anchor"),
+  threadPosition: document.getElementById("thread-position"),
+  btnThreadPrev: document.getElementById("btn-thread-prev"),
+  btnThreadNext: document.getElementById("btn-thread-next"),
+  btnReaderViewHTML: document.getElementById("btn-reader-view-html"),
+  btnReaderViewPlain: document.getElementById("btn-reader-view-plain"),
+  bodyHTMLWrap: document.getElementById("message-body-html-wrap"),
+  bodyHTMLFrame: document.getElementById("message-body-html"),
+  bodyPlain: document.getElementById("message-body-plain"),
   attachments: document.getElementById("attachment-list"),
   searchInput: document.getElementById("search-input"),
   btnSearch: document.getElementById("btn-search"),
+  btnReply: document.getElementById("btn-reply"),
+  btnForward: document.getElementById("btn-forward"),
   btnFlag: document.getElementById("btn-flag"),
   btnSeen: document.getElementById("btn-mark-seen"),
   btnTrash: document.getElementById("btn-trash"),
@@ -190,6 +212,7 @@ const el = {
   btnComposeClose: document.getElementById("btn-compose-close"),
   composeOverlay: document.getElementById("compose-overlay"),
   composeDialog: document.getElementById("compose-dialog"),
+  composeTitle: document.getElementById("compose-title"),
   composeForm: document.getElementById("form-compose"),
   btnComposeSend: document.getElementById("btn-compose-send"),
   composeToggleCc: document.getElementById("compose-toggle-cc"),
@@ -678,6 +701,7 @@ function routeToAuthWithMessage(message, code = "") {
   state.auth.legacyMFAOfferShownForSession = false;
   state.auth.mfaFlowPromise = null;
   state.user = null;
+  clearReaderSelection();
   renderPasskeyCredentials([]);
   renderTrustedDevices([]);
   renderSessions([]);
@@ -1059,6 +1083,7 @@ function syncComposeDraftFields() {
 }
 
 function saveComposeDraft(form) {
+  if (String(state.compose.sendContext?.mode || "send") !== "send") return;
   if (!form) return;
   const payload = {
     to: serializeComposeRecipients("to"),
@@ -1454,16 +1479,62 @@ function focusComposeEditorAtEnd() {
   selection.addRange(range);
 }
 
-async function openComposeOverlay(trigger = null) {
+function setComposeSendContext(mode = "send", messageID = "") {
+  const normalizedMode = String(mode || "send").trim().toLowerCase();
+  state.compose.sendContext = {
+    mode: normalizedMode === "reply" || normalizedMode === "forward" ? normalizedMode : "send",
+    messageID: String(messageID || "").trim(),
+  };
+}
+
+function applyComposePrefill(prefill = {}) {
+  const to = String(prefill.to || "").trim();
+  const cc = String(prefill.cc || "").trim();
+  const bcc = String(prefill.bcc || "").trim();
+  const subject = String(prefill.subject || "").trim();
+  const bodyText = String(prefill.bodyText || "");
+
+  state.compose.recipients.to = [];
+  state.compose.recipients.cc = [];
+  state.compose.recipients.bcc = [];
+  renderComposeRecipientTokens("to");
+  renderComposeRecipientTokens("cc");
+  renderComposeRecipientTokens("bcc");
+  if (to) hydrateComposeRecipientTokens("to", to);
+  if (cc) hydrateComposeRecipientTokens("cc", cc);
+  if (bcc) hydrateComposeRecipientTokens("bcc", bcc);
+  setComposeCcVisible(cc !== "", { clearWhenHidden: cc === "" });
+  setComposeBccVisible(bcc !== "", { clearWhenHidden: bcc === "" });
+
+  if (el.composeToInput) el.composeToInput.value = "";
+  if (el.composeCcInput) el.composeCcInput.value = "";
+  if (el.composeBccInput) el.composeBccInput.value = "";
+  if (el.composeSubjectInput) el.composeSubjectInput.value = subject;
+  if (el.composeEditor) {
+    const normalized = bodyText.replace(/\r\n/g, "\n");
+    const lines = normalized.split("\n");
+    el.composeEditor.innerHTML = lines.map((line) => `<p>${escapeHtml(line || "")}</p>`).join("");
+  }
+}
+
+async function openComposeOverlay(trigger = null, opts = {}) {
   if (!el.composeOverlay) return;
+  const title = String(opts.title || "New Message").trim() || "New Message";
+  const useDraft = opts.useDraft !== false;
+  const prefill = opts.prefill && typeof opts.prefill === "object" ? opts.prefill : null;
+  const sendContext = opts.sendContext && typeof opts.sendContext === "object" ? opts.sendContext : { mode: "send", messageID: "" };
   state.ui.composeOpen = true;
   state.ui.composeLastTrigger = trigger || document.activeElement || null;
   el.composeOverlay.classList.remove("hidden");
   el.composeOverlay.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
+  if (el.composeTitle) {
+    el.composeTitle.textContent = title;
+  }
 
   state.compose.submitInFlight = false;
   state.compose.authEmail = String(state.user?.email || "").trim();
+  setComposeSendContext("send", "");
   state.compose.recipients.to = [];
   state.compose.recipients.cc = [];
   state.compose.recipients.bcc = [];
@@ -1481,8 +1552,14 @@ async function openComposeOverlay(trigger = null) {
   setComposeFromNote("");
   setComposeDraftState("Draft", "muted");
   if (el.composeEditor) el.composeEditor.innerHTML = "";
-  restoreComposeDraft(el.composeForm);
+  if (useDraft && !prefill) {
+    restoreComposeDraft(el.composeForm);
+  }
   await loadComposeIdentities();
+  if (prefill) {
+    applyComposePrefill(prefill);
+  }
+  setComposeSendContext(sendContext.mode, sendContext.messageID);
   syncComposeDraftFields();
   updateComposeSubmitState();
   focusComposeEditorAtEnd();
@@ -1495,6 +1572,10 @@ function closeComposeOverlay(restoreFocus = true) {
   el.composeOverlay.setAttribute("aria-hidden", "true");
   document.body.style.overflow = state.ui.modalOpen || state.ui.mfaModalOpen ? "hidden" : "";
   state.compose.submitInFlight = false;
+  setComposeSendContext("send", "");
+  if (el.composeTitle) {
+    el.composeTitle.textContent = "New Message";
+  }
   clearComposeAssets();
   if (restoreFocus && state.ui.composeLastTrigger && typeof state.ui.composeLastTrigger.focus === "function") {
     state.ui.composeLastTrigger.focus();
@@ -4629,6 +4710,7 @@ async function finalizePrimaryLogin(loginPayload) {
     await unlockMailSecretForSession();
     session = await refreshSession({ throwOnFail: true, skipUnauthorizedHandling: true, skipMFAHandling: true });
   }
+  clearReaderSelection();
   await loadMailboxes();
   await loadMessages();
   setActiveTab(el.tabMail);
@@ -4731,46 +4813,106 @@ async function loadMailboxes() {
     throw new Error("Sign in required");
   }
   const data = await api("/api/v1/mailboxes");
+  const items = Array.isArray(data) ? data : [];
+  const rank = {
+    inbox: 0,
+    drafts: 1,
+    "sent messages": 2,
+    sent: 2,
+    trash: 3,
+    "deleted messages": 3,
+    archive: 4,
+    junk: 5,
+    spam: 5,
+  };
+  const labelMap = {
+    inbox: "Inbox",
+    drafts: "Drafts",
+    "sent messages": "Sent",
+    sent: "Sent",
+    trash: "Trash",
+    "deleted messages": "Trash",
+    archive: "Archive",
+    junk: "Junk",
+    spam: "Junk",
+  };
+
+  const system = [];
+  const folders = [];
+  for (const mb of items) {
+    const key = String(mb?.name || "").trim().toLowerCase();
+    if (Object.hasOwn(rank, key)) system.push(mb);
+    else folders.push(mb);
+  }
+  system.sort((a, b) => {
+    const ka = String(a?.name || "").trim().toLowerCase();
+    const kb = String(b?.name || "").trim().toLowerCase();
+    const ra = Number(rank[ka] ?? 999);
+    const rb = Number(rank[kb] ?? 999);
+    if (ra !== rb) return ra - rb;
+    return String(a?.name || "").localeCompare(String(b?.name || ""));
+  });
+  folders.sort((a, b) => String(a?.name || "").localeCompare(String(b?.name || "")));
+
   el.mailboxes.innerHTML = "";
-  for (const [index, mb] of data.entries()) {
-    const li = document.createElement("li");
-    li.className = "mailbox-row";
-    const btn = document.createElement("button");
-    btn.innerHTML = `<span class="mailbox-name">${escapeHtml(mb.name)}</span><span class="mailbox-count">${Number(mb.unread || 0)}/${Number(mb.messages || 0)}</span>`;
-    btn.className = mb.name === state.mailbox ? "active" : "";
-    btn.dataset.mailboxName = mb.name;
-    btn.id = safeDomID("mailbox-option-", mb.name, `${index}`);
-    btn.type = "button";
-    btn.setAttribute("role", "option");
-    btn.setAttribute("aria-selected", mb.name === state.mailbox ? "true" : "false");
-    btn.tabIndex = -1;
-    btn.onclick = async () => {
-      state.mailbox = mb.name;
-      state.selectedMessage = null;
-      el.body.textContent = "Select a message.";
-      el.meta.innerHTML = "";
-      el.attachments.textContent = "";
-      await loadMessages();
-      await loadMailboxes();
-      setActiveMailPane("messages");
-    };
-    li.appendChild(btn);
-    el.mailboxes.appendChild(li);
+  let optionIndex = 0;
+  const appendSection = (title, list) => {
+    if (!Array.isArray(list) || list.length === 0) return;
+    const header = document.createElement("li");
+    header.className = "mailbox-section";
+    header.innerHTML = `<div class="mailbox-section-title">${escapeHtml(title)}</div>`;
+    el.mailboxes.appendChild(header);
+
+    for (const mb of list) {
+      const key = String(mb?.name || "").trim().toLowerCase();
+      const label = String(labelMap[key] || mb.name || "Mailbox");
+      const unread = Math.max(0, Number(mb?.unread || 0));
+      const li = document.createElement("li");
+      li.className = "mailbox-row";
+      const btn = document.createElement("button");
+      btn.innerHTML = `<span class="mailbox-name">${escapeHtml(label)}</span><span class="mailbox-meta">${unread > 0 ? `(${unread})` : ""}</span>`;
+      btn.className = mb.name === state.mailbox ? "active" : "";
+      btn.dataset.mailboxName = mb.name;
+      btn.id = safeDomID("mailbox-option-", mb.name, `${optionIndex}`);
+      btn.type = "button";
+      btn.setAttribute("role", "option");
+      btn.setAttribute("aria-selected", mb.name === state.mailbox ? "true" : "false");
+      btn.tabIndex = -1;
+      btn.onclick = async () => {
+        state.mailbox = mb.name;
+        clearReaderSelection();
+        await loadMessages();
+        await loadMailboxes();
+        setActiveMailPane("messages");
+      };
+      optionIndex += 1;
+      li.appendChild(btn);
+      el.mailboxes.appendChild(li);
+    }
+  };
+
+  appendSection("SYSTEM", system);
+  appendSection("FOLDERS", folders);
+  if (system.length === 0 && folders.length === 0) {
+    const empty = document.createElement("li");
+    empty.className = "message-empty";
+    empty.textContent = "No mailboxes available.";
+    el.mailboxes.appendChild(empty);
   }
   syncMailboxActiveDescendant();
 }
 
 function renderMessages(items) {
   el.messages.innerHTML = "";
-  state.messages = items;
-  if (!Array.isArray(items) || items.length === 0) {
+  state.messages = Array.isArray(items) ? items : [];
+  if (state.messages.length === 0) {
     const empty = document.createElement("li");
     empty.className = "message-empty";
     empty.textContent = "No messages to display.";
     el.messages.appendChild(empty);
     return;
   }
-  for (const m of items) {
+  for (const m of state.messages) {
     const li = document.createElement("li");
     const isActive = state.selectedMessage && state.selectedMessage.id === m.id;
     li.className = "message-row";
@@ -4780,15 +4922,18 @@ function renderMessages(items) {
     btn.type = "button";
     btn.className = "message-row-btn";
     btn.dataset.messageId = m.id;
+    btn.dataset.threadId = String(m.thread_id || "");
     btn.id = safeDomID("message-option-", m.id, "message");
     btn.setAttribute("role", "option");
     btn.setAttribute("aria-selected", isActive ? "true" : "false");
     btn.tabIndex = -1;
+    const previewText = String(m.preview || "").trim() || "(no preview)";
     btn.innerHTML = `<span class="message-mark" aria-hidden="true"></span>
       <span class="message-from">${escapeHtml(m.from || "(unknown sender)")}</span>
       <span class="message-subject">${escapeHtml(m.subject || "(no subject)")}</span>
-      <span class="message-date">${escapeHtml(formatDate(m.date))}</span>`;
-    btn.onclick = () => openMessage(m.id);
+      <span class="message-preview">${escapeHtml(previewText)}</span>
+      <span class="message-date">${escapeHtml(formatListDate(m.date))}</span>`;
+    btn.onclick = () => openMessage(m.id, m);
     li.appendChild(btn);
     el.messages.appendChild(li);
   }
@@ -4824,20 +4969,274 @@ function renderMessageMeta(rows) {
   }
 }
 
-async function openMessage(id) {
+function messageHasHTML(message) {
+  return typeof message?.body_html === "string" && message.body_html.trim() !== "";
+}
+
+function buildReaderHTMLSrcdoc(rawHTML) {
+  const bodyHTML = String(rawHTML || "");
+  const csp = [
+    "default-src 'none'",
+    "img-src 'self' data: blob:",
+    "media-src 'self' data: blob:",
+    "style-src 'unsafe-inline'",
+    "font-src data:",
+    "script-src 'none'",
+    "connect-src 'none'",
+    "object-src 'none'",
+    "frame-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join("; ");
+  const baseStyle = [
+    "html,body{margin:0;padding:0;background:transparent;color:inherit;}",
+    "body{font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;padding:12px;word-break:break-word;}",
+    "img{max-width:100%;height:auto;}",
+    "blockquote{margin:0 0 0 8px;padding-left:10px;border-left:1px solid rgba(128,128,128,.5);}",
+    "pre{white-space:pre-wrap;word-break:break-word;}",
+    "a{color:inherit;text-decoration:underline;}",
+  ].join("");
+  return `<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"${csp}\"><style>${baseStyle}</style></head><body>${bodyHTML}</body></html>`;
+}
+
+function renderReaderBody(message = state.selectedMessage) {
+  const hasMessage = !!message;
+  const hasHTML = hasMessage && messageHasHTML(message);
+  const mode = hasMessage && hasHTML && state.ui.readerViewMode === "html" ? "html" : "plain";
+
+  if (el.btnReaderViewHTML) {
+    el.btnReaderViewHTML.disabled = !hasHTML;
+    el.btnReaderViewHTML.classList.toggle("is-active", hasHTML && mode === "html");
+    el.btnReaderViewHTML.setAttribute("aria-pressed", hasHTML && mode === "html" ? "true" : "false");
+  }
+  if (el.btnReaderViewPlain) {
+    el.btnReaderViewPlain.disabled = !hasMessage;
+    el.btnReaderViewPlain.classList.toggle("is-active", hasMessage && mode === "plain");
+    el.btnReaderViewPlain.setAttribute("aria-pressed", hasMessage && mode === "plain" ? "true" : "false");
+  }
+
+  if (!hasMessage) {
+    state.ui.readerViewMode = "plain";
+    if (el.bodyHTMLWrap) el.bodyHTMLWrap.classList.add("hidden");
+    if (el.bodyHTMLFrame) el.bodyHTMLFrame.srcdoc = "";
+    if (el.bodyPlain) {
+      el.bodyPlain.classList.remove("hidden");
+      el.bodyPlain.textContent = "Select a message.";
+    }
+    return;
+  }
+
+  if (mode === "html") {
+    if (el.bodyHTMLWrap) el.bodyHTMLWrap.classList.remove("hidden");
+    if (el.bodyHTMLFrame) {
+      el.bodyHTMLFrame.srcdoc = buildReaderHTMLSrcdoc(message.body_html || "");
+    }
+    if (el.bodyPlain) el.bodyPlain.classList.add("hidden");
+    return;
+  }
+
+  if (el.bodyHTMLWrap) el.bodyHTMLWrap.classList.add("hidden");
+  if (el.bodyHTMLFrame) el.bodyHTMLFrame.srcdoc = "";
+  if (el.bodyPlain) {
+    el.bodyPlain.classList.remove("hidden");
+    el.bodyPlain.textContent = String(message.body || "(empty)");
+  }
+}
+
+function applyMailActionAvailability() {
+  const hasSelection = !!state.selectedMessage;
+  [el.btnReply, el.btnForward, el.btnFlag, el.btnSeen, el.btnTrash].forEach((node) => {
+    if (!node) return;
+    node.disabled = !hasSelection;
+  });
+}
+
+function clearReaderSelection() {
+  state.selectedMessage = null;
+  state.selectedMessageSummary = null;
+  state.thread = { id: "", items: [], index: -1, truncated: false };
+  if (el.messageSubjectAnchor) el.messageSubjectAnchor.textContent = "(no subject)";
+  renderMessageMeta([]);
+  renderReaderBody(null);
+  if (el.attachments) el.attachments.textContent = "";
+  renderThreadContext();
+  applyMailActionAvailability();
+}
+
+function renderThreadContext() {
+  if (!el.threadPosition || !el.btnThreadPrev || !el.btnThreadNext) return;
+  const thread = state.thread || { id: "", items: [], index: -1, truncated: false };
+  const hasThread = !!thread.id && Array.isArray(thread.items) && thread.items.length > 0 && thread.index >= 0;
+  if (!hasThread) {
+    el.threadPosition.textContent = "No thread context.";
+    el.btnThreadPrev.disabled = true;
+    el.btnThreadNext.disabled = true;
+    return;
+  }
+  const suffix = thread.truncated ? " (partial)" : "";
+  el.threadPosition.textContent = `Message ${thread.index + 1} of ${thread.items.length}${suffix}`;
+  el.btnThreadPrev.disabled = thread.index <= 0;
+  el.btnThreadNext.disabled = thread.index >= thread.items.length - 1;
+}
+
+async function loadThreadContext(summary, messageID) {
+  const threadID = String(summary?.thread_id || "").trim();
+  if (!threadID) {
+    state.thread = { id: "", items: [], index: -1, truncated: false };
+    renderThreadContext();
+    return;
+  }
+  try {
+    const payload = await api(`/api/v1/threads/${encodeURIComponent(threadID)}/messages?mailbox=${encodeURIComponent(state.mailbox)}&page=1&page_size=100`, { logErrors: false });
+    const items = Array.isArray(payload?.items) ? [...payload.items] : [];
+    if (!items.some((it) => String(it?.id || "") === String(messageID || "")) && summary?.id && String(summary.id) === String(messageID || "")) {
+      items.push(summary);
+    }
+    items.sort((a, b) => {
+      const da = new Date(a?.date || 0).getTime();
+      const db = new Date(b?.date || 0).getTime();
+      return da - db;
+    });
+    let index = items.findIndex((it) => String(it?.id || "") === String(messageID || ""));
+    if (index < 0 && items.length > 0) {
+      index = items.length - 1;
+    }
+    state.thread = {
+      id: threadID,
+      items,
+      index,
+      truncated: !!payload?.truncated,
+    };
+  } catch {
+    state.thread = { id: "", items: [], index: -1, truncated: false };
+  }
+  renderThreadContext();
+}
+
+async function openThreadNeighbor(delta) {
+  const items = Array.isArray(state.thread?.items) ? state.thread.items : [];
+  const current = Number(state.thread?.index ?? -1);
+  if (items.length === 0 || current < 0) return;
+  const next = current + delta;
+  if (next < 0 || next >= items.length) return;
+  const target = items[next];
+  if (!target?.id) return;
+  await openMessage(target.id, target);
+}
+
+function extractPrimaryEmailAddress(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  const bracket = value.match(/<([^>]+)>/);
+  if (bracket && validEmail(bracket[1])) {
+    return bracket[1].trim().toLowerCase();
+  }
+  const direct = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i);
+  if (direct && validEmail(direct[0])) {
+    return direct[0].trim().toLowerCase();
+  }
+  return "";
+}
+
+function withPrefixSubject(prefix, value) {
+  const subject = String(value || "").trim();
+  if (subject === "") {
+    return `${prefix}: (no subject)`;
+  }
+  const re = new RegExp(`^${prefix}\\s*:`, "i");
+  if (re.test(subject)) {
+    return subject;
+  }
+  return `${prefix}: ${subject}`;
+}
+
+function quoteMessageBody(body) {
+  return String(body || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+}
+
+function buildReplyBodyPrefill(message) {
+  const from = String(message?.from || "sender").trim() || "sender";
+  const date = formatDate(message?.date) || "an earlier time";
+  const body = quoteMessageBody(message?.body || "");
+  return `\n\nOn ${date}, ${from} wrote:\n${body}`;
+}
+
+function buildForwardBodyPrefill(message) {
+  const from = String(message?.from || "-");
+  const to = Array.isArray(message?.to) ? message.to.join(", ") : "-";
+  const subject = String(message?.subject || "(no subject)");
+  const date = formatDate(message?.date) || "-";
+  const body = String(message?.body || "");
+  return `----- Forwarded message -----\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\nTo: ${to}\n\n${body}`;
+}
+
+async function openReplyCompose() {
+  requireSelectedMessage();
+  const message = state.selectedMessage;
+  const target = extractPrimaryEmailAddress(message?.from);
+  if (!target) {
+    setStatus("Cannot determine sender address for reply.", "error");
+    return;
+  }
+  await openComposeOverlay(el.btnReply || el.btnComposeOpen, {
+    title: "Reply",
+    useDraft: false,
+    sendContext: { mode: "reply", messageID: message.id },
+    prefill: {
+      to: target,
+      subject: withPrefixSubject("Re", message.subject),
+      bodyText: buildReplyBodyPrefill(message),
+    },
+  });
+}
+
+async function openForwardCompose() {
+  requireSelectedMessage();
+  const message = state.selectedMessage;
+  await openComposeOverlay(el.btnForward || el.btnComposeOpen, {
+    title: "Forward",
+    useDraft: false,
+    sendContext: { mode: "forward", messageID: message.id },
+    prefill: {
+      subject: withPrefixSubject("Fwd", message.subject),
+      bodyText: buildForwardBodyPrefill(message),
+    },
+  });
+}
+
+function composeEndpointForContext() {
+  const mode = String(state.compose.sendContext?.mode || "send").trim().toLowerCase();
+  const messageID = String(state.compose.sendContext?.messageID || "").trim();
+  if ((mode === "reply" || mode === "forward") && messageID) {
+    return `/api/v1/messages/${encodeURIComponent(messageID)}/${mode}`;
+  }
+  return "/api/v1/messages/send";
+}
+
+async function openMessage(id, summary = null) {
   if (!state.user) {
     throw new Error("Sign in required");
   }
+  const knownSummary = summary || state.messages.find((item) => String(item?.id || "") === String(id || "")) || null;
+  state.selectedMessageSummary = knownSummary;
   const m = await api(`/api/v1/messages/${encodeURIComponent(id)}`);
   state.selectedMessage = m;
+  applyMailActionAvailability();
+  if (el.messageSubjectAnchor) {
+    el.messageSubjectAnchor.textContent = m.subject || "(no subject)";
+  }
   const metaRows = [
     ["From", m.from || "-"],
     ["To", (m.to || []).join(", ") || "-"],
-    ["Subject", m.subject || "-"],
     ["Date", formatDate(m.date) || "-"],
   ];
   renderMessageMeta(metaRows);
-  el.body.textContent = m.body || "(empty)";
+  state.ui.readerViewMode = messageHasHTML(m) ? "html" : "plain";
+  renderReaderBody(m);
 
   el.attachments.innerHTML = "";
   for (const a of (m.attachments || [])) {
@@ -4847,6 +5246,7 @@ async function openMessage(id) {
     link.target = "_blank";
     el.attachments.appendChild(link);
   }
+  await loadThreadContext(knownSummary, m.id);
   renderMessages(state.messages);
   syncMessageActiveDescendant();
   setActiveMailPane("reader");
@@ -4858,6 +5258,7 @@ async function searchMessages() {
   }
   const q = el.searchInput.value.trim();
   const data = await api(`/api/v1/search?mailbox=${encodeURIComponent(state.mailbox)}&q=${encodeURIComponent(q)}&page=1&page_size=40`);
+  clearReaderSelection();
   renderMessages(data.items || []);
   setStatus(`Search complete (${(data.items || []).length} results).`, "ok");
   setActiveMailPane("messages");
@@ -4901,8 +5302,8 @@ async function sendCompose(form) {
     mp.append("inline_image_cids", item.cid);
   }
 
-  await api("/api/v1/messages/send", { method: "POST", body: mp });
-  clearComposeDraft();
+  await api(composeEndpointForContext(), { method: "POST", body: mp });
+  setComposeSendContext("send", "");
 }
 
 function setUpdateNote(text, type = "info") {
@@ -6011,6 +6412,7 @@ async function handleMailKeyboard(event) {
     || target.isContentEditable
   );
   if (isEditable && event.key !== "Escape") return;
+  const k = event.key.toLowerCase();
 
   if (event.key === "Tab") {
     event.preventDefault();
@@ -6024,19 +6426,31 @@ async function handleMailKeyboard(event) {
     return;
   }
 
-  if (event.key.toLowerCase() === "c") {
+  if (k === "c") {
     event.preventDefault();
     void openComposeOverlay(el.btnComposeOpen);
     return;
   }
 
-  if (event.key.toLowerCase() === "f") {
+  if (k === "r") {
+    event.preventDefault();
+    if (state.selectedMessage && el.btnReply) el.btnReply.click();
+    return;
+  }
+
+  if (event.shiftKey && k === "f") {
+    event.preventDefault();
+    if (state.selectedMessage && el.btnForward) el.btnForward.click();
+    return;
+  }
+
+  if (k === "f") {
     event.preventDefault();
     if (state.selectedMessage) el.btnFlag.click();
     return;
   }
 
-  if (event.key.toLowerCase() === "s") {
+  if (k === "s") {
     event.preventDefault();
     if (state.selectedMessage) el.btnSeen.click();
     return;
@@ -6079,7 +6493,6 @@ async function handleMailKeyboard(event) {
     return;
   }
 
-  const k = event.key.toLowerCase();
   if (state.ui.activeKeyboardPane === "mailboxes" && (k === "j" || event.key === "ArrowDown")) {
     event.preventDefault();
     await moveMailboxSelection(1);
@@ -6107,6 +6520,29 @@ function formatDate(value) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
   return d.toLocaleString();
+}
+
+function formatListDate(value) {
+  if (!value) return "";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  const now = new Date();
+  const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const nowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const deltaDays = Math.round((nowStart.getTime() - dayStart.getTime()) / 86400000);
+  if (deltaDays === 0) {
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  if (deltaDays === 1) {
+    return "Yesterday";
+  }
+  if (deltaDays > 1 && deltaDays < 7) {
+    return d.toLocaleDateString([], { weekday: "short" });
+  }
+  if (d.getFullYear() === now.getFullYear()) {
+    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  }
+  return d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
 }
 
 function escapeHtml(s) {
@@ -6817,10 +7253,19 @@ function bindUI() {
       state.compose.submitInFlight = true;
       updateComposeSubmitState();
       try {
+        const sendMode = String(state.compose.sendContext?.mode || "send").toLowerCase();
         await sendCompose(e.target);
-        setStatus("Message sent.", "ok");
+        if (sendMode === "reply") {
+          setStatus("Reply sent.", "ok");
+        } else if (sendMode === "forward") {
+          setStatus("Forward sent.", "ok");
+        } else {
+          setStatus("Message sent.", "ok");
+        }
         e.target.reset();
-        clearComposeDraft();
+        if (sendMode === "send") {
+          clearComposeDraft();
+        }
         state.compose.recipients.to = [];
         state.compose.recipients.cc = [];
         state.compose.recipients.bcc = [];
@@ -7303,7 +7748,7 @@ function bindUI() {
     state.auth.legacyMFAOfferShownForSession = false;
     state.auth.mfaFlowPromise = null;
     state.user = null;
-    state.selectedMessage = null;
+    clearReaderSelection();
     renderPasskeyCredentials([]);
     renderTrustedDevices([]);
     renderSessions([]);
@@ -7324,6 +7769,40 @@ function bindUI() {
       setStatus(err.message, "error");
     }
   };
+
+  if (el.btnReaderViewHTML) {
+    el.btnReaderViewHTML.onclick = () => {
+      state.ui.readerViewMode = "html";
+      renderReaderBody(state.selectedMessage);
+    };
+  }
+
+  if (el.btnReaderViewPlain) {
+    el.btnReaderViewPlain.onclick = () => {
+      state.ui.readerViewMode = "plain";
+      renderReaderBody(state.selectedMessage);
+    };
+  }
+
+  if (el.btnReply) {
+    el.btnReply.onclick = async () => {
+      try {
+        await openReplyCompose();
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    };
+  }
+
+  if (el.btnForward) {
+    el.btnForward.onclick = async () => {
+      try {
+        await openForwardCompose();
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    };
+  }
 
   el.btnFlag.onclick = async () => {
     try {
@@ -7351,8 +7830,7 @@ function bindUI() {
     try {
       requireSelectedMessage();
       await api(`/api/v1/messages/${encodeURIComponent(state.selectedMessage.id)}/move`, { method: "POST", json: { mailbox: "Trash" } });
-      state.selectedMessage = null;
-      el.body.textContent = "Select a message.";
+      clearReaderSelection();
       await loadMessages();
       setStatus("Message moved to trash.", "ok");
       setActiveMailPane("messages");
@@ -7360,6 +7838,30 @@ function bindUI() {
       setStatus(err.message, "error");
     }
   };
+
+  if (el.btnThreadPrev) {
+    el.btnThreadPrev.onclick = async () => {
+      try {
+        await openThreadNeighbor(-1);
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    };
+  }
+
+  if (el.btnThreadNext) {
+    el.btnThreadNext.onclick = async () => {
+      try {
+        await openThreadNeighbor(1);
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    };
+  }
+
+  applyMailActionAvailability();
+  renderThreadContext();
+  renderReaderBody(null);
 }
 
 async function bootstrap() {

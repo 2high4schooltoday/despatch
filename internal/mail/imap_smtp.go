@@ -30,6 +30,7 @@ const (
 	defaultDialTimeout = 10 * time.Second
 	maxBodyBytes       = 1 << 20  // 1 MiB body preview
 	maxAttachmentBytes = 25 << 20 // 25 MiB per attachment
+	previewSampleBytes = 1024
 )
 
 type IMAPSMTPClient struct {
@@ -112,7 +113,14 @@ func (c *IMAPSMTPClient) ListMessages(ctx context.Context, user, pass, mailbox s
 
 	seq := new(imap.SeqSet)
 	seq.AddRange(uint32(start), uint32(end))
-	items := []imap.FetchItem{imap.FetchEnvelope, imap.FetchFlags, imap.FetchUid, imap.FetchInternalDate}
+	previewSection := &imap.BodySectionName{
+		Peek:    true,
+		Partial: []int{0, previewSampleBytes},
+		BodyPartName: imap.BodyPartName{
+			Specifier: imap.TextSpecifier,
+		},
+	}
+	items := []imap.FetchItem{imap.FetchEnvelope, imap.FetchFlags, imap.FetchUid, imap.FetchInternalDate, previewSection.FetchItem()}
 	messages := make(chan *imap.Message, pageSize)
 	done := make(chan error, 1)
 	go func() {
@@ -133,13 +141,7 @@ func (c *IMAPSMTPClient) ListMessages(ctx context.Context, user, pass, mailbox s
 				date = msg.Envelope.Date
 			}
 		}
-		out = append(out, MessageSummary{
-			ID:      EncodeMessageID(mailbox, msg.Uid),
-			From:    from,
-			Subject: subject,
-			Date:    date,
-			Seen:    hasFlag(msg.Flags, imap.SeenFlag),
-		})
+		out = append(out, buildMessageSummary(msg, mailbox, from, subject, date, previewSection))
 	}
 	if err := <-done; err != nil {
 		return nil, err
@@ -232,7 +234,14 @@ func (c *IMAPSMTPClient) Search(ctx context.Context, user, pass, mailbox, query 
 	for _, u := range selected {
 		seq.AddNum(u)
 	}
-	items := []imap.FetchItem{imap.FetchEnvelope, imap.FetchFlags, imap.FetchUid, imap.FetchInternalDate}
+	previewSection := &imap.BodySectionName{
+		Peek:    true,
+		Partial: []int{0, previewSampleBytes},
+		BodyPartName: imap.BodyPartName{
+			Specifier: imap.TextSpecifier,
+		},
+	}
+	items := []imap.FetchItem{imap.FetchEnvelope, imap.FetchFlags, imap.FetchUid, imap.FetchInternalDate, previewSection.FetchItem()}
 	messages := make(chan *imap.Message, len(selected))
 	done := make(chan error, 1)
 	go func() {
@@ -244,14 +253,14 @@ func (c *IMAPSMTPClient) Search(ctx context.Context, user, pass, mailbox, query 
 		if msg == nil {
 			continue
 		}
-		s := MessageSummary{
-			ID:      EncodeMessageID(mailbox, msg.Uid),
-			From:    envelopeFirstAddress(msg.Envelope.From),
-			Subject: msg.Envelope.Subject,
-			Date:    msg.InternalDate,
-			Seen:    hasFlag(msg.Flags, imap.SeenFlag),
+		from := ""
+		subject := ""
+		if msg.Envelope != nil {
+			from = envelopeFirstAddress(msg.Envelope.From)
+			subject = msg.Envelope.Subject
 		}
-		if !msg.Envelope.Date.IsZero() {
+		s := buildMessageSummary(msg, mailbox, from, subject, msg.InternalDate, previewSection)
+		if msg.Envelope != nil && !msg.Envelope.Date.IsZero() {
 			s.Date = msg.Envelope.Date
 		}
 		msgByUID[msg.Uid] = s
@@ -850,29 +859,41 @@ func parseMessage(raw []byte, messageID, mailbox string, uid uint32) (Message, e
 		if err != nil {
 			continue
 		}
-		switch h := part.Header.(type) {
-		case *mail.InlineHeader:
-			ct, _, _ := h.ContentType()
-			if strings.HasPrefix(ct, "text/plain") || ct == "" {
-				body, _ := io.ReadAll(io.LimitReader(part.Body, maxBodyBytes))
-				if len(msg.Body) == 0 {
-					msg.Body = string(body)
-				}
+		desc := classifyMIMEPart(part.Header)
+		switch desc.kind {
+		case mimePartTextPlain:
+			body, _ := io.ReadAll(io.LimitReader(part.Body, maxBodyBytes))
+			if msg.Body == "" {
+				msg.Body = string(body)
 			}
-		case *mail.AttachmentHeader:
+		case mimePartTextHTML:
+			body, _ := io.ReadAll(io.LimitReader(part.Body, maxBodyBytes))
+			if msg.BodyHTML == "" {
+				msg.BodyHTML = string(body)
+			}
+		case mimePartAttachment:
 			partIdx++
-			filename, _ := h.Filename()
-			ct, _, _ := h.ContentType()
-			if ct == "" {
-				ct = "application/octet-stream"
-			}
 			size, _ := io.Copy(io.Discard, io.LimitReader(part.Body, maxAttachmentBytes+1))
 			if size > maxAttachmentBytes {
 				size = maxAttachmentBytes
 			}
-			meta := AttachmentMeta{ID: EncodeAttachmentID(messageID, partIdx), Filename: filename, ContentType: ct, Size: size}
+			filename := desc.filename
+			if filename == "" {
+				filename = fallbackAttachmentFilename(desc.contentType, partIdx)
+			}
+			meta := AttachmentMeta{
+				ID:          EncodeAttachmentID(messageID, partIdx),
+				Filename:    filename,
+				ContentType: desc.contentType,
+				Size:        size,
+				Inline:      desc.inline,
+				ContentID:   desc.contentID,
+			}
 			msg.Attachments = append(msg.Attachments, meta)
 		}
+	}
+	if msg.Body == "" && msg.BodyHTML != "" {
+		msg.Body = plainTextFromHTML(msg.BodyHTML)
 	}
 
 	return msg, nil
@@ -895,18 +916,17 @@ func extractAttachment(raw []byte, messageID string, targetPart int) (Attachment
 		if err != nil {
 			continue
 		}
-		h, ok := part.Header.(*mail.AttachmentHeader)
-		if !ok {
+		desc := classifyMIMEPart(part.Header)
+		if desc.kind != mimePartAttachment {
 			continue
 		}
 		partIdx++
 		if partIdx != targetPart {
 			continue
 		}
-		filename, _ := h.Filename()
-		ct, _, _ := h.ContentType()
-		if ct == "" {
-			ct = "application/octet-stream"
+		filename := desc.filename
+		if filename == "" {
+			filename = fallbackAttachmentFilename(desc.contentType, targetPart)
 		}
 		data, err := io.ReadAll(io.LimitReader(part.Body, maxAttachmentBytes))
 		if err != nil {
@@ -915,8 +935,10 @@ func extractAttachment(raw []byte, messageID string, targetPart int) (Attachment
 		meta := AttachmentMeta{
 			ID:          EncodeAttachmentID(messageID, targetPart),
 			Filename:    filename,
-			ContentType: ct,
+			ContentType: desc.contentType,
 			Size:        int64(len(data)),
+			Inline:      desc.inline,
+			ContentID:   desc.contentID,
 		}
 		return meta, data, nil
 	}
@@ -942,6 +964,35 @@ func envelopeFirstAddress(addrs []*imap.Address) string {
 		return fmt.Sprintf("%s <%s>", addrs[0].PersonalName, addrs[0].Address())
 	}
 	return addrs[0].Address()
+}
+
+func buildMessageSummary(msg *imap.Message, mailbox, from, subject string, date time.Time, section *imap.BodySectionName) MessageSummary {
+	if msg == nil {
+		return MessageSummary{
+			From:     from,
+			Subject:  subject,
+			Date:     date,
+			ThreadID: DeriveThreadID(mailbox, subject, from),
+		}
+	}
+	preview := ""
+	if section != nil {
+		body := msg.GetBody(section)
+		if body != nil {
+			if raw, err := io.ReadAll(io.LimitReader(body, int64(previewSampleBytes*2))); err == nil {
+				preview = BuildPreviewFromBodySample(string(raw), DefaultPreviewMaxChars)
+			}
+		}
+	}
+	return MessageSummary{
+		ID:       EncodeMessageID(mailbox, msg.Uid),
+		From:     from,
+		Subject:  subject,
+		Date:     date,
+		Seen:     hasFlag(msg.Flags, imap.SeenFlag),
+		Preview:  preview,
+		ThreadID: DeriveThreadID(mailbox, subject, from),
+	}
 }
 
 func hasFlag(flags []string, flag string) bool {

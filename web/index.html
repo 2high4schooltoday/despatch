@@ -316,11 +316,25 @@
         <article class="panel workspace-header">
           <div>
             <h2>Mailbox</h2>
-            <p class="hint">Keyboard: Tab pane, j/k row, Enter open, / search, c compose, f flag, s seen, Delete trash.</p>
+            <p class="hint">Keyboard: Tab pane, j/k row, Enter open, / search, c compose, r reply, Shift+F forward, f flag, s seen, Delete trash.</p>
           </div>
           <div class="actions">
             <button id="mail-mobile-back" class="cmd-btn cmd-btn--dense mail-nav-back" type="button">Back</button>
-            <button id="btn-compose-open" class="cmd-btn cmd-btn--primary" type="button">Compose</button>
+          </div>
+        </article>
+
+        <article class="panel mail-commandbar" aria-label="Mail commands">
+          <div class="mail-commandbar-actions">
+            <button id="btn-compose-open" class="cmd-btn cmd-btn--primary cmd-btn--dense" type="button">Compose</button>
+            <button id="btn-reply" class="cmd-btn cmd-btn--dense" type="button">Reply</button>
+            <button id="btn-forward" class="cmd-btn cmd-btn--dense" type="button">Forward</button>
+            <button id="btn-flag" class="cmd-btn cmd-btn--dense" type="button">Flag</button>
+            <button id="btn-mark-seen" class="cmd-btn cmd-btn--dense" type="button">Mark Seen</button>
+            <button id="btn-trash" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Move To Trash</button>
+          </div>
+          <div class="mail-commandbar-search">
+            <input id="search-input" type="text" placeholder="Search subject, body, sender">
+            <button id="btn-search" class="cmd-btn cmd-btn--dense" type="button">Search</button>
           </div>
         </article>
 
@@ -337,10 +351,6 @@
               <h3>Messages</h3>
               <button id="mail-back-to-mailboxes" class="cmd-btn cmd-btn--dense mail-nav-back" type="button">Back</button>
             </div>
-            <div class="searchbar">
-              <input id="search-input" type="text" placeholder="Search subject, body, sender">
-              <button id="btn-search" class="cmd-btn cmd-btn--dense" type="button">Search</button>
-            </div>
             <ul id="messages" class="message-list" role="listbox" aria-label="Messages" tabindex="0"></ul>
           </section>
 
@@ -349,14 +359,28 @@
               <h3>Reader</h3>
               <button id="mail-back-to-messages" class="cmd-btn cmd-btn--dense mail-nav-back" type="button">Back</button>
             </div>
-            <div id="message-meta" class="meta"></div>
-            <pre id="message-body" class="message-body">Select a message.</pre>
-            <div id="attachment-list" class="attachments"></div>
-            <div class="actions reader-commands">
-              <button id="btn-flag" class="cmd-btn cmd-btn--dense" type="button">Flag</button>
-              <button id="btn-mark-seen" class="cmd-btn cmd-btn--dense" type="button">Mark Seen</button>
-              <button id="btn-trash" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Move To Trash</button>
+            <div class="reader-header">
+              <h4 id="message-subject-anchor" class="reader-subject">(no subject)</h4>
+              <div id="message-meta" class="meta"></div>
+              <div class="thread-context">
+                <span id="thread-position" class="thread-position">No thread context.</span>
+                <div class="thread-actions">
+                  <button id="btn-thread-prev" class="cmd-btn cmd-btn--dense" type="button">Prev</button>
+                  <button id="btn-thread-next" class="cmd-btn cmd-btn--dense" type="button">Next</button>
+                </div>
+              </div>
             </div>
+            <div class="reader-view-controls" role="group" aria-label="Reader view mode">
+              <button id="btn-reader-view-html" class="cmd-btn cmd-btn--dense" type="button">HTML</button>
+              <button id="btn-reader-view-plain" class="cmd-btn cmd-btn--dense" type="button">Plain</button>
+            </div>
+            <div class="reader-body-host">
+              <div id="message-body-html-wrap" class="message-body-html-wrap hidden">
+                <iframe id="message-body-html" class="message-body-html" title="HTML message body" sandbox="allow-same-origin"></iframe>
+              </div>
+              <pre id="message-body-plain" class="message-body">Select a message.</pre>
+            </div>
+            <div id="attachment-list" class="attachments"></div>
           </section>
         </div>
       </section>

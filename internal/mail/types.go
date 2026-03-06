@@ -13,11 +13,13 @@ type Mailbox struct {
 }
 
 type MessageSummary struct {
-	ID      string    `json:"id"`
-	From    string    `json:"from"`
-	Subject string    `json:"subject"`
-	Date    time.Time `json:"date"`
-	Seen    bool      `json:"seen"`
+	ID       string    `json:"id"`
+	From     string    `json:"from"`
+	Subject  string    `json:"subject"`
+	Date     time.Time `json:"date"`
+	Seen     bool      `json:"seen"`
+	Preview  string    `json:"preview,omitempty"`
+	ThreadID string    `json:"thread_id,omitempty"`
 }
 
 type AttachmentMeta struct {
@@ -25,6 +27,8 @@ type AttachmentMeta struct {
 	Filename    string `json:"filename"`
 	ContentType string `json:"content_type"`
 	Size        int64  `json:"size"`
+	Inline      bool   `json:"inline,omitempty"`
+	ContentID   string `json:"content_id,omitempty"`
 }
 
 type Message struct {
@@ -36,6 +40,7 @@ type Message struct {
 	Subject     string           `json:"subject"`
 	Date        time.Time        `json:"date"`
 	Body        string           `json:"body"`
+	BodyHTML    string           `json:"body_html,omitempty"`
 	Attachments []AttachmentMeta `json:"attachments"`
 }
 

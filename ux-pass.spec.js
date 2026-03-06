@@ -33,6 +33,17 @@ test('desktop ux pass', async ({ page }) => {
   await page.waitForTimeout(600);
 
   await expect(page.locator('#view-mail')).toBeVisible();
+  await expect(page.locator('.mail-commandbar')).toBeVisible();
+  await expect(page.locator('#btn-reader-view-html')).toBeVisible();
+  await expect(page.locator('#btn-reader-view-plain')).toBeVisible();
+  await expect(page.locator('#btn-compose-open')).toBeVisible();
+  await expect(page.locator('#btn-reply')).toBeVisible();
+  await expect(page.locator('#btn-forward')).toBeVisible();
+  await expect(page.locator('#btn-flag')).toBeVisible();
+  await expect(page.locator('#btn-mark-seen')).toBeVisible();
+  await expect(page.locator('#btn-trash')).toBeVisible();
+  await expect(page.locator('#mail-pane-messages .searchbar')).toHaveCount(0);
+  await expect(page.locator('#mailboxes .mailbox-section-title').first()).toHaveText(/SYSTEM/i);
   await page.screenshot({ path: '/tmp/ux-desktop-mail.png', fullPage: true });
 
   await page.locator('#mail-pane-reader').click();
@@ -99,6 +110,57 @@ test('desktop ux pass', async ({ page }) => {
 
   await page.keyboard.press('Escape');
   await page.waitForTimeout(250);
+
+  const messageRows = page.locator('.message-row-btn');
+  if (await messageRows.count()) {
+    await messageRows.first().click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('#thread-position')).toBeVisible();
+    await expect(page.locator('#btn-thread-prev')).toBeVisible();
+    await expect(page.locator('#btn-thread-next')).toBeVisible();
+    await expect(page.locator('#btn-reader-view-html')).toBeVisible();
+    await expect(page.locator('#btn-reader-view-plain')).toBeVisible();
+
+    const htmlModeEnabled = await page.locator('#btn-reader-view-html').isEnabled();
+    if (htmlModeEnabled) {
+      await expect(page.locator('#btn-reader-view-html')).toHaveClass(/is-active/);
+      await expect(page.locator('#message-body-html-wrap')).not.toHaveClass(/hidden/);
+      const srcdoc = (await page.locator('#message-body-html').getAttribute('srcdoc')) || '';
+      expect(srcdoc).toContain('Content-Security-Policy');
+
+      await page.click('#btn-reader-view-plain');
+      await expect(page.locator('#btn-reader-view-plain')).toHaveClass(/is-active/);
+      await expect(page.locator('#message-body-plain')).not.toHaveClass(/hidden/);
+      await expect(page.locator('#message-body-html-wrap')).toHaveClass(/hidden/);
+
+      await page.click('#btn-reader-view-html');
+      await expect(page.locator('#message-body-html-wrap')).not.toHaveClass(/hidden/);
+      const rewrittenSrcdoc = (await page.locator('#message-body-html').getAttribute('srcdoc')) || '';
+      if (rewrittenSrcdoc.includes('/remote-image?url=')) {
+        expect(rewrittenSrcdoc).toContain('/api/v1/messages/');
+      }
+      if (rewrittenSrcdoc.toLowerCase().includes('/api/v1/attachments/')) {
+        expect(rewrittenSrcdoc.toLowerCase()).not.toContain('cid:');
+      }
+    }
+
+    await expect(page.locator('#btn-reply')).toBeEnabled();
+    await page.click('#btn-reply');
+    await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
+    await expect(page.locator('#compose-title')).toHaveText(/Reply/i);
+    await expect(page.locator('#compose-subject-input')).toHaveValue(/Re:/i);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+
+    await expect(page.locator('#btn-forward')).toBeEnabled();
+    await page.click('#btn-forward');
+    await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
+    await expect(page.locator('#compose-title')).toHaveText(/Forward/i);
+    await expect(page.locator('#compose-subject-input')).toHaveValue(/Fwd:/i);
+    await expect(page.locator('#compose-editor')).toContainText('----- Forwarded message -----');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(150);
+  }
 
   await page.click('#tab-settings');
   await page.waitForTimeout(700);
@@ -177,6 +239,7 @@ test('mobile ux pass', async ({ browser }) => {
   await page.waitForTimeout(600);
 
   await expect(page.locator('#view-mail')).toBeVisible();
+  await expect(page.locator('.mail-commandbar')).toBeVisible();
   await page.screenshot({ path: '/tmp/ux-mobile-mail.png', fullPage: true });
 
   await page.click('#tab-settings');

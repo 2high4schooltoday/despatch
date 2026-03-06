@@ -46,9 +46,14 @@ type Handlers struct {
 }
 
 const (
-	maxUploadAttachmentBytes = 25 << 20
-	maxUploadTotalBytes      = 35 << 20
-	trustedDeviceTTL         = 30 * 24 * time.Hour
+	maxUploadAttachmentBytes    = 25 << 20
+	maxUploadTotalBytes         = 35 << 20
+	trustedDeviceTTL            = 30 * 24 * time.Hour
+	threadMessagesMaxScanPages  = 20
+	threadMessagesScanPageSize  = 50
+	mailRemoteImageFetchTimeout = 8 * time.Second
+	mailRemoteImageMaxBytes     = 10 << 20
+	mailRemoteImageMaxRedirects = 3
 )
 
 func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
@@ -165,6 +170,8 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Get("/mailboxes", h.ListMailboxes)
 				r.Get("/messages", h.ListMessages)
 				r.Get("/messages/{id}", h.GetMessage)
+				r.Get("/messages/{id}/remote-image", h.GetMessageRemoteImage)
+				r.Get("/threads/{id}/messages", h.ListThreadMessages)
 				r.Get("/compose/identities", h.ComposeIdentities)
 				r.Get("/search", h.Search)
 				r.Get("/attachments/{id}", h.GetAttachment)
@@ -825,7 +832,153 @@ func (h *Handlers) GetMessage(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 404, "not_found", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	if strings.TrimSpace(msg.BodyHTML) != "" {
+		msg.BodyHTML = rewriteMessageHTML(id, msg.BodyHTML, msg.Attachments)
+	}
 	util.WriteJSON(w, 200, msg)
+}
+
+func (h *Handlers) GetMessageRemoteImage(w http.ResponseWriter, r *http.Request) {
+	if _, err := h.sessionMailPassword(r); err != nil {
+		h.writeMailAuthError(w, r, err)
+		return
+	}
+
+	messageID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if messageID == "" {
+		util.WriteError(w, 400, "bad_request", "message id is required", middleware.RequestID(r.Context()))
+		return
+	}
+	if _, _, err := mail.DecodeMessageID(messageID); err != nil {
+		util.WriteError(w, 400, "bad_request", "invalid message id", middleware.RequestID(r.Context()))
+		return
+	}
+
+	remoteURL, err := validateRemoteImageTarget(r.Context(), r.URL.Query().Get("url"))
+	if err != nil {
+		util.WriteError(w, 400, "bad_request", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+
+	client := remoteImageHTTPClientFactory()
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, remoteURL.String(), nil)
+	if err != nil {
+		util.WriteError(w, 400, "bad_request", "invalid remote image request", middleware.RequestID(r.Context()))
+		return
+	}
+	req.Header.Set("Accept", "image/*")
+	req.Header.Set("User-Agent", "despatch-mail-image-proxy/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		util.WriteError(w, 502, "remote_image_fetch_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		util.WriteError(w, 502, "remote_image_fetch_failed", fmt.Sprintf("remote server returned HTTP %d", resp.StatusCode), middleware.RequestID(r.Context()))
+		return
+	}
+
+	contentType := strings.ToLower(strings.TrimSpace(resp.Header.Get("Content-Type")))
+	if contentType == "" || !strings.HasPrefix(contentType, "image/") {
+		util.WriteError(w, 415, "unsupported_media_type", "remote resource is not an image", middleware.RequestID(r.Context()))
+		return
+	}
+
+	if rawLen := strings.TrimSpace(resp.Header.Get("Content-Length")); rawLen != "" {
+		if n, parseErr := strconv.ParseInt(rawLen, 10, 64); parseErr == nil && n > mailRemoteImageMaxBytes {
+			util.WriteError(w, 413, "remote_image_too_large", fmt.Sprintf("remote image exceeds %d bytes", mailRemoteImageMaxBytes), middleware.RequestID(r.Context()))
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+
+	copyWriter := &maxBytesCopyWriter{w: w, maxBytes: mailRemoteImageMaxBytes}
+	if _, err := io.Copy(copyWriter, resp.Body); err != nil && !errors.Is(err, errRemoteImageMaxBytesExceeded) {
+		return
+	}
+}
+
+func (h *Handlers) ListThreadMessages(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	pass, err := h.sessionMailPassword(r)
+	if err != nil {
+		h.writeMailAuthError(w, r, err)
+		return
+	}
+
+	threadID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if threadID == "" {
+		util.WriteError(w, 400, "bad_request", "thread id is required", middleware.RequestID(r.Context()))
+		return
+	}
+	mailbox := strings.TrimSpace(r.URL.Query().Get("mailbox"))
+	if mailbox == "" {
+		mailbox = "INBOX"
+	}
+	page, pageSize := parsePagination(r)
+	offset := (page - 1) * pageSize
+	if offset < 0 {
+		offset = 0
+	}
+
+	mailLogin := service.MailIdentity(u)
+	out := make([]mail.MessageSummary, 0, pageSize)
+	matched := 0
+	truncated := false
+	done := false
+	for scanPage := 1; scanPage <= threadMessagesMaxScanPages; scanPage++ {
+		items, listErr := h.svc.Mail().ListMessages(r.Context(), mailLogin, pass, mailbox, scanPage, threadMessagesScanPageSize)
+		if listErr != nil {
+			util.WriteError(w, 502, "imap_error", listErr.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		if len(items) == 0 {
+			done = true
+			break
+		}
+		for _, item := range items {
+			candidate := item
+			if strings.TrimSpace(candidate.ThreadID) == "" {
+				candidate.ThreadID = mail.DeriveThreadID(mailbox, candidate.Subject, candidate.From)
+			}
+			if candidate.ThreadID != threadID {
+				continue
+			}
+			if matched < offset {
+				matched++
+				continue
+			}
+			if len(out) < pageSize {
+				out = append(out, candidate)
+				matched++
+				continue
+			}
+			done = true
+			break
+		}
+		if done {
+			break
+		}
+	}
+	if !done {
+		truncated = true
+	}
+
+	util.WriteJSON(w, 200, map[string]any{
+		"thread_id": threadID,
+		"mailbox":   mailbox,
+		"page":      page,
+		"page_size": pageSize,
+		"truncated": truncated,
+		"items":     out,
+	})
 }
 
 func (h *Handlers) SendMessage(w http.ResponseWriter, r *http.Request) {
@@ -1072,7 +1225,11 @@ func (h *Handlers) GetAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 	defer stream.Close()
 	w.Header().Set("Content-Type", meta.ContentType)
-	w.Header().Set("Content-Disposition", `attachment; filename="`+meta.Filename+`"`)
+	disposition := "attachment"
+	if meta.Inline {
+		disposition = "inline"
+	}
+	w.Header().Set("Content-Disposition", disposition+`; filename="`+meta.Filename+`"`)
 	if meta.Size > 0 {
 		w.Header().Set("Content-Length", strconv.FormatInt(meta.Size, 10))
 	}
