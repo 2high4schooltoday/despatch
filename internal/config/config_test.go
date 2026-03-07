@@ -81,6 +81,28 @@ func TestLoadAllowsLogSenderWhenPublicResetDisabled(t *testing.T) {
 	}
 }
 
+func TestLoadPasswordResetExternalSenderReadyDefaultsFalse(t *testing.T) {
+	setValidEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.PasswordResetExternalSenderReady {
+		t.Fatalf("expected PASSWORD_RESET_EXTERNAL_SENDER_READY to default false")
+	}
+}
+
+func TestLoadPasskeyPasswordlessDefaultsTrue(t *testing.T) {
+	setValidEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.PasskeyPasswordlessEnabled {
+		t.Fatalf("expected PASSKEY_PASSWORDLESS_ENABLED to default true")
+	}
+}
+
 func TestLoadCookieSecureModeLegacyFallback(t *testing.T) {
 	setValidEnv(t)
 	t.Setenv("COOKIE_SECURE_MODE", "")

@@ -25,6 +25,7 @@ const state = {
     step: 0,
     baseDomain: "",
     defaultAdminEmail: "",
+    passkeyPrimaryEnabled: true,
     authMode: "sql",
     passwordMinLength: 12,
     passwordMaxLength: 128,
@@ -183,8 +184,11 @@ const el = {
   authPaneLogin: document.getElementById("auth-pane-login"),
   authPaneRegister: document.getElementById("auth-pane-register"),
   authPaneReset: document.getElementById("auth-pane-reset"),
+  resetRequestEmail: document.getElementById("reset-request-email"),
+  resetTokenInput: document.getElementById("reset-token-input"),
+  resetNewPasswordInput: document.getElementById("reset-new-password"),
   loginForm: document.getElementById("form-login"),
-  passkeyEmailInput: document.getElementById("passkey-email"),
+  passkeyLoginCard: document.getElementById("auth-passkey-card"),
   btnPasskeyLogin: document.getElementById("btn-passkey-login"),
   passkeyLoginHint: document.getElementById("passkey-login-hint"),
   resetCapabilityNote: document.getElementById("reset-capability-note"),
@@ -376,9 +380,11 @@ const el = {
   setupAdminMailboxLoginWrap: document.getElementById("setup-mailbox-login-wrap"),
   setupPassword: document.getElementById("setup-password"),
   setupPasswordConfirm: document.getElementById("setup-password-confirm"),
+  setupPasskeyPrimaryEnabled: document.getElementById("setup-passkey-primary-enabled"),
   setupSummaryRegion: document.getElementById("setup-summary-region"),
   setupSummaryDomain: document.getElementById("setup-summary-domain"),
   setupSummaryEmail: document.getElementById("setup-summary-email"),
+  setupSummaryPasskey: document.getElementById("setup-summary-passkey"),
   setupPasswordHint: document.getElementById("setup-password-hint"),
   setupInlineStatus: document.getElementById("setup-inline-status"),
   setupCompleteNote: document.getElementById("setup-complete-note"),
@@ -532,29 +538,18 @@ function authCapabilities() {
   return state.auth.capabilities;
 }
 
-function passkeyLoginEmailValue() {
-  return String(el.passkeyEmailInput?.value || "").trim().toLowerCase();
-}
-
 function renderPasskeyLoginUI() {
-  if (!el.btnPasskeyLogin || !el.passkeyLoginHint) {
+  if (!el.btnPasskeyLogin || !el.passkeyLoginHint || !el.passkeyLoginCard) {
     return;
   }
   const caps = authCapabilities();
   const browserSupported = supportsWebAuthn();
   const available = browserSupported && !!caps.passkey_passwordless_available;
-  const usernameless = caps.passkey_usernameless_enabled !== false;
-  const hasEmail = passkeyLoginEmailValue() !== "";
-  const emailRequiredButMissing = available && !usernameless && !hasEmail;
-  el.btnPasskeyLogin.disabled = !available || emailRequiredButMissing;
+  el.passkeyLoginCard.classList.toggle("hidden", !available);
+  el.passkeyLoginCard.setAttribute("aria-hidden", available ? "false" : "true");
+  el.btnPasskeyLogin.disabled = !available;
   if (available) {
-    if (!usernameless) {
-      el.passkeyLoginHint.textContent = "Email is required for passkey sign-in.";
-      return;
-    }
-    el.passkeyLoginHint.textContent = hasEmail
-      ? "Use a passkey scoped to this email."
-      : "Use a passkey on this device; account discovery is automatic.";
+    el.passkeyLoginHint.textContent = "Use a discoverable passkey on this device. Account discovery is automatic.";
     return;
   }
   if (!browserSupported) {
@@ -579,9 +574,7 @@ function renderPasskeySecurityNote() {
   lines.push(caps.passkey_passwordless_available
     ? "Passkeys are available for primary sign-in."
     : authCapabilityReasonMessage(caps.reason, "Passkey sign-in is currently unavailable."));
-  lines.push(caps.passkey_usernameless_enabled === false
-    ? "Username-less account discovery is disabled; email is required for passkey sign-in."
-    : "Username-less account discovery is enabled; email is optional for passkey sign-in.");
+  lines.push("Passkey sign-in uses built-in account discovery and does not require an email prompt.");
   el.passkeysNote.textContent = lines.join(" ");
 }
 
@@ -2007,17 +2000,20 @@ function normalizePublicKeyGetOptions(beginPayload = {}) {
   const allowCredentials = Array.isArray(pk.allowCredentials)
     ? pk.allowCredentials
     : Array.isArray(beginPayload.allow_credentials) ? beginPayload.allow_credentials : [];
-  return {
+  const options = {
     challenge: decodeCredentialID(pk.challenge || beginPayload.challenge),
     rpId: String(pk.rpId || beginPayload.rp_id || window.location.hostname),
     timeout: Number(pk.timeout || beginPayload.timeout_ms || 300000),
     userVerification: String(pk.userVerification || "preferred"),
-    allowCredentials: allowCredentials.map((item) => ({
+  };
+  if (allowCredentials.length > 0) {
+    options.allowCredentials = allowCredentials.map((item) => ({
       type: "public-key",
       id: decodeCredentialID(item.id),
       transports: Array.isArray(item.transports) ? item.transports : undefined,
-    })),
-  };
+    }));
+  }
+  return options;
 }
 
 function credentialToPayload(credential) {
@@ -2528,10 +2524,9 @@ async function runPasskeyPrimaryLoginFlow() {
   if (!caps.passkey_passwordless_available) {
     throw new Error(authCapabilityReasonMessage(caps.reason, "Passkey login is not available."));
   }
-  const emailValue = passkeyLoginEmailValue();
   const begin = await api("/api/v1/login/passkey/begin", {
     method: "POST",
-    json: emailValue ? { email: emailValue } : {},
+    json: {},
     logErrors: false,
   });
   const options = normalizePublicKeyGetOptions(begin);
@@ -2556,16 +2551,7 @@ function formatPasskeyPrimaryLoginError(err) {
   if (err.code !== "invalid_credentials") {
     return formatAPIError(err, "Passkey login failed.");
   }
-  const scopedEmail = passkeyLoginEmailValue();
-  const caps = authCapabilities();
-  const usernameless = caps.passkey_usernameless_enabled !== false;
-  if (scopedEmail) {
-    return `No matching passkey was accepted for ${scopedEmail}. Try another email or continue with password.${apiRequestRef(err)}`;
-  }
-  if (usernameless) {
-    return `No discoverable passkey was accepted on this device. Try again or sign in with email and password.${apiRequestRef(err)}`;
-  }
-  return `Email is required for passkey sign-in on this server.${apiRequestRef(err)}`;
+  return `No discoverable passkey was accepted on this device. Try again or sign in with email and password.${apiRequestRef(err)}`;
 }
 
 async function runMFASetupStage(stage) {
@@ -3031,13 +3017,15 @@ function renderResetCapabilityNote() {
   const senderAddress = String(cap.sender_address || "").trim() || "n/a";
   const senderStatus = String(cap.sender_status || "unknown").trim();
   const senderReason = String(cap.sender_reason || "").trim();
+  const reasonText = describeResetSenderReason(senderReason);
   if (!enabled) {
-    const suffix = senderReason ? ` (${senderReason})` : "";
-    el.resetCapabilityNote.textContent = `Reset is currently unavailable (${authMode} mode, delivery ${delivery}, sender ${senderStatus}${suffix}).`;
+    const suffix = reasonText ? ` ${reasonText}` : "";
+    el.resetCapabilityNote.textContent = `Reset is currently unavailable (${authMode} mode, delivery ${delivery}, sender ${senderStatus}).${suffix}`;
     return;
   }
   const mappingNote = cap.requires_mapped_login ? "Mapped mailbox login is required." : "Mapped mailbox login is optional.";
-  el.resetCapabilityNote.textContent = `Reset enabled (${authMode}, delivery ${delivery}, token TTL ${ttl} min, sender ${senderAddress}, status ${senderStatus}). ${mappingNote}`;
+  const senderNote = reasonText ? ` ${reasonText}` : "";
+  el.resetCapabilityNote.textContent = `Reset enabled (${authMode}, delivery ${delivery}, token TTL ${ttl} min, sender ${senderAddress}, status ${senderStatus}).${senderNote} ${mappingNote}`.trim();
 }
 
 async function loadResetCapabilities() {
@@ -3048,6 +3036,67 @@ async function loadResetCapabilities() {
     state.auth.resetCapabilities = null;
   }
   renderResetCapabilityNote();
+}
+
+function describeResetSenderReason(reason) {
+  switch (String(reason || "").trim()) {
+    case "log_delivery_disabled":
+      return "Log-only delivery is not allowed for public reset.";
+    case "external_sender_unconfirmed":
+      return "Public reset stays disabled until the external reset sender is explicitly confirmed.";
+    case "external_mailbox_required":
+      return "An externally managed reset sender mailbox is required.";
+    case "sql_provisioner_unconfigured":
+      return "The SQL auth provisioner is not configured for the reset sender.";
+    case "sender_provision_failed":
+      return "Reset sender provisioning failed.";
+    case "sender_not_initialized":
+      return "Reset sender initialization has not completed.";
+    case "sender_state_read_failed":
+      return "Reset sender diagnostics could not be loaded.";
+    default:
+      return "";
+  }
+}
+
+function captureResetTokenFromLocation() {
+  const url = new URL(window.location.href);
+  let token = String(url.searchParams.get("token") || "").trim();
+  let shouldClear = token !== "";
+  const rawHash = String(url.hash || "");
+  if (!token && rawHash) {
+    const hash = rawHash.startsWith("#") ? rawHash.slice(1) : rawHash;
+    const [route, rawQuery = ""] = hash.split("?", 2);
+    const normalizedRoute = String(route || "").replace(/^\/+/, "").trim().toLowerCase();
+    if (normalizedRoute === "reset") {
+      const hashParams = new URLSearchParams(rawQuery);
+      token = String(hashParams.get("token") || "").trim();
+      shouldClear = token !== "";
+    }
+  }
+  if (shouldClear) {
+    url.searchParams.delete("token");
+    url.hash = "";
+    const nextURL = `${url.pathname}${url.search}`;
+    window.history.replaceState({}, document.title, nextURL || "/");
+  }
+  return token;
+}
+
+function applyResetLinkToken(rawToken, options = {}) {
+  const token = String(rawToken || "").trim();
+  if (!token) return false;
+  if (el.resetTokenInput) {
+    el.resetTokenInput.value = token;
+  }
+  setActiveAuthTask("reset");
+  if (options.focus && el.resetNewPasswordInput) {
+    window.setTimeout(() => {
+      el.resetNewPasswordInput.focus();
+      el.resetNewPasswordInput.select();
+    }, 0);
+  }
+  return true;
 }
 
 async function initCaptchaUI() {
@@ -4274,6 +4323,7 @@ async function loadSetupStatus() {
   state.setup.required = !!data.required;
   state.setup.baseDomain = normalizeDomain(data.base_domain || "example.com");
   state.setup.defaultAdminEmail = String(data.default_admin_email || domainToDefaultEmail(state.setup.baseDomain)).toLowerCase();
+  state.setup.passkeyPrimaryEnabled = data.passkey_primary_sign_in_enabled !== false;
   state.setup.authMode = String(data.auth_mode || "sql").toLowerCase();
   state.setup.passwordMinLength = Number(data.password_min_length || 12);
   state.setup.passwordMaxLength = Number(data.password_max_length || 128);
@@ -4287,6 +4337,7 @@ async function completeSetup() {
   const region = String(el.setupRegion.value || "us-east").trim();
   const password = el.setupPassword.value;
   const mailboxLogin = String(el.setupAdminMailboxLogin?.value || "").trim();
+  const passkeyPrimaryEnabled = !!el.setupPasskeyPrimaryEnabled?.checked;
 
   const setupPayload = await api("/api/v1/setup/complete", {
     method: "POST",
@@ -4296,6 +4347,7 @@ async function completeSetup() {
       admin_mailbox_login: mailboxLogin,
       admin_password: password,
       region,
+      passkey_primary_sign_in_enabled: passkeyPrimaryEnabled,
     },
   });
 
@@ -4331,6 +4383,7 @@ const OOBEController = {
     el.setupPassword.value = "";
     el.setupPasswordConfirm.value = "";
     if (el.setupAdminMailboxLogin) el.setupAdminMailboxLogin.value = "";
+    if (el.setupPasskeyPrimaryEnabled) el.setupPasskeyPrimaryEnabled.checked = state.setup.passkeyPrimaryEnabled !== false;
     el.setupRegion.value = el.setupRegion.value || "us-east";
     if (el.setupCompleteNote) {
       el.setupCompleteNote.textContent = "Auto opening mail in 3 seconds.";
@@ -4404,6 +4457,9 @@ const OOBEController = {
     el.setupSummaryRegion.textContent = el.setupRegion.options[el.setupRegion.selectedIndex]?.text || "-";
     el.setupSummaryDomain.textContent = normalizeDomain(el.setupDomain.value) || "-";
     el.setupSummaryEmail.textContent = String(el.setupAdminEmail.value || "-").trim().toLowerCase();
+    if (el.setupSummaryPasskey) {
+      el.setupSummaryPasskey.textContent = el.setupPasskeyPrimaryEnabled?.checked ? "Enabled" : "Disabled";
+    }
   },
 
   validateStep(stepId) {
@@ -4978,11 +5034,6 @@ function messageHasHTML(message) {
 
 function buildReaderHTMLSrcdoc(rawHTML) {
   const bodyHTML = String(rawHTML || "");
-  const rootStyles = getComputedStyle(document.documentElement);
-  const fg = rootStyles.getPropertyValue("--fg-0").trim() || "#e8eef8";
-  const bg = rootStyles.getPropertyValue("--bg-0").trim() || "#111827";
-  const link = rootStyles.getPropertyValue("--line-0").trim() || fg;
-  const quote = rootStyles.getPropertyValue("--line-2").trim() || "#606878";
   const csp = [
     "default-src 'none'",
     "img-src 'self' data: blob:",
@@ -4997,14 +5048,14 @@ function buildReaderHTMLSrcdoc(rawHTML) {
     "form-action 'none'",
   ].join("; ");
   const baseStyle = [
-    `html,body{margin:0;padding:0;background:${bg};color:${fg};}`,
-    "body{font:14px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;padding:12px;word-break:break-word;}",
-    "img{max-width:100%;height:auto;}",
-    `blockquote{margin:0 0 0 8px;padding-left:10px;border-left:1px solid ${quote};}`,
-    "pre{white-space:pre-wrap;word-break:break-word;}",
-    `a{color:${link};text-decoration:underline;}`,
+    ":root{color-scheme:light;}",
+    "html,body{margin:0;padding:0;background:#ffffff;color:#000000;}",
+    "body{padding:12px;word-break:break-word;overflow-wrap:anywhere;-webkit-text-size-adjust:100%;}",
+    "img,svg,video,canvas{max-width:100%;height:auto;}",
+    "blockquote{margin:0 0 0 8px;padding-left:10px;}",
+    "pre{white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;}",
   ].join("");
-  return `<!doctype html><html><head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"${csp}\"><style>${baseStyle}</style></head><body>${bodyHTML}</body></html>`;
+  return `<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light\"><meta http-equiv=\"Content-Security-Policy\" content=\"${csp}\"><style>${baseStyle}</style></head><body>${bodyHTML}</body></html>`;
 }
 
 function renderReaderBody(message = state.selectedMessage) {
@@ -6727,6 +6778,12 @@ function bindSetupUI() {
     OOBEController.updateSummary();
     OOBEController.refreshNavState();
   });
+  if (el.setupPasskeyPrimaryEnabled) {
+    el.setupPasskeyPrimaryEnabled.addEventListener("change", () => {
+      OOBEController.updateSummary();
+      OOBEController.refreshNavState();
+    });
+  }
   el.setupPassword.addEventListener("input", () => OOBEController.refreshNavState());
   el.setupPasswordConfirm.addEventListener("input", () => OOBEController.refreshNavState());
 
@@ -6791,11 +6848,6 @@ function bindUI() {
       } else {
         setCaptchaNote("Captcha is enabled. Provide token from configured provider.", "info");
       }
-    });
-  }
-  if (el.passkeyEmailInput) {
-    el.passkeyEmailInput.addEventListener("input", () => {
-      renderPasskeyLoginUI();
     });
   }
   if (el.btnTheme) {
@@ -7936,6 +7988,10 @@ function bindUI() {
 async function bootstrap() {
   ThemeController.initTheme();
   bindUI();
+  const resetLinkToken = captureResetTokenFromLocation();
+  if (resetLinkToken) {
+    applyResetLinkToken(resetLinkToken);
+  }
   await initCaptchaUI();
   await loadResetCapabilities();
   await loadAuthCapabilities();
@@ -7953,9 +8009,12 @@ async function bootstrap() {
   if (!session.ok) {
     setActiveTab(el.tabAuth);
     showView("auth");
-    setActiveAuthTask("login");
+    setActiveAuthTask(el.resetTokenInput && String(el.resetTokenInput.value || "").trim() ? "reset" : "login");
     await loadAuthCapabilities();
     await initCaptchaUI();
+    if (el.resetTokenInput && String(el.resetTokenInput.value || "").trim()) {
+      applyResetLinkToken(el.resetTokenInput.value, { focus: true });
+    }
     setStatus("Authentication required.");
     return;
   }

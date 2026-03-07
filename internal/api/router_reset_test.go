@@ -3,10 +3,15 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -17,6 +22,7 @@ import (
 	"despatch/internal/mail"
 	"despatch/internal/models"
 	"despatch/internal/notify"
+	"despatch/internal/pamreset"
 	"despatch/internal/service"
 	"despatch/internal/store"
 )
@@ -39,6 +45,7 @@ func newResetRouterWithSender(t *testing.T, cfg config.Config, sender notify.Sen
 		filepath.Join("..", "..", "migrations", "004_cleanup_rejected_users_casefold.sql"),
 		filepath.Join("..", "..", "migrations", "005_admin_query_indexes.sql"),
 		filepath.Join("..", "..", "migrations", "006_users_recovery_email.sql"),
+		filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -79,6 +86,59 @@ func (s *captureResetSender) SendPasswordReset(ctx context.Context, toEmail, tok
 	s.to = toEmail
 	s.token = token
 	return nil
+}
+
+func startFakeResetHelper(t *testing.T, ok bool, code string) string {
+	t.Helper()
+	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("despatch-pam-reset-%d.sock", time.Now().UnixNano()))
+	_ = os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen fake helper: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = listener.Close()
+		_ = os.Remove(socketPath)
+	})
+	go func() {
+		for {
+			conn, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				var header [4]byte
+				if _, err := io.ReadFull(c, header[:]); err != nil {
+					return
+				}
+				size := binary.BigEndian.Uint32(header[:])
+				payload := make([]byte, size)
+				if _, err := io.ReadFull(c, payload); err != nil {
+					return
+				}
+				var req pamreset.Request
+				if err := json.Unmarshal(payload, &req); err != nil {
+					return
+				}
+				respBody, err := json.Marshal(pamreset.Response{
+					RequestID: req.RequestID,
+					OK:        ok,
+					Code:      code,
+				})
+				if err != nil {
+					return
+				}
+				var respHeader [4]byte
+				binary.BigEndian.PutUint32(respHeader[:], uint32(len(respBody)))
+				if _, err := c.Write(respHeader[:]); err != nil {
+					return
+				}
+				_, _ = c.Write(respBody)
+			}(conn)
+		}
+	}()
+	return socketPath
 }
 
 func defaultResetTestConfig() config.Config {
@@ -133,17 +193,34 @@ func TestPublicPasswordResetCapabilities(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
 	}
-	if payload.AuthMode != "pam" || !payload.SelfServiceEnabled || !payload.AdminResetEnabled || payload.Delivery != "smtp" || payload.TokenTTLMinutes != 30 || payload.RequiresMappedLogin {
+	if payload.AuthMode != "pam" || payload.SelfServiceEnabled || !payload.AdminResetEnabled || payload.Delivery != "smtp" || payload.TokenTTLMinutes != 30 || payload.RequiresMappedLogin {
 		t.Fatalf("unexpected capabilities payload: %+v", payload)
 	}
-	if payload.SenderStatus != "external" || payload.SenderAddress == "" || payload.SenderReason != "external_mailbox_required" {
+	if payload.SenderStatus != "external" || payload.SenderAddress == "" || payload.SenderReason != "external_sender_unconfirmed" {
 		t.Fatalf("unexpected sender diagnostics payload: %+v", payload)
+	}
+}
+
+func TestPasswordResetRequestReturnsUnavailableWhenExternalSenderIsUnconfirmed(t *testing.T) {
+	cfg := defaultResetTestConfig()
+	cfg.PAMResetHelperEnabled = true
+	router, _ := newResetRouter(t, cfg)
+
+	body, _ := json.Marshal(map[string]string{"email": "unknown@example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/password/reset/request", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for unconfirmed external sender, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 
 func TestPasswordResetRequestReturnsGenericAcceptedWhenEnabled(t *testing.T) {
 	cfg := defaultResetTestConfig()
 	cfg.PAMResetHelperEnabled = true
+	cfg.PasswordResetExternalSenderReady = true
 	router, _ := newResetRouter(t, cfg)
 
 	body, _ := json.Marshal(map[string]string{"email": "unknown@example.com"})
@@ -209,6 +286,7 @@ func TestPasswordResetRequestReturnsUnavailableWhenSenderIsDegraded(t *testing.T
 func TestPasswordResetRequestReturnsAcceptedOnDeliverySoftFailure(t *testing.T) {
 	cfg := defaultResetTestConfig()
 	cfg.PAMResetHelperEnabled = true
+	cfg.PasswordResetExternalSenderReady = true
 	cfg.PasswordResetSender = "smtp"
 	router, st := newResetRouterWithSender(t, cfg, failingResetSender{err: errors.New("smtp down")})
 
@@ -238,6 +316,7 @@ func TestPasswordResetRequestReturnsAcceptedOnDeliverySoftFailure(t *testing.T) 
 func TestPasswordResetRequestAcceptsRecoveryEmailIdentifier(t *testing.T) {
 	cfg := defaultResetTestConfig()
 	cfg.PAMResetHelperEnabled = true
+	cfg.PasswordResetExternalSenderReady = true
 	cfg.PasswordResetSender = "smtp"
 	sender := &captureResetSender{}
 	router, st := newResetRouterWithSender(t, cfg, sender)
@@ -296,6 +375,109 @@ func TestAdminResetPasswordFallsBackToEmailInPAMMode(t *testing.T) {
 	}
 	if payload["code"] != "password_reset_helper_unavailable" {
 		t.Fatalf("expected password_reset_helper_unavailable, got %v", payload["code"])
+	}
+}
+
+func TestPasswordResetConfirmReturnsHelperUnavailable(t *testing.T) {
+	cfg := defaultResetTestConfig()
+	cfg.PAMResetHelperEnabled = true
+	cfg.PasswordResetExternalSenderReady = true
+	sender := &captureResetSender{}
+	router, st := newResetRouterWithSender(t, cfg, sender)
+
+	pwHash, err := auth.HashPassword("ResetFlow123!")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	user, err := st.CreateUser(context.Background(), "reset-flow@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(context.Background(), user.ID, "reset-flow-recovery@example.net"); err != nil {
+		t.Fatalf("set recovery email: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"email": "reset-flow@example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/password/reset/request", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 from request flow, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if sender.token == "" {
+		t.Fatalf("expected captured reset token")
+	}
+
+	confirmBody, _ := json.Marshal(map[string]string{
+		"token":        sender.token,
+		"new_password": "ChangedPassword123!",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/password/reset/confirm", bytes.NewReader(confirmBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 from helper unavailable confirm, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
+	}
+	if payload["code"] != "password_reset_helper_unavailable" {
+		t.Fatalf("expected password_reset_helper_unavailable, got %+v", payload)
+	}
+}
+
+func TestPasswordResetConfirmReturnsHelperFailed(t *testing.T) {
+	cfg := defaultResetTestConfig()
+	cfg.PAMResetHelperEnabled = true
+	cfg.PasswordResetExternalSenderReady = true
+	cfg.PAMResetHelperSocket = startFakeResetHelper(t, false, pamreset.ProtocolCodeError)
+	sender := &captureResetSender{}
+	router, st := newResetRouterWithSender(t, cfg, sender)
+
+	pwHash, err := auth.HashPassword("ResetFlow124!")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	user, err := st.CreateUser(context.Background(), "reset-fail@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(context.Background(), user.ID, "reset-fail-recovery@example.net"); err != nil {
+		t.Fatalf("set recovery email: %v", err)
+	}
+
+	body, _ := json.Marshal(map[string]string{"email": "reset-fail@example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/password/reset/request", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 from request flow, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if sender.token == "" {
+		t.Fatalf("expected captured reset token")
+	}
+
+	confirmBody, _ := json.Marshal(map[string]string{
+		"token":        sender.token,
+		"new_password": "ChangedPassword124!",
+	})
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/password/reset/confirm", bytes.NewReader(confirmBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 from helper failed confirm, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
+	}
+	if payload["code"] != "password_reset_helper_failed" {
+		t.Fatalf("expected password_reset_helper_failed, got %+v", payload)
 	}
 }
 

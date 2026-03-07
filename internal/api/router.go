@@ -381,22 +381,24 @@ func (h *Handlers) SetupStatus(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BaseDomain        string `json:"base_domain"`
-		AdminEmail        string `json:"admin_email"`
-		AdminMailboxLogin string `json:"admin_mailbox_login"`
-		AdminPassword     string `json:"admin_password"`
-		Region            string `json:"region"`
+		BaseDomain                  string `json:"base_domain"`
+		AdminEmail                  string `json:"admin_email"`
+		AdminMailboxLogin           string `json:"admin_mailbox_login"`
+		AdminPassword               string `json:"admin_password"`
+		Region                      string `json:"region"`
+		PasskeyPrimarySignInEnabled *bool  `json:"passkey_primary_sign_in_enabled"`
 	}
 	if err := decodeJSON(w, r, &req, jsonLimitAuthControl, false); err != nil {
 		writeJSONDecodeError(w, r, err)
 		return
 	}
 	token, user, err := h.svc.CompleteSetup(r.Context(), service.SetupCompleteRequest{
-		BaseDomain:        req.BaseDomain,
-		AdminEmail:        req.AdminEmail,
-		AdminMailboxLogin: req.AdminMailboxLogin,
-		AdminPassword:     req.AdminPassword,
-		Region:            req.Region,
+		BaseDomain:                  req.BaseDomain,
+		AdminEmail:                  req.AdminEmail,
+		AdminMailboxLogin:           req.AdminMailboxLogin,
+		AdminPassword:               req.AdminPassword,
+		Region:                      req.Region,
+		PasskeyPrimarySignInEnabled: req.PasskeyPrimarySignInEnabled,
 	}, r.RemoteAddr, r.UserAgent())
 	if err != nil {
 		msg := err.Error()
@@ -719,6 +721,14 @@ func (h *Handlers) PasswordResetConfirm(w http.ResponseWriter, r *http.Request) 
 	if err := h.svc.ConfirmPasswordReset(r.Context(), req.Token, req.NewPassword); err != nil {
 		if errors.Is(err, service.ErrPasswordResetUnavailable) {
 			util.WriteError(w, http.StatusServiceUnavailable, "password_reset_unavailable", "password reset is currently unavailable", middleware.RequestID(r.Context()))
+			return
+		}
+		if errors.Is(err, service.ErrPasswordResetHelperDown) {
+			util.WriteError(w, http.StatusServiceUnavailable, "password_reset_helper_unavailable", "password reset helper is unavailable", middleware.RequestID(r.Context()))
+			return
+		}
+		if errors.Is(err, service.ErrPasswordResetHelperFailed) {
+			util.WriteError(w, http.StatusBadGateway, "password_reset_helper_failed", "password reset helper failed", middleware.RequestID(r.Context()))
 			return
 		}
 		util.WriteError(w, 400, "reset_failed", err.Error(), middleware.RequestID(r.Context()))

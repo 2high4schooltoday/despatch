@@ -39,6 +39,7 @@ func newV2ScopedStore(t *testing.T) *Store {
 		filepath.Join("..", "..", "migrations", "018_mfa_usability_trusted_devices.sql"),
 		filepath.Join("..", "..", "migrations", "019_users_mail_secret.sql"),
 		filepath.Join("..", "..", "migrations", "020_mail_index_scoped_ids.sql"),
+		filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)

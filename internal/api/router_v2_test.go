@@ -89,24 +89,26 @@ func newV2RouterWithConfigAndStoreDB(t *testing.T, mutate func(*config.Config)) 
 	}
 
 	cfg := config.Config{
-		ListenAddr:          ":8080",
-		BaseDomain:          "example.com",
-		SessionCookieName:   "despatch_session",
-		CSRFCookieName:      "despatch_csrf",
-		SessionIdleMinutes:  30,
-		SessionAbsoluteHour: 24,
-		SessionEncryptKey:   "this_is_a_valid_long_session_encrypt_key_123456",
-		CookieSecureMode:    "never",
-		TrustProxy:          false,
-		PasswordMinLength:   12,
-		PasswordMaxLength:   128,
-		DovecotAuthMode:     "sql",
-		IMAPHost:            "127.0.0.1",
-		IMAPPort:            993,
-		IMAPTLS:             true,
-		SMTPHost:            "127.0.0.1",
-		SMTPPort:            587,
-		SMTPStartTLS:        true,
+		ListenAddr:                 ":8080",
+		BaseDomain:                 "example.com",
+		SessionCookieName:          "despatch_session",
+		CSRFCookieName:             "despatch_csrf",
+		SessionIdleMinutes:         30,
+		SessionAbsoluteHour:        24,
+		SessionEncryptKey:          "this_is_a_valid_long_session_encrypt_key_123456",
+		CookieSecureMode:           "never",
+		TrustProxy:                 false,
+		PasswordMinLength:          12,
+		PasswordMaxLength:          128,
+		DovecotAuthMode:            "sql",
+		PasskeyPasswordlessEnabled: true,
+		PasskeyUsernamelessEnabled: true,
+		IMAPHost:                   "127.0.0.1",
+		IMAPPort:                   993,
+		IMAPTLS:                    true,
+		SMTPHost:                   "127.0.0.1",
+		SMTPPort:                   587,
+		SMTPStartTLS:               true,
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -973,11 +975,8 @@ func TestV2PasskeyLoginAcceptsLegacyHexCredentialIDs(t *testing.T) {
 		t.Fatalf("decode passkey begin payload: %v", err)
 	}
 	allowList := extractCredentialIDsFromAllowList(beginPayload["allow_credentials"])
-	if len(allowList) == 0 {
-		t.Fatalf("expected allow_credentials to include seeded credential")
-	}
-	if allowList[0] != credentialIDB64 {
-		t.Fatalf("expected allow credential id %q, got %q", credentialIDB64, allowList[0])
+	if len(allowList) != 0 {
+		t.Fatalf("expected discoverable challenge without allow_credentials filter, got %v", allowList)
 	}
 	challengeID, _ := beginPayload["challenge_id"].(string)
 	challenge, _ := beginPayload["challenge"].(string)

@@ -17,7 +17,6 @@ import (
 func TestAdminFeatureFlagsList(t *testing.T) {
 	router, _ := newV2RouterWithConfigAndStore(t, func(cfg *config.Config) {
 		cfg.PasskeyPasswordlessEnabled = true
-		cfg.PasskeyUsernamelessEnabled = true
 		cfg.PasswordResetPublicEnabled = true
 		cfg.CaptchaEnabled = true
 		cfg.UpdateEnabled = true
@@ -38,8 +37,8 @@ func TestAdminFeatureFlagsList(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
 	}
-	if len(payload.Items) < 10 {
-		t.Fatalf("expected at least 10 feature flags, got %d", len(payload.Items))
+	if len(payload.Items) < 9 {
+		t.Fatalf("expected at least 9 feature flags, got %d", len(payload.Items))
 	}
 	byID := map[string]service.FeatureFlagState{}
 	for _, item := range payload.Items {
@@ -51,6 +50,9 @@ func TestAdminFeatureFlagsList(t *testing.T) {
 	}
 	if !passkeySignIn.Editable || passkeySignIn.RequiresRestart {
 		t.Fatalf("unexpected passkey_sign_in mutability: %+v", passkeySignIn)
+	}
+	if _, ok := byID["passkey_account_discovery"]; ok {
+		t.Fatalf("did not expect passkey_account_discovery to remain in feature flag payload")
 	}
 	readOnlyCaptcha, ok := byID[service.FeatureFlagRegistrationCaptchaRequired]
 	if !ok {
@@ -64,7 +66,6 @@ func TestAdminFeatureFlagsList(t *testing.T) {
 func TestAdminFeatureFlagUpdateAndResetAffectsAuthCapabilities(t *testing.T) {
 	router, _ := newV2RouterWithConfigAndStore(t, func(cfg *config.Config) {
 		cfg.PasskeyPasswordlessEnabled = true
-		cfg.PasskeyUsernamelessEnabled = true
 		cfg.MailSecEnabled = true
 		cfg.WebAuthnRPID = "localhost"
 	})
@@ -113,10 +114,35 @@ func TestAdminFeatureFlagUpdateAndResetAffectsAuthCapabilities(t *testing.T) {
 	}
 }
 
+func TestAuthCapabilitiesAlwaysReportUsernamelessForCompatibility(t *testing.T) {
+	router, st := newV2RouterWithConfigAndStore(t, func(cfg *config.Config) {
+		cfg.PasskeyPasswordlessEnabled = true
+		cfg.PasskeyUsernamelessEnabled = false
+		cfg.MailSecEnabled = true
+		cfg.WebAuthnRPID = "localhost"
+	})
+	if err := st.UpsertSetting(context.Background(), "feature_flag.passkey_account_discovery", "0"); err != nil {
+		t.Fatalf("seed legacy discovery flag: %v", err)
+	}
+
+	capsReq := httptest.NewRequest(http.MethodGet, "http://localhost/api/v1/public/auth/capabilities", nil)
+	capsRec := httptest.NewRecorder()
+	router.ServeHTTP(capsRec, capsReq)
+	if capsRec.Code != http.StatusOK {
+		t.Fatalf("expected caps 200, got %d body=%s", capsRec.Code, capsRec.Body.String())
+	}
+	var caps map[string]any
+	if err := json.Unmarshal(capsRec.Body.Bytes(), &caps); err != nil {
+		t.Fatalf("decode caps: %v body=%s", err, capsRec.Body.String())
+	}
+	if enabled, _ := caps["passkey_usernameless_enabled"].(bool); !enabled {
+		t.Fatalf("expected passkey_usernameless_enabled=true for compatibility payload=%v", caps)
+	}
+}
+
 func TestAdminFeatureFlagPasskeySignInAffectsLoginFlow(t *testing.T) {
 	router, _ := newV2RouterWithConfigAndStore(t, func(cfg *config.Config) {
 		cfg.PasskeyPasswordlessEnabled = true
-		cfg.PasskeyUsernamelessEnabled = true
 		cfg.MailSecEnabled = true
 		cfg.WebAuthnRPID = "localhost"
 		cfg.WebAuthnAllowedOrigins = []string{"http://localhost"}
@@ -223,7 +249,7 @@ func TestAdminFeatureFlagUpdateWritesAuditEntry(t *testing.T) {
 	router, _ := newV2RouterWithConfigAndStore(t, nil)
 	sess, csrf := loginForSend(t, router)
 
-	updateRec := doAdminRequest(t, router, http.MethodPost, "/api/v1/admin/system/feature-flags/passkey_account_discovery", []byte(`{"enabled":false}`), sess, csrf)
+	updateRec := doAdminRequest(t, router, http.MethodPost, "/api/v1/admin/system/feature-flags/passkey_sign_in", []byte(`{"enabled":false}`), sess, csrf)
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("expected update 200, got %d body=%s", updateRec.Code, updateRec.Body.String())
 	}
@@ -246,12 +272,12 @@ func TestAdminFeatureFlagUpdateWritesAuditEntry(t *testing.T) {
 	}
 	found := false
 	for _, item := range payload.Items {
-		if item.Action == "feature_flag.update" && item.Target == "passkey_account_discovery" {
+		if item.Action == "feature_flag.update" && item.Target == "passkey_sign_in" {
 			found = true
 			break
 		}
 	}
 	if !found {
-		t.Fatalf("expected feature_flag.update entry for passkey_account_discovery, got=%+v", payload.Items)
+		t.Fatalf("expected feature_flag.update entry for passkey_sign_in, got=%+v", payload.Items)
 	}
 }

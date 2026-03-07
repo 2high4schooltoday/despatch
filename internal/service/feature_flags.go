@@ -9,7 +9,6 @@ import (
 
 const (
 	FeatureFlagPasskeySignIn               = "passkey_sign_in"
-	FeatureFlagPasskeyAccountDiscovery     = "passkey_account_discovery"
 	FeatureFlagAdminMFARequired            = "admin_mfa_required"
 	FeatureFlagPublicPasswordReset         = "public_password_reset"
 	FeatureFlagRegistrationCaptchaRequired = "registration_captcha_required"
@@ -19,7 +18,6 @@ const (
 	FeatureFlagPAMResetHelperEnabled       = "pam_reset_helper_enabled"
 	FeatureFlagMappedLoginRequiredForReset = "mapped_login_required_for_password_reset"
 	featureFlagSettingPasskeySignIn        = "feature_flag.passkey_sign_in"
-	featureFlagSettingPasskeyDiscovery     = "feature_flag.passkey_account_discovery"
 	featureFlagSettingPublicPasswordReset  = "feature_flag.public_password_reset"
 	featureFlagSettingAdminMFARequired     = "enforce_admin_mfa"
 	featureFlagAuditActionUpdate           = "feature_flag.update"
@@ -68,18 +66,6 @@ func (s *Service) featureFlagCatalog() []featureFlagDef {
 			SettingKey:  featureFlagSettingPasskeySignIn,
 			DefaultValue: func(_ context.Context, svc *Service) (bool, error) {
 				return svc.cfg.PasskeyPasswordlessEnabled, nil
-			},
-		},
-		{
-			ID:          FeatureFlagPasskeyAccountDiscovery,
-			Name:        "Passkey Account Discovery",
-			Description: "Allow passkey login without entering an email first.",
-			Category:    "Authentication",
-			Editable:    true,
-			Note:        "When disabled, users must provide email for passkey sign-in.",
-			SettingKey:  featureFlagSettingPasskeyDiscovery,
-			DefaultValue: func(_ context.Context, svc *Service) (bool, error) {
-				return svc.cfg.PasskeyUsernamelessEnabled, nil
 			},
 		},
 		{
@@ -312,10 +298,6 @@ func (s *Service) ResetFeatureFlag(ctx context.Context, actorUserID, id string) 
 
 func (s *Service) PasskeySignInEnabled(ctx context.Context) (bool, error) {
 	return s.FeatureFlagEnabled(ctx, FeatureFlagPasskeySignIn)
-}
-
-func (s *Service) PasskeyAccountDiscoveryEnabled(ctx context.Context) (bool, error) {
-	return s.FeatureFlagEnabled(ctx, FeatureFlagPasskeyAccountDiscovery)
 }
 
 func (s *Service) AdminMFARequired(ctx context.Context) (bool, error) {

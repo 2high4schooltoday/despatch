@@ -63,12 +63,14 @@ type Session struct {
 }
 
 type PasswordResetToken struct {
-	ID        string
-	UserID    string
-	TokenHash string
-	ExpiresAt time.Time
-	UsedAt    *time.Time
-	CreatedAt time.Time
+	ID            string
+	UserID        string
+	TokenHash     string
+	ReservationID *string
+	ReservedAt    *time.Time
+	ExpiresAt     time.Time
+	UsedAt        *time.Time
+	CreatedAt     time.Time
 }
 
 type AuditEntry struct {

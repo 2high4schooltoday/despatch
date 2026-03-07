@@ -51,7 +51,7 @@
             </div>
 
             <section id="auth-pane-login" class="auth-pane">
-              <p class="hint auth-pane-intro">Use either password sign-in or passkey sign-in. Each method completes login independently.</p>
+              <p class="hint auth-pane-intro">Use any sign-in method currently available for this server and browser.</p>
               <div class="auth-method-stack">
                 <form id="form-login" class="stack auth-form auth-method-card auth-method-card--password">
                   <h3>Password Sign-In</h3>
@@ -61,11 +61,8 @@
                     <button class="cmd-btn cmd-btn--primary" type="submit">Access Mail</button>
                   </div>
                 </form>
-                <section class="stack auth-method-card auth-method-card--passkey" aria-labelledby="auth-passkey-title">
+                <section id="auth-passkey-card" class="stack auth-method-card auth-method-card--passkey hidden" aria-labelledby="auth-passkey-title">
                   <h3 id="auth-passkey-title">Passkey Sign-In</h3>
-                  <label>Email (optional)
-                    <input id="passkey-email" name="passkey_email" type="email" autocomplete="username webauthn">
-                  </label>
                   <p id="passkey-login-hint" class="hint">Passkey login availability is being checked.</p>
                   <div class="auth-pane-actions">
                     <button id="btn-passkey-login" class="cmd-btn cmd-btn--primary" type="button">Sign In With Passkey</button>
@@ -109,15 +106,15 @@
                 <form id="form-reset-request" class="stack auth-form auth-group">
                   <h3>Request Token</h3>
                   <p id="reset-capability-note" class="hint">Reset token delivery follows current server reset policy.</p>
-                  <label>Account Or Recovery Email <input name="email" type="email" required autocomplete="email"></label>
+                  <label>Account Or Recovery Email <input id="reset-request-email" name="email" type="email" required autocomplete="email"></label>
                   <div class="auth-pane-actions">
                     <button class="cmd-btn" type="submit">Request Token</button>
                   </div>
                 </form>
                 <form id="form-reset-confirm" class="stack auth-form auth-group">
                   <h3>Apply New Password</h3>
-                  <label>Reset Token <input name="token" type="text" required autocomplete="one-time-code"></label>
-                  <label>New Password <input name="new_password" type="password" required autocomplete="new-password"></label>
+                  <label>Reset Token <input id="reset-token-input" name="token" type="text" required autocomplete="one-time-code"></label>
+                  <label>New Password <input id="reset-new-password" name="new_password" type="password" required autocomplete="new-password"></label>
                   <div class="auth-pane-actions">
                     <button class="cmd-btn cmd-btn--primary" type="submit">Apply New Password</button>
                   </div>
@@ -264,6 +261,13 @@
                   <input id="setup-password-confirm" name="admin_password_confirm" type="password" autocomplete="new-password">
                 </label>
                 <p id="setup-password-hint" class="hint">Use at least 12 characters and 3 character classes.</p>
+                <label class="setup-option">
+                  <span class="setup-option-control">
+                    <input id="setup-passkey-primary-enabled" name="passkey_primary_sign_in_enabled" type="checkbox" checked>
+                    <span>Enable passkey primary sign-in</span>
+                  </span>
+                  <span class="hint">Enabled by default. Availability still depends on MailSec and WebAuthn server configuration.</span>
+                </label>
               </div>
 
               <div id="setup-step-4" class="oobe-step hidden">
@@ -273,6 +277,7 @@
                   <div><b>Region:</b> <span id="setup-summary-region">-</span></div>
                   <div><b>Domain:</b> <span id="setup-summary-domain">-</span></div>
                   <div><b>Admin:</b> <span id="setup-summary-email">-</span></div>
+                  <div><b>Passkey Sign-In:</b> <span id="setup-summary-passkey">Enabled</span></div>
                 </div>
                 <p>Initialize writes your baseline settings and signs in as webmaster.</p>
                 <p class="hint">Admin MFA setup is mandatory and will start immediately after initialization.</p>

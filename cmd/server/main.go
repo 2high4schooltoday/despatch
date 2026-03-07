@@ -79,6 +79,7 @@ func main() {
 		"migrations/018_mfa_usability_trusted_devices.sql",
 		"migrations/019_users_mail_secret.sql",
 		"migrations/020_mail_index_scoped_ids.sql",
+		"migrations/021_password_reset_token_reservations.sql",
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			log.Fatalf("migration %s: %v", migration, err)

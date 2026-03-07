@@ -54,25 +54,29 @@ const (
 	passwordResetSenderStatusDegraded = "degraded"
 	passwordResetSenderStatusExternal = "external"
 
-	passwordResetSenderReasonLogOnly = "log_delivery_disabled"
+	passwordResetSenderReasonLogOnly             = "log_delivery_disabled"
+	passwordResetSenderReasonExternalUnconfirmed = "external_sender_unconfirmed"
+	passwordResetReservationLease                = 30 * time.Second
 )
 
 type SetupStatus struct {
-	Required          bool   `json:"required"`
-	BaseDomain        string `json:"base_domain"`
-	DefaultAdminEmail string `json:"default_admin_email"`
-	AuthMode          string `json:"auth_mode"`
-	PasswordMinLength int    `json:"password_min_length"`
-	PasswordMaxLength int    `json:"password_max_length"`
-	PasswordClassMin  int    `json:"password_class_min"`
+	Required                    bool   `json:"required"`
+	BaseDomain                  string `json:"base_domain"`
+	DefaultAdminEmail           string `json:"default_admin_email"`
+	AuthMode                    string `json:"auth_mode"`
+	PasswordMinLength           int    `json:"password_min_length"`
+	PasswordMaxLength           int    `json:"password_max_length"`
+	PasswordClassMin            int    `json:"password_class_min"`
+	PasskeyPrimarySignInEnabled bool   `json:"passkey_primary_sign_in_enabled"`
 }
 
 type SetupCompleteRequest struct {
-	BaseDomain        string
-	AdminEmail        string
-	AdminMailboxLogin string
-	AdminPassword     string
-	Region            string
+	BaseDomain                  string
+	AdminEmail                  string
+	AdminMailboxLogin           string
+	AdminPassword               string
+	Region                      string
+	PasskeyPrimarySignInEnabled *bool
 }
 
 type PAMCredentialsInvalidError struct {
@@ -87,12 +91,17 @@ func (e *PAMCredentialsInvalidError) Error() string {
 }
 
 type Service struct {
-	cfg        config.Config
-	st         *store.Store
-	mail       mail.Client
-	provision  mail.AuthProvisioner
-	sender     notify.Sender
-	encryptKey []byte
+	cfg         config.Config
+	st          *store.Store
+	mail        mail.Client
+	provision   mail.AuthProvisioner
+	sender      notify.Sender
+	pamResetter pamPasswordResetter
+	encryptKey  []byte
+}
+
+type pamPasswordResetter interface {
+	ResetPassword(ctx context.Context, username, newPassword string) error
 }
 
 type PasswordResetCapabilities struct {
@@ -118,7 +127,14 @@ func New(cfg config.Config, st *store.Store, m mail.Client, p mail.AuthProvision
 	if sender == nil {
 		sender = notify.LogSender{}
 	}
-	return &Service{cfg: cfg, st: st, mail: m, provision: p, sender: sender, encryptKey: util.Derive32ByteKey(cfg.SessionEncryptKey)}
+	return &Service{
+		cfg:        cfg,
+		st:         st,
+		mail:       m,
+		provision:  p,
+		sender:     sender,
+		encryptKey: util.Derive32ByteKey(cfg.SessionEncryptKey),
+	}
 }
 
 func hashUA(ua string) string {
@@ -541,9 +557,7 @@ func (s *Service) EnsurePasswordResetSenderIdentity(ctx context.Context) (passwo
 		return state, s.persistPasswordResetSenderState(ctx, state, "app")
 	}
 	if s.usesPAMAuth() {
-		state.Status = passwordResetSenderStatusExternal
-		state.Reason = "external_mailbox_required"
-		state.Ready = true
+		state = s.externalPasswordResetSenderState()
 		return state, s.persistPasswordResetSenderState(ctx, state, "external")
 	}
 	if !s.hasProvisioner() {
@@ -628,7 +642,11 @@ func (s *Service) passwordResetSenderState(ctx context.Context) (passwordResetSe
 		if reason, reasonOK, reasonErr := s.st.GetSetting(ctx, passwordResetSenderSettingReason); reasonErr == nil && reasonOK {
 			state.Reason = strings.TrimSpace(reason)
 		}
-		state.Ready = state.Status == passwordResetSenderStatusReady || state.Status == passwordResetSenderStatusExternal
+		if state.Status == passwordResetSenderStatusExternal {
+			state = s.externalPasswordResetSenderState()
+		} else {
+			state.Ready = state.Status == passwordResetSenderStatusReady
+		}
 		return state, nil
 	}
 
@@ -645,10 +663,7 @@ func (s *Service) passwordResetSenderState(ctx context.Context) (passwordResetSe
 		return state, nil
 	}
 	if s.usesPAMAuth() {
-		state.Status = passwordResetSenderStatusExternal
-		state.Reason = "external_mailbox_required"
-		state.Ready = true
-		return state, nil
+		return s.externalPasswordResetSenderState(), nil
 	}
 	if !s.hasProvisioner() {
 		state.Status = passwordResetSenderStatusDegraded
@@ -667,6 +682,20 @@ func (s *Service) passwordResetSenderState(ctx context.Context) (passwordResetSe
 		return state, nil
 	}
 	return state, nil
+}
+
+func (s *Service) externalPasswordResetSenderState() passwordResetSenderState {
+	state := passwordResetSenderState{
+		Address: notify.PasswordResetFromAddress(s.cfg),
+		Status:  passwordResetSenderStatusExternal,
+		Reason:  "",
+		Ready:   true,
+	}
+	if !s.cfg.PasswordResetExternalSenderReady {
+		state.Reason = passwordResetSenderReasonExternalUnconfirmed
+		state.Ready = false
+	}
+	return state
 }
 
 func (s *Service) insertAuditBestEffort(ctx context.Context, actorID, action, target, metadata string) {
@@ -814,10 +843,17 @@ func (s *Service) ConfirmPasswordReset(ctx context.Context, rawToken, newPasswor
 	}
 	sum := sha256.Sum256([]byte(rawToken))
 	tokenHash := hex.EncodeToString(sum[:])
-	t, err := s.st.ConsumePasswordResetToken(ctx, tokenHash)
+	reservationID := uuid.NewString()
+	t, err := s.st.ReservePasswordResetToken(ctx, tokenHash, reservationID, passwordResetReservationLease)
 	if err != nil {
 		return ErrInvalidCredentials
 	}
+	releaseReservation := true
+	defer func() {
+		if releaseReservation {
+			_ = s.st.ReleasePasswordResetTokenReservation(context.Background(), tokenHash, reservationID)
+		}
+	}()
 	u, err := s.st.GetUserByID(ctx, t.UserID)
 	if err != nil {
 		return ErrInvalidCredentials
@@ -826,6 +862,10 @@ func (s *Service) ConfirmPasswordReset(ctx context.Context, rawToken, newPasswor
 		if err := s.resetPasswordViaPAM(ctx, u, newPassword); err != nil {
 			return err
 		}
+		if err := s.consumeReservedPasswordResetToken(ctx, tokenHash, reservationID); err != nil {
+			return err
+		}
+		releaseReservation = false
 	}
 	h, err := auth.HashPassword(newPassword)
 	if err != nil {
@@ -833,6 +873,12 @@ func (s *Service) ConfirmPasswordReset(ctx context.Context, rawToken, newPasswor
 	}
 	if err := s.st.UpdateUserPasswordHash(ctx, t.UserID, h); err != nil {
 		return err
+	}
+	if !s.usesPAMAuth() {
+		if err := s.consumeReservedPasswordResetToken(ctx, tokenHash, reservationID); err != nil {
+			return err
+		}
+		releaseReservation = false
 	}
 	if mailSecret, encErr := util.EncryptString(s.encryptKey, newPassword); encErr == nil {
 		_ = s.st.UpsertUserMailSecret(ctx, t.UserID, mailSecret)
@@ -926,15 +972,18 @@ func (s *Service) UpdateRecoveryEmail(ctx context.Context, userID, recoveryEmail
 }
 
 func (s *Service) resetPasswordViaPAM(ctx context.Context, u models.User, newPassword string) error {
-	if !s.cfg.PAMResetHelperEnabled {
-		return ErrPasswordResetHelperDown
-	}
 	login := ""
 	if u.MailLogin != nil {
 		login = strings.TrimSpace(*u.MailLogin)
 	}
 	if login == "" {
 		login = strings.TrimSpace(u.Email)
+	}
+	if s.pamResetter != nil {
+		return s.pamResetter.ResetPassword(ctx, login, newPassword)
+	}
+	if !s.cfg.PAMResetHelperEnabled {
+		return ErrPasswordResetHelperDown
 	}
 	client := pamreset.Client{
 		SocketPath: s.cfg.PAMResetHelperSocket,
@@ -955,6 +1004,14 @@ func (s *Service) resetPasswordViaPAM(ctx context.Context, u models.User, newPas
 		return ErrPasswordResetHelperFailed
 	}
 	return fmt.Errorf("%w", ErrPasswordResetHelperFailed)
+}
+
+func (s *Service) consumeReservedPasswordResetToken(ctx context.Context, tokenHash, reservationID string) error {
+	if _, err := s.st.ConsumeReservedPasswordResetToken(ctx, tokenHash, reservationID); err != nil {
+		_ = s.st.InvalidatePasswordResetToken(ctx, tokenHash)
+		return err
+	}
+	return nil
 }
 
 func normalizePasswordResetSender(raw string) string {
@@ -980,14 +1037,19 @@ func (s *Service) SetupStatus(ctx context.Context) (SetupStatus, error) {
 	if err != nil {
 		return SetupStatus{}, err
 	}
+	passkeyPrimaryEnabled := s.cfg.PasskeyPasswordlessEnabled
+	if enabled, flagErr := s.PasskeySignInEnabled(ctx); flagErr == nil {
+		passkeyPrimaryEnabled = enabled
+	}
 	return SetupStatus{
-		Required:          adminCount == 0,
-		BaseDomain:        baseDomain,
-		DefaultAdminEmail: defaultAdminEmail(baseDomain),
-		AuthMode:          s.cfg.DovecotAuthMode,
-		PasswordMinLength: s.cfg.PasswordMinLength,
-		PasswordMaxLength: s.cfg.PasswordMaxLength,
-		PasswordClassMin:  3,
+		Required:                    adminCount == 0,
+		BaseDomain:                  baseDomain,
+		DefaultAdminEmail:           defaultAdminEmail(baseDomain),
+		AuthMode:                    s.cfg.DovecotAuthMode,
+		PasswordMinLength:           s.cfg.PasswordMinLength,
+		PasswordMaxLength:           s.cfg.PasswordMaxLength,
+		PasswordClassMin:            3,
+		PasskeyPrimarySignInEnabled: passkeyPrimaryEnabled,
 	}, nil
 }
 
@@ -1062,6 +1124,16 @@ func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, i
 		return "", models.User{}, err
 	}
 	if err := s.st.UpsertSetting(ctx, "primary_admin_email", adminEmail); err != nil {
+		return "", models.User{}, err
+	}
+	passkeyPrimaryEnabled := s.cfg.PasskeyPasswordlessEnabled
+	if enabled, flagErr := s.PasskeySignInEnabled(ctx); flagErr == nil {
+		passkeyPrimaryEnabled = enabled
+	}
+	if req.PasskeyPrimarySignInEnabled != nil {
+		passkeyPrimaryEnabled = *req.PasskeyPrimarySignInEnabled
+	}
+	if err := s.st.UpsertSetting(ctx, featureFlagSettingPasskeySignIn, boolToFeatureFlagSetting(passkeyPrimaryEnabled)); err != nil {
 		return "", models.User{}, err
 	}
 	if err := s.st.UpsertSetting(ctx, "enforce_admin_mfa", "1"); err != nil {

@@ -121,42 +121,9 @@ func (h *Handlers) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 		writeJSONDecodeError(w, r, err)
 		return
 	}
-	email := strings.ToLower(strings.TrimSpace(req.Email))
-	usernamelessEnabled := h.cfg.PasskeyUsernamelessEnabled
-	if enabled, err := h.svc.PasskeyAccountDiscoveryEnabled(r.Context()); err == nil {
-		usernamelessEnabled = enabled
-	}
-	if !usernamelessEnabled && email == "" {
-		util.WriteError(w, http.StatusBadRequest, "bad_request", "email is required when username-less passkey login is disabled", middleware.RequestID(r.Context()))
-		return
-	}
+	emailProvided := strings.TrimSpace(req.Email) != ""
 
 	_ = h.svc.Store().DeleteSettingsByPrefixOlderThan(r.Context(), passkeyLoginChallengeSettingsPrefix(), time.Now().UTC().Add(-30*time.Minute))
-
-	allowCredentials := make([]map[string]any, 0, 4)
-	allowedCredentialIDs := make([]string, 0, 4)
-	userID := ""
-	if email != "" {
-		if user, err := h.svc.Store().GetUserByEmail(r.Context(), email); err == nil {
-			userID = user.ID
-			creds, err := h.svc.Store().ListMFAWebAuthnCredentials(r.Context(), user.ID)
-			if err == nil {
-				for _, cred := range creds {
-					credentialID := canonicalWebAuthnCredentialID(cred.CredentialID)
-					if credentialID == "" {
-						credentialID = strings.TrimSpace(cred.CredentialID)
-					}
-					allowCredentials = append(allowCredentials, map[string]any{
-						"id":         credentialID,
-						"type":       "public-key",
-						"name":       cred.Name,
-						"transports": parseWebAuthnTransportsJSON(cred.TransportsJSON),
-					})
-					allowedCredentialIDs = append(allowedCredentialIDs, credentialID)
-				}
-			}
-		}
-	}
 
 	challengeID := uuid.NewString()
 	cookieNonce, err := randomToken()
@@ -170,15 +137,13 @@ func (h *Handlers) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := passkeyLoginChallengeState{
-		Challenge:            challenge,
-		RPID:                 webAuthnContext.RPID,
-		Origins:              webAuthnContext.Origins,
-		ExpiresAt:            time.Now().UTC().Add(5 * time.Minute),
-		AttemptCount:         0,
-		MaxAttempts:          5,
-		CookieTokenHash:      trustedDeviceTokenHash(cookieNonce),
-		UserID:               userID,
-		AllowCredentialsJSON: allowedCredentialIDs,
+		Challenge:       challenge,
+		RPID:            webAuthnContext.RPID,
+		Origins:         webAuthnContext.Origins,
+		ExpiresAt:       time.Now().UTC().Add(5 * time.Minute),
+		AttemptCount:    0,
+		MaxAttempts:     5,
+		CookieTokenHash: trustedDeviceTokenHash(cookieNonce),
 	}
 	if err := h.storePasskeyLoginChallenge(r.Context(), challengeID, state); err != nil {
 		util.WriteError(w, 500, "webauthn_begin_failed", "cannot persist challenge", middleware.RequestID(r.Context()))
@@ -187,18 +152,15 @@ func (h *Handlers) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 	h.setPasskeyLoginChallengeCookie(w, r, challengeID, cookieNonce, state.ExpiresAt)
 
 	mode := "usernameless"
-	if email != "" {
-		mode = "email_fallback"
-	}
 	beginMeta, _ := json.Marshal(map[string]any{
 		"mode":           mode,
-		"email_provided": email != "",
+		"email_provided": emailProvided,
 	})
 	_ = h.svc.Store().InsertAudit(
 		r.Context(),
-		firstNonEmpty(userID, "anonymous"),
+		"anonymous",
 		"auth.passkey.login.begin",
-		firstNonEmpty(userID, "passkey"),
+		"passkey",
 		string(beginMeta),
 	)
 	util.WriteJSON(w, 200, map[string]any{
@@ -213,9 +175,9 @@ func (h *Handlers) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 			"rpId":             webAuthnContext.RPID,
 			"timeout":          300000,
 			"userVerification": "required",
-			"allowCredentials": allowCredentials,
+			"allowCredentials": []map[string]any{},
 		},
-		"allow_credentials": allowCredentials,
+		"allow_credentials": []map[string]any{},
 	})
 }
 
@@ -299,14 +261,6 @@ func (h *Handlers) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 	signature := getStringValue(resp, "signature")
 	if credID == "" || clientDataJSON == "" || authenticatorData == "" || signature == "" {
 		util.WriteError(w, 400, "bad_request", "credential and response fields are required", middleware.RequestID(r.Context()))
-		return
-	}
-	usernamelessEnabled := h.cfg.PasskeyUsernamelessEnabled
-	if enabled, err := h.svc.PasskeyAccountDiscoveryEnabled(r.Context()); err == nil {
-		usernamelessEnabled = enabled
-	}
-	if !usernamelessEnabled && strings.TrimSpace(state.UserID) == "" {
-		util.WriteError(w, http.StatusUnauthorized, "invalid_credentials", "invalid credentials", middleware.RequestID(r.Context()))
 		return
 	}
 
@@ -3630,10 +3584,6 @@ func (h *Handlers) authCapabilities(r *http.Request) map[string]any {
 	if enabled, err := h.svc.PasskeySignInEnabled(r.Context()); err == nil {
 		passkeySignInEnabled = enabled
 	}
-	passkeyDiscoveryEnabled := h.cfg.PasskeyUsernamelessEnabled
-	if enabled, err := h.svc.PasskeyAccountDiscoveryEnabled(r.Context()); err == nil {
-		passkeyDiscoveryEnabled = enabled
-	}
 	passwordlessAvailable := mfaAvailable && passkeySignInEnabled
 	reason := ""
 	switch {
@@ -3647,7 +3597,7 @@ func (h *Handlers) authCapabilities(r *http.Request) map[string]any {
 	return map[string]any{
 		"passkey_mfa_available":          mfaAvailable,
 		"passkey_passwordless_available": passwordlessAvailable,
-		"passkey_usernameless_enabled":   passkeyDiscoveryEnabled,
+		"passkey_usernameless_enabled":   true,
 		"rp_id":                          context.RPID,
 		"allowed_origins":                context.Origins,
 		"reason":                         reason,

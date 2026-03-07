@@ -1054,8 +1054,49 @@ func (s *Store) CreatePasswordResetToken(ctx context.Context, userID, tokenHash 
 
 func (s *Store) InvalidatePasswordResetToken(ctx context.Context, tokenHash string) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE password_reset_tokens SET used_at=? WHERE token_hash=? AND used_at IS NULL`,
+		`UPDATE password_reset_tokens SET used_at=?, reserved_at=NULL, reservation_id=NULL WHERE token_hash=? AND used_at IS NULL`,
 		time.Now().UTC(), tokenHash,
+	)
+	return err
+}
+
+func (s *Store) ReservePasswordResetToken(ctx context.Context, tokenHash, reservationID string, lease time.Duration) (models.PasswordResetToken, error) {
+	if strings.TrimSpace(reservationID) == "" {
+		return models.PasswordResetToken{}, fmt.Errorf("reservation_id is required")
+	}
+	now := time.Now().UTC()
+	if lease <= 0 {
+		lease = 30 * time.Second
+	}
+	staleBefore := now.Add(-lease)
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE password_reset_tokens
+		 SET reserved_at=?, reservation_id=?
+		 WHERE token_hash=?
+		   AND used_at IS NULL
+		   AND expires_at>?
+		   AND (reserved_at IS NULL OR reserved_at<=?)`,
+		now, strings.TrimSpace(reservationID), tokenHash, now, staleBefore,
+	)
+	if err != nil {
+		return models.PasswordResetToken{}, err
+	}
+	affected, _ := res.RowsAffected()
+	if affected != 1 {
+		return models.PasswordResetToken{}, ErrNotFound
+	}
+	return s.getPasswordResetTokenByHash(ctx, tokenHash)
+}
+
+func (s *Store) ReleasePasswordResetTokenReservation(ctx context.Context, tokenHash, reservationID string) error {
+	if strings.TrimSpace(reservationID) == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE password_reset_tokens
+		 SET reserved_at=NULL, reservation_id=NULL
+		 WHERE token_hash=? AND used_at IS NULL AND reservation_id=?`,
+		tokenHash, strings.TrimSpace(reservationID),
 	)
 	return err
 }
@@ -1064,7 +1105,7 @@ func (s *Store) ConsumePasswordResetToken(ctx context.Context, tokenHash string)
 	now := time.Now().UTC()
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE password_reset_tokens
-		 SET used_at=?
+		 SET used_at=?, reserved_at=NULL, reservation_id=NULL
 		 WHERE token_hash=? AND used_at IS NULL AND expires_at>?`,
 		now, tokenHash, now,
 	)
@@ -1075,18 +1116,50 @@ func (s *Store) ConsumePasswordResetToken(ctx context.Context, tokenHash string)
 	if affected != 1 {
 		return models.PasswordResetToken{}, ErrNotFound
 	}
+	return s.getPasswordResetTokenByHash(ctx, tokenHash)
+}
 
+func (s *Store) ConsumeReservedPasswordResetToken(ctx context.Context, tokenHash, reservationID string) (models.PasswordResetToken, error) {
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE password_reset_tokens
+		 SET used_at=?, reserved_at=NULL, reservation_id=NULL
+		 WHERE token_hash=? AND used_at IS NULL AND expires_at>? AND reservation_id=?`,
+		now, tokenHash, now, strings.TrimSpace(reservationID),
+	)
+	if err != nil {
+		return models.PasswordResetToken{}, err
+	}
+	affected, _ := res.RowsAffected()
+	if affected != 1 {
+		return models.PasswordResetToken{}, ErrNotFound
+	}
+	return s.getPasswordResetTokenByHash(ctx, tokenHash)
+}
+
+func (s *Store) getPasswordResetTokenByHash(ctx context.Context, tokenHash string) (models.PasswordResetToken, error) {
 	var t models.PasswordResetToken
-	var used sql.NullTime
-	err = s.db.QueryRowContext(ctx,
-		`SELECT id,user_id,token_hash,expires_at,used_at,created_at FROM password_reset_tokens WHERE token_hash=?`,
+	var used, reserved sql.NullTime
+	var reservationID sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		`SELECT id,user_id,token_hash,reservation_id,reserved_at,expires_at,used_at,created_at FROM password_reset_tokens WHERE token_hash=?`,
 		tokenHash,
-	).Scan(&t.ID, &t.UserID, &t.TokenHash, &t.ExpiresAt, &used, &t.CreatedAt)
+	).Scan(&t.ID, &t.UserID, &t.TokenHash, &reservationID, &reserved, &t.ExpiresAt, &used, &t.CreatedAt)
 	if err == sql.ErrNoRows {
 		return models.PasswordResetToken{}, ErrNotFound
 	}
 	if err != nil {
 		return models.PasswordResetToken{}, err
+	}
+	if reservationID.Valid {
+		v := strings.TrimSpace(reservationID.String)
+		if v != "" {
+			t.ReservationID = &v
+		}
+	}
+	if reserved.Valid {
+		tm := reserved.Time
+		t.ReservedAt = &tm
 	}
 	if used.Valid {
 		tm := used.Time

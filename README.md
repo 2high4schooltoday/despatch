@@ -76,8 +76,8 @@ Run these before packaging a release:
   - `System` includes software updates and feature flag controls
 - Passkey sign-in UX:
   - single passkey action button
-  - username-less account discovery when enabled
-  - email-scoped fallback when email is provided
+  - built-in username-less account discovery
+  - no email prompt before passkey sign-in
 - Mail and Compose are unified:
   - mailbox + message list + viewer stay in one Mail workspace
   - compose opens as an elevated modal panel from `New Message`

@@ -75,12 +75,13 @@ type Config struct {
 	BootstrapAdminEmail    string
 	BootstrapAdminPassword string
 
-	PasswordResetSender             string
-	PasswordResetFrom               string
-	PasswordResetBaseURL            string
-	PasswordResetTokenTTLMinutes    int
-	PasswordResetPublicEnabled      bool
-	PasswordResetRequireMappedLogin bool
+	PasswordResetSender              string
+	PasswordResetFrom                string
+	PasswordResetBaseURL             string
+	PasswordResetTokenTTLMinutes     int
+	PasswordResetPublicEnabled       bool
+	PasswordResetExternalSenderReady bool
+	PasswordResetRequireMappedLogin  bool
 
 	PAMResetHelperEnabled    bool
 	PAMResetHelperSocket     string
@@ -185,6 +186,7 @@ func Load() (Config, error) {
 		PasswordResetBaseURL:                   env("PASSWORD_RESET_BASE_URL", ""),
 		PasswordResetTokenTTLMinutes:           envInt("PASSWORD_RESET_TOKEN_TTL_MINUTES", 30),
 		PasswordResetPublicEnabled:             envBool("PASSWORD_RESET_PUBLIC_ENABLED", true),
+		PasswordResetExternalSenderReady:       envBool("PASSWORD_RESET_EXTERNAL_SENDER_READY", false),
 		PasswordResetRequireMappedLogin:        envBool("PASSWORD_RESET_REQUIRE_MAPPED_LOGIN", true),
 		PAMResetHelperEnabled:                  envBool("PAM_RESET_HELPER_ENABLED", false),
 		PAMResetHelperSocket:                   strings.TrimSpace(env("PAM_RESET_HELPER_SOCKET", "/run/despatch/pam-reset-helper.sock")),
@@ -211,7 +213,7 @@ func Load() (Config, error) {
 		MailAllowInsecureSkipVerifyNonLoopback: envBool("MAIL_ALLOW_INSECURE_SKIP_VERIFY_NON_LOOPBACK", false),
 		WebAuthnRPID:                           strings.TrimSpace(env("WEBAUTHN_RP_ID", "")),
 		WebAuthnAllowedOrigins:                 envCSV("WEBAUTHN_ALLOWED_ORIGINS"),
-		PasskeyPasswordlessEnabled:             envBool("PASSKEY_PASSWORDLESS_ENABLED", false),
+		PasskeyPasswordlessEnabled:             envBool("PASSKEY_PASSWORDLESS_ENABLED", true),
 		PasskeyUsernamelessEnabled:             envBool("PASSKEY_USERNAMELESS_ENABLED", true),
 	}
 

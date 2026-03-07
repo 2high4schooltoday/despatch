@@ -59,6 +59,7 @@ func newPasswordResetService(t *testing.T, sender *captureResetSender) (*Service
 		filepath.Join("..", "..", "migrations", "004_cleanup_rejected_users_casefold.sql"),
 		filepath.Join("..", "..", "migrations", "005_admin_query_indexes.sql"),
 		filepath.Join("..", "..", "migrations", "006_users_recovery_email.sql"),
+		filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)

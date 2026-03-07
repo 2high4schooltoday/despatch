@@ -22,6 +22,20 @@ type pamTestDespatch struct {
 	failWith       error
 }
 
+type fakePAMResetter struct {
+	err       error
+	calls     int
+	usernames []string
+}
+
+func (f *fakePAMResetter) ResetPassword(ctx context.Context, username, newPassword string) error {
+	_ = ctx
+	_ = newPassword
+	f.calls++
+	f.usernames = append(f.usernames, username)
+	return f.err
+}
+
 func (m pamTestDespatch) ListMailboxes(ctx context.Context, user, pass string) ([]mail.Mailbox, error) {
 	if m.failWith != nil {
 		return nil, m.failWith
@@ -83,6 +97,9 @@ func newPAMTestService(t *testing.T, acceptedPass string, acceptedUsers ...strin
 		t.Fatalf("apply migrations: %v", err)
 	}
 	if err := db.ApplyMigrationFile(sqdb, filepath.Join("..", "..", "migrations", "006_users_recovery_email.sql")); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	if err := db.ApplyMigrationFile(sqdb, filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql")); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
 
@@ -156,6 +173,9 @@ func TestPAMModeLoginDetectsConnectivityErrors(t *testing.T) {
 	if err := db.ApplyMigrationFile(sqdb, filepath.Join("..", "..", "migrations", "006_users_recovery_email.sql")); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
+	if err := db.ApplyMigrationFile(sqdb, filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql")); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
 
 	st := store.New(sqdb)
 	cfg := config.Config{
@@ -207,6 +227,128 @@ func TestPAMModeUsesHelperPolicyForPasswordReset(t *testing.T) {
 	}
 }
 
+func TestPAMPublicResetRequiresConfirmedExternalSender(t *testing.T) {
+	ctx := context.Background()
+	svc, st := newPAMTestService(t, "PamPass123!")
+	svc.cfg.PAMResetHelperEnabled = true
+	svc.sender = &captureResetSender{}
+
+	pwHash, err := auth.HashPassword("PamResetUser123!")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	user, err := st.CreateUser(ctx, "pam-reset@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(ctx, user.ID, "pam-reset-recovery@example.net"); err != nil {
+		t.Fatalf("set recovery email: %v", err)
+	}
+
+	if err := svc.RequestPasswordReset(ctx, "pam-reset@example.com"); !errors.Is(err, ErrPasswordResetUnavailable) {
+		t.Fatalf("expected public reset unavailable until external sender is confirmed, got %v", err)
+	}
+	caps := svc.PasswordResetCapabilities(ctx)
+	if caps.SelfServiceEnabled {
+		t.Fatalf("expected self-service reset disabled, got %+v", caps)
+	}
+	if caps.SenderReason != passwordResetSenderReasonExternalUnconfirmed {
+		t.Fatalf("expected external sender unconfirmed reason, got %+v", caps)
+	}
+}
+
+func TestPAMPublicResetAllowsConfirmedExternalSender(t *testing.T) {
+	ctx := context.Background()
+	svc, st := newPAMTestService(t, "PamPass123!")
+	svc.cfg.PAMResetHelperEnabled = true
+	svc.cfg.PasswordResetExternalSenderReady = true
+	sender := &captureResetSender{}
+	svc.sender = sender
+
+	pwHash, err := auth.HashPassword("PamResetUser123!")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	user, err := st.CreateUser(ctx, "pam-confirmed@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(ctx, user.ID, "pam-confirmed-recovery@example.net"); err != nil {
+		t.Fatalf("set recovery email: %v", err)
+	}
+
+	if err := svc.RequestPasswordReset(ctx, "pam-confirmed@example.com"); err != nil {
+		t.Fatalf("expected confirmed external sender reset request to succeed, got %v", err)
+	}
+	if sender.calls != 1 {
+		t.Fatalf("expected one delivery attempt, got %d", sender.calls)
+	}
+	caps := svc.PasswordResetCapabilities(ctx)
+	if !caps.SelfServiceEnabled || caps.SenderReason != "" {
+		t.Fatalf("unexpected capabilities after external sender confirmation: %+v", caps)
+	}
+}
+
+func TestPAMConfirmPasswordResetKeepsTokenWhenHelperUnavailable(t *testing.T) {
+	ctx := context.Background()
+	svc, st := newPAMTestService(t, "PamPass123!")
+	svc.cfg.PAMResetHelperEnabled = true
+	resetter := &fakePAMResetter{err: ErrPasswordResetHelperDown}
+	svc.pamResetter = resetter
+
+	pwHash, err := auth.HashPassword("PamToken123!")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	user, err := st.CreateUser(ctx, "pam-token@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	sessionTokenHash := "session-token-hash"
+	now := time.Now().UTC()
+	if err := st.CreateSession(ctx, models.Session{
+		ID:            "sess-1",
+		UserID:        user.ID,
+		TokenHash:     sessionTokenHash,
+		MailSecret:    "",
+		ExpiresAt:     now.Add(time.Hour),
+		IdleExpiresAt: now.Add(time.Hour),
+		CreatedAt:     now,
+		LastSeenAt:    now,
+	}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	rawToken, tokenHash, err := auth.NewOpaqueToken()
+	if err != nil {
+		t.Fatalf("new opaque token: %v", err)
+	}
+	if _, err := st.CreatePasswordResetToken(ctx, user.ID, tokenHash, time.Now().UTC().Add(5*time.Minute)); err != nil {
+		t.Fatalf("create reset token: %v", err)
+	}
+
+	if err := svc.ConfirmPasswordReset(ctx, rawToken, "NewPassword123!"); !errors.Is(err, ErrPasswordResetHelperDown) {
+		t.Fatalf("expected helper unavailable on first confirm, got %v", err)
+	}
+	resetter.err = nil
+	if err := svc.ConfirmPasswordReset(ctx, rawToken, "NewPassword123!"); err != nil {
+		t.Fatalf("expected second confirm to succeed after helper recovery, got %v", err)
+	}
+	if resetter.calls != 2 {
+		t.Fatalf("expected helper to be called twice, got %d", resetter.calls)
+	}
+	if _, err := svc.st.ConsumePasswordResetToken(ctx, tokenHash); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected reset token to be used after successful retry, got %v", err)
+	}
+	session, err := st.GetSessionByTokenHash(ctx, sessionTokenHash)
+	if err != nil {
+		t.Fatalf("load session after reset: %v", err)
+	}
+	if session.RevokedAt == nil {
+		t.Fatalf("expected user sessions to be revoked after successful reset")
+	}
+}
+
 func TestPAMAdminResetFallsBackToEmailWhenMappedLoginMissing(t *testing.T) {
 	ctx := context.Background()
 	svc, st := newPAMTestService(t, "PamPass123!")
@@ -250,6 +392,9 @@ func TestPAMSetupDetectsConnectivityErrors(t *testing.T) {
 		t.Fatalf("apply migrations: %v", err)
 	}
 	if err := db.ApplyMigrationFile(sqdb, filepath.Join("..", "..", "migrations", "006_users_recovery_email.sql")); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	if err := db.ApplyMigrationFile(sqdb, filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql")); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
 

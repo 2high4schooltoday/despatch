@@ -9,6 +9,78 @@ async function dismissRecoveryPromptIfPresent(page) {
   await expect(overlay).toHaveClass(/hidden/);
 }
 
+test('auth hides passkey sign-in when unavailable', async ({ page }) => {
+  await page.route('**/api/v1/public/auth/capabilities', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        passkey_mfa_available: false,
+        passkey_passwordless_available: false,
+        passkey_usernameless_enabled: true,
+        reason: 'passwordless_disabled',
+      }),
+    });
+  });
+  await page.route('**/api/v1/setup/status', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        required: false,
+        base_domain: 'example.com',
+        default_admin_email: 'webmaster@example.com',
+        auth_mode: 'sql',
+        password_min_length: 12,
+        password_max_length: 128,
+        password_class_min: 3,
+        passkey_primary_sign_in_enabled: true,
+      }),
+    });
+  });
+
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+  await expect(page.locator('#auth-pane-login')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#passkey-email')).toHaveCount(0);
+  await expect(page.locator('#auth-passkey-card')).toHaveClass(/hidden/);
+});
+
+test('oobe shows passkey primary sign-in toggle', async ({ page }) => {
+  await page.route('**/api/v1/setup/status', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        required: true,
+        base_domain: 'example.com',
+        default_admin_email: 'webmaster@example.com',
+        auth_mode: 'sql',
+        password_min_length: 12,
+        password_max_length: 128,
+        password_class_min: 3,
+        passkey_primary_sign_in_enabled: true,
+      }),
+    });
+  });
+
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+  await expect(page.locator('#view-setup')).toBeVisible();
+
+  await page.click('#setup-next');
+  await page.click('#setup-next');
+  await page.fill('#setup-domain', 'example.com');
+  await page.fill('#setup-admin-email', 'webmaster@example.com');
+  await page.click('#setup-next');
+
+  await expect(page.locator('#setup-passkey-primary-enabled')).toBeVisible();
+  await expect(page.locator('#setup-passkey-primary-enabled')).toBeChecked();
+  await page.uncheck('#setup-passkey-primary-enabled');
+  await page.click('#setup-next');
+  await expect(page.locator('#setup-summary-passkey')).toHaveText(/disabled/i);
+});
+
 test('desktop ux pass', async ({ page }) => {
   const consoleErrors = [];
   const dialogs = [];
@@ -20,8 +92,14 @@ test('desktop ux pass', async ({ page }) => {
   });
 
   await page.setViewportSize({ width: 1366, height: 900 });
-  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+  await page.goto('http://127.0.0.1:18081/#/reset?token=RESET-TOKEN-123', { waitUntil: 'networkidle' });
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'machine-dark');
+  await expect(page.locator('#auth-pane-reset')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#reset-token-input')).toHaveValue('RESET-TOKEN-123');
+  await expect(page.locator('#reset-capability-note')).toContainText(/confirmed|unavailable|enabled/i);
+  await expect(page.evaluate(() => window.location.hash)).resolves.toBe('');
+  await expect(page.locator('#passkey-email')).toHaveCount(0);
+  await page.click('#auth-mode-login');
   await page.screenshot({ path: '/tmp/ux-desktop-auth.png', fullPage: true });
 
   await page.fill('#form-login input[name="email"]', 'admin@example.com');
@@ -136,8 +214,11 @@ test('desktop ux pass', async ({ page }) => {
       await expect(page.locator('#message-body-html-wrap')).not.toHaveClass(/hidden/);
       const srcdoc = (await page.locator('#message-body-html').getAttribute('srcdoc')) || '';
       expect(srcdoc).toContain('Content-Security-Policy');
-      const htmlBodyColor = await page.frameLocator('#message-body-html').locator('body').evaluate((n) => getComputedStyle(n).color);
-      expect(htmlBodyColor).not.toBe('rgb(0, 0, 0)');
+      expect(srcdoc).toContain('meta name="color-scheme" content="light"');
+      expect(srcdoc).toContain(':root{color-scheme:light;}');
+      expect(srcdoc).toContain('html,body{margin:0;padding:0;background:#ffffff;color:#000000;}');
+      expect(srcdoc).not.toContain('ui-monospace');
+      expect(srcdoc).not.toContain('a{color:');
 
       await page.click('#btn-reader-view-plain');
       await expect(page.locator('#btn-reader-view-plain')).toHaveClass(/is-active/);
