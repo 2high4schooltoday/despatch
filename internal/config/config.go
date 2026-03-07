@@ -78,6 +78,8 @@ type Config struct {
 	PasswordResetSender              string
 	PasswordResetFrom                string
 	PasswordResetBaseURL             string
+	PasswordResetSMTPUser            string
+	PasswordResetSMTPPass            string
 	PasswordResetTokenTTLMinutes     int
 	PasswordResetPublicEnabled       bool
 	PasswordResetExternalSenderReady bool
@@ -184,6 +186,8 @@ func Load() (Config, error) {
 		PasswordResetSender:                    strings.ToLower(env("PASSWORD_RESET_SENDER", "smtp")),
 		PasswordResetFrom:                      env("PASSWORD_RESET_FROM", "no-reply@example.com"),
 		PasswordResetBaseURL:                   env("PASSWORD_RESET_BASE_URL", ""),
+		PasswordResetSMTPUser:                  strings.TrimSpace(env("PASSWORD_RESET_SMTP_USER", "")),
+		PasswordResetSMTPPass:                  env("PASSWORD_RESET_SMTP_PASS", ""),
 		PasswordResetTokenTTLMinutes:           envInt("PASSWORD_RESET_TOKEN_TTL_MINUTES", 30),
 		PasswordResetPublicEnabled:             envBool("PASSWORD_RESET_PUBLIC_ENABLED", true),
 		PasswordResetExternalSenderReady:       envBool("PASSWORD_RESET_EXTERNAL_SENDER_READY", false),

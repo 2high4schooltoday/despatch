@@ -151,8 +151,9 @@ PAM mode notes:
 Password reset sender identity:
 - Default sender is `no-reply@<base_domain>` when `PASSWORD_RESET_FROM` is unset or placeholder.
 - Public password reset requires SMTP delivery (`PASSWORD_RESET_SENDER=smtp`). `log` mode is allowed only when public reset is disabled.
+- If your reset sender must authenticate to SMTP separately from mailbox users, set `PASSWORD_RESET_SMTP_USER` and `PASSWORD_RESET_SMTP_PASS`.
 - SQL auth mode auto-provisions sender mailbox identity through the configured auth provisioner.
-- PAM mode marks sender identity as externally managed and reports diagnostics in readiness/capabilities.
+- PAM mode marks sender identity as externally managed and reports diagnostics in readiness/capabilities. `PASSWORD_RESET_EXTERNAL_SENDER_READY=true` is required but not sufficient on its own; reset sender SMTP reachability/auth/policy must also pass.
 - Password reset SMTP delivery follows `SMTP_TLS` / `SMTP_STARTTLS` / `SMTP_INSECURE_SKIP_VERIFY` runtime settings.
 
 Installer troubleshooting:

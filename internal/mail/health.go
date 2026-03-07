@@ -3,9 +3,7 @@ package mail
 import (
 	"context"
 	"crypto/tls"
-	"fmt"
 	"net"
-	"net/smtp"
 	"strconv"
 	"time"
 
@@ -35,32 +33,12 @@ func ProbeIMAP(ctx context.Context, cfg config.Config) error {
 }
 
 func ProbeSMTP(ctx context.Context, cfg config.Config) error {
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	addr := net.JoinHostPort(cfg.SMTPHost, strconv.Itoa(cfg.SMTPPort))
-	tlsCfg := &tls.Config{ServerName: cfg.SMTPHost, InsecureSkipVerify: cfg.SMTPInsecureSkipVerify}
-
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return err
-	}
-	if cfg.SMTPTLS {
-		conn = tls.Client(conn, tlsCfg)
-	}
-
-	client, err := smtp.NewClient(conn, cfg.SMTPHost)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	if cfg.SMTPStartTLS {
-		if ok, _ := client.Extension("STARTTLS"); ok {
-			if err := client.StartTLS(tlsCfg); err != nil {
-				return err
-			}
-		} else {
-			return fmt.Errorf("SMTP STARTTLS extension not available")
-		}
-	}
-	return client.Quit()
+	return ProbeSMTPSubmission(ctx, SMTPSubmissionConfig{
+		Host:               cfg.SMTPHost,
+		Port:               cfg.SMTPPort,
+		TLS:                cfg.SMTPTLS,
+		StartTLS:           cfg.SMTPStartTLS,
+		InsecureSkipVerify: cfg.SMTPInsecureSkipVerify,
+		Timeout:            5 * time.Second,
+	}, "")
 }

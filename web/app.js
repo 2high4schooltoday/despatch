@@ -3044,6 +3044,14 @@ function describeResetSenderReason(reason) {
       return "Log-only delivery is not allowed for public reset.";
     case "external_sender_unconfirmed":
       return "Public reset stays disabled until the external reset sender is explicitly confirmed.";
+    case "smtp_unreachable":
+      return "The reset sender cannot reach the configured SMTP server.";
+    case "smtp_auth_failed":
+      return "The reset sender SMTP login was rejected.";
+    case "smtp_sender_rejected":
+      return "The reset sender address was rejected by the SMTP server policy.";
+    case "smtp_probe_failed":
+      return "The reset sender SMTP probe failed.";
     case "external_mailbox_required":
       return "An externally managed reset sender mailbox is required.";
     case "sql_provisioner_unconfigured":
@@ -4827,7 +4835,7 @@ async function promptRecoveryEmailIfNeeded() {
     const seed = String(state.user.recovery_email || state.user.email || "").trim();
     const input = await showPromptModal({
       title: "Set Recovery Email",
-      body: "Password reset tokens are sent to your recovery email. Use an address different from your login email.",
+      body: "Password reset stays unavailable for this account until a recovery email different from your login email is saved.",
       label: "Recovery Email",
       inputType: "email",
       defaultValue: seed,

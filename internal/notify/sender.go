@@ -2,18 +2,18 @@ package notify
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
-	"crypto/tls"
 	"encoding/hex"
 	"fmt"
 	"log"
-	"net"
-	"net/smtp"
-	"strconv"
+	"mime"
+	"net/mail"
 	"strings"
 	"time"
 
 	"despatch/internal/config"
+	internalmail "despatch/internal/mail"
 )
 
 type Sender interface {
@@ -48,6 +48,8 @@ type SMTPSender struct {
 	tls                bool
 	startTLS           bool
 	insecureSkipVerify bool
+	user               string
+	pass               string
 }
 
 func PasswordResetFromAddress(cfg config.Config) string {
@@ -77,6 +79,8 @@ func NewSender(cfg config.Config) Sender {
 			tls:                cfg.SMTPTLS,
 			startTLS:           cfg.SMTPStartTLS,
 			insecureSkipVerify: cfg.SMTPInsecureSkipVerify,
+			user:               strings.TrimSpace(cfg.PasswordResetSMTPUser),
+			pass:               cfg.PasswordResetSMTPPass,
 		}
 	default:
 		return SMTPSender{
@@ -87,6 +91,8 @@ func NewSender(cfg config.Config) Sender {
 			tls:                cfg.SMTPTLS,
 			startTLS:           cfg.SMTPStartTLS,
 			insecureSkipVerify: cfg.SMTPInsecureSkipVerify,
+			user:               strings.TrimSpace(cfg.PasswordResetSMTPUser),
+			pass:               cfg.PasswordResetSMTPPass,
 		}
 	}
 }
@@ -96,63 +102,94 @@ func (s SMTPSender) SendPasswordReset(ctx context.Context, toEmail, token string
 	if link != "" {
 		link = fmt.Sprintf("%s/#/reset?token=%s", link, token)
 	}
-	body := "Subject: Password Reset Token\r\n\r\nUse this token to reset your password:\r\n" + token + "\r\n"
+	raw, err := s.buildRFC822(toEmail, token, link)
+	if err != nil {
+		return err
+	}
+	return internalmail.SubmitSMTP(ctx, s.submitConfig(), s.from, []string{toEmail}, raw)
+}
+
+func (s SMTPSender) ProbePasswordReset(ctx context.Context) error {
+	cfg := s.submitConfig()
+	cfg.Timeout = 5 * time.Second
+	return internalmail.ProbeSMTPSubmission(ctx, cfg, s.from)
+}
+
+func ProbePasswordResetSMTP(ctx context.Context, cfg config.Config) error {
+	smtpCfg := passwordResetSMTPConfig(cfg)
+	smtpCfg.Timeout = 5 * time.Second
+	return internalmail.ProbeSMTPSubmission(ctx, smtpCfg, PasswordResetFromAddress(cfg))
+}
+
+func passwordResetSMTPConfig(cfg config.Config) internalmail.SMTPSubmissionConfig {
+	return internalmail.SMTPSubmissionConfig{
+		Host:               cfg.SMTPHost,
+		Port:               cfg.SMTPPort,
+		TLS:                cfg.SMTPTLS,
+		StartTLS:           cfg.SMTPStartTLS,
+		InsecureSkipVerify: cfg.SMTPInsecureSkipVerify,
+		Username:           strings.TrimSpace(cfg.PasswordResetSMTPUser),
+		Password:           cfg.PasswordResetSMTPPass,
+	}
+}
+
+func (s SMTPSender) submitConfig() internalmail.SMTPSubmissionConfig {
+	return internalmail.SMTPSubmissionConfig{
+		Host:               s.host,
+		Port:               s.port,
+		TLS:                s.tls,
+		StartTLS:           s.startTLS,
+		InsecureSkipVerify: s.insecureSkipVerify,
+		Username:           strings.TrimSpace(s.user),
+		Password:           s.pass,
+	}
+}
+
+func (s SMTPSender) buildRFC822(toEmail, token, link string) ([]byte, error) {
+	fromAddr, err := mail.ParseAddress(strings.TrimSpace(s.from))
+	if err != nil {
+		return nil, err
+	}
+	toAddr, err := mail.ParseAddress(strings.TrimSpace(toEmail))
+	if err != nil {
+		return nil, err
+	}
+	body := "Use this token to reset your Despatch password:\r\n" + token + "\r\n"
 	if link != "" {
 		body += "\r\nOr open this link:\r\n" + link + "\r\n"
 	}
-	return s.sendSMTP(ctx, []string{toEmail}, []byte(body))
+	var b strings.Builder
+	fmt.Fprintf(&b, "From: %s\r\n", encodeAddress(fromAddr))
+	fmt.Fprintf(&b, "To: %s\r\n", encodeAddress(toAddr))
+	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
+	fmt.Fprintf(&b, "Message-ID: %s\r\n", generateMessageID(fromAddr.Address))
+	fmt.Fprintf(&b, "Subject: Password Reset Token\r\n")
+	fmt.Fprintf(&b, "MIME-Version: 1.0\r\n")
+	fmt.Fprintf(&b, "Content-Type: text/plain; charset=UTF-8\r\n")
+	fmt.Fprintf(&b, "Content-Transfer-Encoding: 8bit\r\n")
+	fmt.Fprintf(&b, "\r\n%s", body)
+	return []byte(b.String()), nil
 }
 
-func (s SMTPSender) sendSMTP(ctx context.Context, rcpt []string, raw []byte) error {
-	addr := net.JoinHostPort(strings.TrimSpace(s.host), strconv.Itoa(s.port))
-	tlsConfig := &tls.Config{
-		ServerName:         strings.TrimSpace(s.host),
-		InsecureSkipVerify: s.insecureSkipVerify,
+func encodeAddress(addr *mail.Address) string {
+	if addr == nil {
+		return ""
 	}
+	name := strings.TrimSpace(addr.Name)
+	if name != "" {
+		return mime.QEncoding.Encode("utf-8", name) + " <" + addr.Address + ">"
+	}
+	return addr.Address
+}
 
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return err
+func generateMessageID(from string) string {
+	domain := "localhost"
+	if at := strings.LastIndex(strings.TrimSpace(from), "@"); at >= 0 && at+1 < len(strings.TrimSpace(from)) {
+		domain = strings.TrimSpace(from)[at+1:]
 	}
-
-	if s.tls {
-		conn = tls.Client(conn, tlsConfig)
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("<%d@%s>", time.Now().UTC().UnixNano(), domain)
 	}
-
-	client, err := smtp.NewClient(conn, strings.TrimSpace(s.host))
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	if s.startTLS {
-		if ok, _ := client.Extension("STARTTLS"); ok {
-			if err := client.StartTLS(tlsConfig); err != nil {
-				return err
-			}
-		} else {
-			return fmt.Errorf("SMTP STARTTLS extension not available")
-		}
-	}
-
-	if err := client.Mail(s.from); err != nil {
-		return err
-	}
-	for _, r := range rcpt {
-		if err := client.Rcpt(strings.TrimSpace(r)); err != nil {
-			return err
-		}
-	}
-	wc, err := client.Data()
-	if err != nil {
-		return err
-	}
-	if _, err := wc.Write(raw); err != nil {
-		return err
-	}
-	if err := wc.Close(); err != nil {
-		return err
-	}
-	return client.Quit()
+	return fmt.Sprintf("<%s@%s>", hex.EncodeToString(buf), domain)
 }

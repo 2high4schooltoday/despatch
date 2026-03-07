@@ -56,6 +56,10 @@ const (
 
 	passwordResetSenderReasonLogOnly             = "log_delivery_disabled"
 	passwordResetSenderReasonExternalUnconfirmed = "external_sender_unconfirmed"
+	passwordResetSenderReasonSMTPUnreachable     = "smtp_unreachable"
+	passwordResetSenderReasonSMTPAuthFailed      = "smtp_auth_failed"
+	passwordResetSenderReasonSMTPSenderRejected  = "smtp_sender_rejected"
+	passwordResetSenderReasonSMTPProbeFailed     = "smtp_probe_failed"
 	passwordResetReservationLease                = 30 * time.Second
 )
 
@@ -102,6 +106,10 @@ type Service struct {
 
 type pamPasswordResetter interface {
 	ResetPassword(ctx context.Context, username, newPassword string) error
+}
+
+type passwordResetSenderTransportProber interface {
+	ProbePasswordReset(ctx context.Context) error
 }
 
 type PasswordResetCapabilities struct {
@@ -558,6 +566,9 @@ func (s *Service) EnsurePasswordResetSenderIdentity(ctx context.Context) (passwo
 	}
 	if s.usesPAMAuth() {
 		state = s.externalPasswordResetSenderState()
+		if state.Ready {
+			state = s.probePasswordResetSenderTransport(ctx, state)
+		}
 		return state, s.persistPasswordResetSenderState(ctx, state, "external")
 	}
 	if !s.hasProvisioner() {
@@ -598,6 +609,7 @@ func (s *Service) EnsurePasswordResetSenderIdentity(ctx context.Context) (passwo
 	state.Status = passwordResetSenderStatusReady
 	state.Reason = ""
 	state.Ready = true
+	state = s.probePasswordResetSenderTransport(ctx, state)
 	return state, s.persistPasswordResetSenderState(ctx, state, "app")
 }
 
@@ -663,7 +675,11 @@ func (s *Service) passwordResetSenderState(ctx context.Context) (passwordResetSe
 		return state, nil
 	}
 	if s.usesPAMAuth() {
-		return s.externalPasswordResetSenderState(), nil
+		state = s.externalPasswordResetSenderState()
+		if !state.Ready {
+			return state, nil
+		}
+		return s.probePasswordResetSenderTransport(ctx, state), nil
 	}
 	if !s.hasProvisioner() {
 		state.Status = passwordResetSenderStatusDegraded
@@ -681,7 +697,7 @@ func (s *Service) passwordResetSenderState(ctx context.Context) (passwordResetSe
 		state.Ready = false
 		return state, nil
 	}
-	return state, nil
+	return s.probePasswordResetSenderTransport(ctx, state), nil
 }
 
 func (s *Service) externalPasswordResetSenderState() passwordResetSenderState {
@@ -696,6 +712,52 @@ func (s *Service) externalPasswordResetSenderState() passwordResetSenderState {
 		state.Ready = false
 	}
 	return state
+}
+
+func (s *Service) probePasswordResetSenderTransport(ctx context.Context, state passwordResetSenderState) passwordResetSenderState {
+	prober, ok := s.sender.(passwordResetSenderTransportProber)
+	if !ok {
+		return state
+	}
+	if err := prober.ProbePasswordReset(ctx); err != nil {
+		state.Status = passwordResetSenderStatusDegraded
+		state.Reason = passwordResetSMTPReason(err)
+		state.Ready = false
+		return state
+	}
+	return state
+}
+
+func passwordResetSMTPReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, mail.ErrSMTPSenderRejected) {
+		return passwordResetSenderReasonSMTPSenderRejected
+	}
+	if errors.Is(err, mail.ErrSMTPAuthFailed) {
+		return passwordResetSenderReasonSMTPAuthFailed
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(msg, "dial tcp") ||
+		strings.Contains(msg, "connection refused") ||
+		strings.Contains(msg, "no such host") ||
+		strings.Contains(msg, "i/o timeout") ||
+		strings.Contains(msg, "network is unreachable") {
+		return passwordResetSenderReasonSMTPUnreachable
+	}
+	return passwordResetSenderReasonSMTPProbeFailed
+}
+
+func passwordResetLookupReason(err error) string {
+	switch {
+	case errors.Is(err, store.ErrConflict):
+		return "ambiguous_recovery_email"
+	case errors.Is(err, store.ErrNotFound):
+		return "account_not_found"
+	default:
+		return "lookup_failed"
+	}
 }
 
 func (s *Service) insertAuditBestEffort(ctx context.Context, actorID, action, target, metadata string) {
@@ -816,6 +878,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 			if err != nil {
 				// Don't leak presence or ambiguity.
 				if errors.Is(err, store.ErrNotFound) || errors.Is(err, store.ErrConflict) {
+					log.Printf("password_reset_request_soft_skip reason=%s identifier=%q", passwordResetLookupReason(err), email)
 					return nil
 				}
 				return fmt.Errorf("%w: lookup_failed", ErrPasswordResetDelivery)
@@ -825,6 +888,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, email string) error 
 		}
 	}
 	if RecoveryEmailNeedsSetup(u.Email, u.RecoveryEmail) {
+		log.Printf("password_reset_request_soft_skip reason=no_recovery_email user_id=%s email=%q", u.ID, u.Email)
 		return nil
 	}
 	if err := s.issuePasswordResetToken(ctx, u, strings.ToLower(strings.TrimSpace(*u.RecoveryEmail))); err != nil {

@@ -88,6 +88,16 @@ func (s *captureResetSender) SendPasswordReset(ctx context.Context, toEmail, tok
 	return nil
 }
 
+type probeResetSender struct {
+	captureResetSender
+	probeErr error
+}
+
+func (s *probeResetSender) ProbePasswordReset(ctx context.Context) error {
+	_ = ctx
+	return s.probeErr
+}
+
 func startFakeResetHelper(t *testing.T, ok bool, code string) string {
 	t.Helper()
 	socketPath := filepath.Join(os.TempDir(), fmt.Sprintf("despatch-pam-reset-%d.sock", time.Now().UnixNano()))
@@ -231,6 +241,27 @@ func TestPasswordResetRequestReturnsGenericAcceptedWhenEnabled(t *testing.T) {
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("expected 202, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPasswordResetRequestReturnsUnavailableWhenGlobalSenderProbeFails(t *testing.T) {
+	cfg := defaultResetTestConfig()
+	cfg.PAMResetHelperEnabled = true
+	cfg.PasswordResetExternalSenderReady = true
+	sender := &probeResetSender{probeErr: errors.New("dial tcp 127.0.0.1:587: connect: connection refused")}
+	router, _ := newResetRouterWithSender(t, cfg, sender)
+
+	body, _ := json.Marshal(map[string]string{"email": "unknown@example.com"})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/password/reset/request", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 for failed sender probe, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if sender.calls != 0 {
+		t.Fatalf("expected no delivery attempt on failed sender probe, got %d", sender.calls)
 	}
 }
 

@@ -1638,15 +1638,24 @@ func (h *Handlers) AdminAuditLog(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) AdminMailHealth(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
-		"checked_at": time.Now().UTC().Format(time.RFC3339),
-		"imap":       map[string]any{"ok": true},
-		"smtp":       map[string]any{"ok": true},
+		"checked_at":            time.Now().UTC().Format(time.RFC3339),
+		"imap":                  map[string]any{"ok": true},
+		"smtp":                  map[string]any{"ok": true},
+		"password_reset_sender": map[string]any{"ok": true},
 	}
 	if err := mail.ProbeIMAP(r.Context(), h.cfg); err != nil {
 		out["imap"] = map[string]any{"ok": false, "error": err.Error()}
 	}
 	if err := mail.ProbeSMTP(r.Context(), h.cfg); err != nil {
 		out["smtp"] = map[string]any{"ok": false, "error": err.Error()}
+	}
+	resetCaps := h.svc.PasswordResetCapabilities(r.Context())
+	resetSenderOK := resetCaps.SenderStatus == "ready" || resetCaps.SenderStatus == "external"
+	out["password_reset_sender"] = map[string]any{
+		"ok":      resetSenderOK,
+		"status":  resetCaps.SenderStatus,
+		"reason":  resetCaps.SenderReason,
+		"address": resetCaps.SenderAddress,
 	}
 	util.WriteJSON(w, 200, out)
 }

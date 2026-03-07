@@ -7,7 +7,9 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"net/textproto"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"despatch/internal/config"
+	internalmail "despatch/internal/mail"
 )
 
 type smtpTestCapture struct {
@@ -24,6 +27,13 @@ type smtpTestCapture struct {
 	rcpt         string
 	data         string
 	startTLSSeen bool
+	authUser     string
+}
+
+type smtpTestOptions struct {
+	requireStartTLS bool
+	requireAuth     bool
+	rejectMailFrom  bool
 }
 
 func TestNewSenderDefaultsToSMTP(t *testing.T) {
@@ -47,7 +57,7 @@ func TestNewSenderReturnsLogSenderWhenExplicitlyRequested(t *testing.T) {
 }
 
 func TestSMTPSenderHonorsStartTLSConfiguration(t *testing.T) {
-	capture, host, port, stop := startSMTPTestServer(t, true)
+	capture, host, port, stop := startSMTPTestServer(t, smtpTestOptions{requireStartTLS: true})
 	defer stop()
 
 	sender := SMTPSender{
@@ -70,12 +80,55 @@ func TestSMTPSenderHonorsStartTLSConfiguration(t *testing.T) {
 	if capture.rcpt != "<recovery@example.net>" {
 		t.Fatalf("unexpected RCPT TO: %q", capture.rcpt)
 	}
-	if !strings.Contains(capture.data, "TOKEN-123") {
+	if !strings.Contains(capture.data, "TOKEN-123") ||
+		!strings.Contains(capture.data, "Subject: Password Reset Token") ||
+		!strings.Contains(capture.data, "From: no-reply@example.com") ||
+		!strings.Contains(capture.data, "To: recovery@example.net") ||
+		!strings.Contains(capture.data, "Message-ID: <") ||
+		!strings.Contains(capture.data, "Date: ") {
 		t.Fatalf("expected token in message body; got=%q", capture.data)
 	}
 }
 
-func startSMTPTestServer(t *testing.T, requireStartTLS bool) (*smtpTestCapture, string, int, func()) {
+func TestSMTPSenderAuthenticatesWhenConfigured(t *testing.T) {
+	capture, host, port, stop := startSMTPTestServer(t, smtpTestOptions{requireStartTLS: true, requireAuth: true})
+	defer stop()
+
+	sender := SMTPSender{
+		host:               host,
+		port:               port,
+		from:               "no-reply@example.com",
+		startTLS:           true,
+		insecureSkipVerify: true,
+		user:               "reset-user",
+		pass:               "reset-pass",
+	}
+
+	if err := sender.SendPasswordReset(context.Background(), "recovery@example.net", "TOKEN-456"); err != nil {
+		t.Fatalf("send password reset with smtp auth: %v", err)
+	}
+	if capture.authUser != "reset-user" {
+		t.Fatalf("expected SMTP AUTH user reset-user, got %q", capture.authUser)
+	}
+}
+
+func TestSMTPSenderClassifiesSenderPolicyRejection(t *testing.T) {
+	_, host, port, stop := startSMTPTestServer(t, smtpTestOptions{rejectMailFrom: true})
+	defer stop()
+
+	sender := SMTPSender{
+		host: host,
+		port: port,
+		from: "no-reply@example.com",
+	}
+
+	err := sender.SendPasswordReset(context.Background(), "recovery@example.net", "TOKEN-789")
+	if !errors.Is(err, internalmail.ErrSMTPSenderRejected) {
+		t.Fatalf("expected sender rejection classification, got %v", err)
+	}
+}
+
+func startSMTPTestServer(t *testing.T, opts smtpTestOptions) (*smtpTestCapture, string, int, func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -110,10 +163,15 @@ func startSMTPTestServer(t *testing.T, requireStartTLS bool) (*smtpTestCapture, 
 			case strings.HasPrefix(upper, "EHLO"), strings.HasPrefix(upper, "HELO"):
 				if !tlsActive {
 					_ = tp.PrintfLine("250-localhost")
-					_ = tp.PrintfLine("250-STARTTLS")
+					if opts.requireStartTLS || opts.requireAuth {
+						_ = tp.PrintfLine("250-STARTTLS")
+					}
 					_ = tp.PrintfLine("250 OK")
 				} else {
 					_ = tp.PrintfLine("250-localhost")
+					if opts.requireAuth {
+						_ = tp.PrintfLine("250-AUTH PLAIN")
+					}
 					_ = tp.PrintfLine("250 OK")
 				}
 			case strings.HasPrefix(upper, "STARTTLS"):
@@ -127,9 +185,33 @@ func startSMTPTestServer(t *testing.T, requireStartTLS bool) (*smtpTestCapture, 
 				tp = textproto.NewConn(conn)
 				tlsActive = true
 				capture.startTLSSeen = true
-			case strings.HasPrefix(upper, "MAIL FROM:"):
-				if requireStartTLS && !tlsActive {
+			case strings.HasPrefix(upper, "AUTH PLAIN "):
+				if opts.requireAuth && !tlsActive {
 					_ = tp.PrintfLine("530 Must issue a STARTTLS command first")
+					continue
+				}
+				encoded := strings.TrimSpace(line[len("AUTH PLAIN "):])
+				decoded, err := base64.StdEncoding.DecodeString(encoded)
+				if err != nil {
+					_ = tp.PrintfLine("535 5.7.8 Invalid authentication")
+					continue
+				}
+				parts := strings.Split(string(decoded), "\x00")
+				if len(parts) >= 3 {
+					capture.authUser = parts[1]
+				}
+				_ = tp.PrintfLine("235 2.7.0 Authentication successful")
+			case strings.HasPrefix(upper, "MAIL FROM:"):
+				if opts.requireStartTLS && !tlsActive {
+					_ = tp.PrintfLine("530 Must issue a STARTTLS command first")
+					continue
+				}
+				if opts.requireAuth && capture.authUser == "" {
+					_ = tp.PrintfLine("530 5.7.0 Authentication required")
+					continue
+				}
+				if opts.rejectMailFrom {
+					_ = tp.PrintfLine("553 5.7.1 sender rejected")
 					continue
 				}
 				capture.from = strings.TrimSpace(line[len("MAIL FROM:"):])
