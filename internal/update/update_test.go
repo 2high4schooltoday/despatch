@@ -316,6 +316,82 @@ func TestQueueApplyIgnoresUnreadableLockDir(t *testing.T) {
 	}
 }
 
+func TestStatusIgnoresUnreadableLockDirWhenIdle(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "active", "loaded", "inactive")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("set last check timestamp: %v", err)
+	}
+	makeLockDirUnreadable(t, cfg)
+	mgr := NewManager(cfg)
+
+	status, err := mgr.Status(context.Background(), st, false)
+	if err != nil {
+		t.Fatalf("status with unreadable lock dir: %v", err)
+	}
+	if status.Apply.State != ApplyStateIdle {
+		t.Fatalf("expected idle apply state, got %#v", status.Apply)
+	}
+}
+
+func TestStatusForceCheckIgnoresUnreadableLockDir(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "active", "loaded", "inactive")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/2high4schooltoday/despatch/releases/latest" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tag_name":"v1.2.3","name":"v1.2.3","published_at":"2026-01-01T00:00:00Z","html_url":"https://example.test/release","assets":[]}`))
+	}))
+	defer server.Close()
+	makeLockDirUnreadable(t, cfg)
+	mgr := NewManager(cfg)
+	mgr.gh.baseURL = server.URL
+
+	status, err := mgr.Status(context.Background(), st, true)
+	if err != nil {
+		t.Fatalf("forced status check with unreadable lock dir: %v", err)
+	}
+	if status.Latest == nil || status.Latest.TagName != "v1.2.3" {
+		t.Fatalf("expected latest release from forced check, got %#v", status.Latest)
+	}
+	if status.Apply.State != ApplyStateIdle {
+		t.Fatalf("expected idle apply state after forced check, got %#v", status.Apply)
+	}
+}
+
 func TestStatusReportsUpdaterUnitMissingDiagnostic(t *testing.T) {
 	st := newUpdateTestStore(t)
 	base := t.TempDir()
@@ -477,6 +553,52 @@ func TestStatusConfiguredWhenUpdaterReady(t *testing.T) {
 	}
 	if status.ConfigDiagnostic != nil {
 		t.Fatalf("expected no config diagnostic when updater is configured, got %#v", status.ConfigDiagnostic)
+	}
+}
+
+func TestStatusReportsQueuedWhenRequestFileIsPending(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "active", "loaded", "inactive")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	now := time.Now().UTC()
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	req := ApplyRequest{
+		RequestID:     "req-pending",
+		RequestedAt:   now,
+		RequestedBy:   "admin@example.com",
+		TargetVersion: "v1.2.3",
+	}
+	if err := writeJSONAtomic(requestQueuePath(req, cfg), req, 0o640, updaterDirModeForPath(cfg, requestDir(cfg), 0o750)); err != nil {
+		t.Fatalf("write queued request: %v", err)
+	}
+	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("set last check timestamp: %v", err)
+	}
+	makeLockDirUnreadable(t, cfg)
+	mgr := NewManager(cfg)
+
+	status, err := mgr.Status(context.Background(), st, false)
+	if err != nil {
+		t.Fatalf("status with pending request: %v", err)
+	}
+	if status.Apply.State != ApplyStateQueued {
+		t.Fatalf("expected queued apply state from pending request, got %#v", status.Apply)
 	}
 }
 

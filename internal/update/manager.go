@@ -92,11 +92,16 @@ func (m *Manager) Status(ctx context.Context, st *store.Store, forceCheck bool) 
 	} else {
 		status.Apply = recovered
 	}
-	if status.Apply.State == ApplyStateIdle {
-		if held, err := updaterLockHeld(m.cfg); err != nil {
+	if status.Apply.State == ApplyStateIdle && configured {
+		pendingPaths, err := pendingRequestPaths(m.cfg)
+		if err != nil {
+			if isUpdaterPermissionError(err) {
+				return status, nil
+			}
 			return StatusResponse{}, err
-		} else if held {
-			status.Apply.State = ApplyStateInProgress
+		}
+		if len(pendingPaths) > 0 {
+			status.Apply.State = ApplyStateQueued
 		}
 	}
 	return status, nil
@@ -132,11 +137,6 @@ func (m *Manager) QueueApply(ctx context.Context, st *store.Store, requestedBy, 
 		return ApplyRequest{}, fmt.Errorf("%w: %v", ErrUpdateRequestFailed, err)
 	}
 	if len(pendingPaths) > 0 {
-		return ApplyRequest{}, ErrUpdateInProgress
-	}
-	if held, err := updaterLockHeld(m.cfg); err != nil {
-		return ApplyRequest{}, fmt.Errorf("%w: %v", ErrUpdateRequestFailed, err)
-	} else if held {
 		return ApplyRequest{}, ErrUpdateInProgress
 	}
 	req := ApplyRequest{
@@ -353,11 +353,6 @@ func (m *Manager) recoverStaleQueuedApply(runtimeStatus updaterRuntimeStatus, cu
 	if current.State != ApplyStateQueued {
 		return current, nil
 	}
-	if held, err := updaterLockHeld(m.cfg); err != nil {
-		return ApplyStatus{}, err
-	} else if held {
-		return current, nil
-	}
 	requestedAt := current.RequestedAt
 	if requestedAt.IsZero() {
 		return current, nil
@@ -396,25 +391,9 @@ func readApplyStatusTolerant(path string) (ApplyStatus, error) {
 	if err == nil {
 		return st, nil
 	}
-	if os.IsPermission(err) {
+	if isUpdaterPermissionError(err) {
 		// Treat unreadable status files as unknown/idle and allow queueing a new request.
 		return ApplyStatus{State: ApplyStateIdle}, nil
 	}
 	return ApplyStatus{}, err
-}
-
-func updaterLockHeld(cfg config.Config) (bool, error) {
-	_, err := os.Stat(lockPath(cfg))
-	switch {
-	case err == nil:
-		return true, nil
-	case os.IsNotExist(err):
-		return false, nil
-	case os.IsPermission(err):
-		// The lock directory is intentionally root-owned. Unprivileged web/admin
-		// paths must not fail just because they cannot inspect it directly.
-		return false, nil
-	default:
-		return false, err
-	}
 }
