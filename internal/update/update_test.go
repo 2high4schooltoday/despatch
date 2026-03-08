@@ -799,6 +799,76 @@ func TestStatusFailsStaleQueuedRequestWhenLockDirUnreadable(t *testing.T) {
 	}
 }
 
+func TestMigrateLegacyPasswordResetEnvRewritesBrokenLoopbackResetSettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	raw := strings.Join([]string{
+		"BASE_DOMAIN=mail.2h4s2d.ru",
+		"DEPLOY_MODE=proxy",
+		"PROXY_SERVER_NAME=mail.2h4s2d.ru",
+		"PROXY_TLS=1",
+		"LISTEN_ADDR=127.0.0.1:8080",
+		"SMTP_HOST=127.0.0.1",
+		"SMTP_PORT=587",
+		"SMTP_TLS=false",
+		"SMTP_STARTTLS=true",
+		"PASSWORD_RESET_SENDER=smtp",
+		"PASSWORD_RESET_FROM=no-reply@mail.2h4s2d.ru",
+		"PASSWORD_RESET_BASE_URL=",
+		"DOVECOT_AUTH_MODE=pam",
+		"PASSWORD_RESET_EXTERNAL_SENDER_READY=false",
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(raw), 0o640); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	migrated, err := migrateLegacyPasswordResetEnv(path)
+	if err != nil {
+		t.Fatalf("migrate legacy env: %v", err)
+	}
+	if !migrated {
+		t.Fatalf("expected migration to run")
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read updated env: %v", err)
+	}
+	text := string(updated)
+	for _, want := range []string{
+		"SMTP_PORT=25",
+		"SMTP_STARTTLS=false",
+		"SMTP_TLS=false",
+		"PASSWORD_RESET_FROM=no-reply@2h4s2d.ru",
+		"PASSWORD_RESET_BASE_URL=https://mail.2h4s2d.ru",
+		"PASSWORD_RESET_EXTERNAL_SENDER_READY=true",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected updated env to contain %q, got:\n%s", want, text)
+		}
+	}
+}
+
+func TestMigrateLegacyPasswordResetEnvSkipsCustomSMTPSetup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	raw := strings.Join([]string{
+		"BASE_DOMAIN=mail.2h4s2d.ru",
+		"SMTP_HOST=smtp.example.net",
+		"SMTP_PORT=587",
+		"SMTP_TLS=false",
+		"SMTP_STARTTLS=true",
+		"PASSWORD_RESET_SENDER=smtp",
+		"PASSWORD_RESET_FROM=ops@example.net",
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(raw), 0o640); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	migrated, err := migrateLegacyPasswordResetEnv(path)
+	if err != nil {
+		t.Fatalf("migrate legacy env: %v", err)
+	}
+	if migrated {
+		t.Fatalf("expected custom SMTP setup to be left alone")
+	}
+}
+
 func TestFindPayloadRootRequiresDeploy(t *testing.T) {
 	root := t.TempDir()
 	for _, rel := range []string{"despatch", "despatch-pam-reset-helper", "despatch-update-worker"} {

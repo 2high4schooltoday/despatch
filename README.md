@@ -149,7 +149,11 @@ PAM mode notes:
 - In PAM mode, mailbox account creation/provisioning remains external to this app (system/PAM side).
 
 Password reset sender identity:
-- Default sender is `no-reply@<base_domain>` when `PASSWORD_RESET_FROM` is unset or placeholder.
+- Installer now auto-configures same-host SMTP delivery through local Postfix relay on `127.0.0.1:25` when available, instead of preferring local submission on `587`.
+- Installer derives `PASSWORD_RESET_FROM` automatically; when your base domain starts with `mail.`, reset mail defaults to `no-reply@<parent-domain>` so a host like `mail.example.com` becomes `no-reply@example.com`.
+- Installer also writes `PASSWORD_RESET_BASE_URL` from your chosen public host and enables `PASSWORD_RESET_EXTERNAL_SENDER_READY=true` automatically for PAM service installs when it configured the local same-host relay path itself (`127.0.0.1:25`).
+- Current updater releases also migrate the old broken same-host reset-mail pattern in `/opt/despatch/.env` automatically during upgrade, but only when the legacy loopback submission setup (`127.0.0.1:587` with STARTTLS and no SMTP auth) is detected.
+- Default sender is `no-reply@<base_domain>` when `PASSWORD_RESET_FROM` is unset or placeholder; if the base domain starts with `mail.`, the sender falls back to the parent domain instead.
 - Public password reset requires SMTP delivery (`PASSWORD_RESET_SENDER=smtp`). `log` mode is allowed only when public reset is disabled.
 - If your reset sender must authenticate to SMTP separately from mailbox users, set `PASSWORD_RESET_SMTP_USER` and `PASSWORD_RESET_SMTP_PASS`.
 - SQL auth mode auto-provisions sender mailbox identity through the configured auth provisioner.

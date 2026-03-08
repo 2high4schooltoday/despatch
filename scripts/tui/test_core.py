@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -362,6 +363,74 @@ class SystemOpsTests(unittest.TestCase):
             cert, key = detect_letsencrypt_cert_pair("mail.example.com", live)
             self.assertEqual(cert, str(parent / "fullchain.pem"))
             self.assertEqual(key, str(parent / "privkey.pem"))
+
+
+class InstallerScriptTests(unittest.TestCase):
+    def _script_text(self) -> str:
+        return (Path(__file__).resolve().parents[2] / "scripts" / "auto_install.sh").read_text(encoding="utf-8")
+
+    def _extract_function(self, name: str) -> str:
+        lines = self._script_text().splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if line.startswith(f"{name}() {{"):
+                start = index
+                break
+        if start is None:
+            self.fail(f"function {name} not found")
+        depth = 0
+        chunk: list[str] = []
+        for line in lines[start:]:
+            chunk.append(line)
+            depth += line.count("{")
+            depth -= line.count("}")
+            if depth == 0:
+                return "\n".join(chunk)
+        self.fail(f"function {name} did not terminate")
+
+    def _run_functions(self, names: list[str], body: str) -> str:
+        script = "set -e\n" + "\n\n".join(self._extract_function(name) for name in names) + "\n\n" + body + "\n"
+        proc = subprocess.run(
+            ["bash", "-lc", script],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return proc.stdout.strip()
+
+    def test_detect_smtp_port_prefers_local_relay(self) -> None:
+        out = self._run_functions(
+            ["detect_smtp_port"],
+            """
+port_open() {
+  [[ "$2" == "25" ]]
+}
+detect_smtp_port
+""",
+        )
+        self.assertEqual(out, "25")
+
+    def test_password_reset_sender_domain_strips_mail_prefix(self) -> None:
+        out = self._run_functions(
+            ["trim", "lower", "derive_password_reset_sender_domain"],
+            """
+printf '%s\n' "$(derive_password_reset_sender_domain 'mail.2h4s2d.ru')"
+printf '%s\n' "$(derive_password_reset_sender_domain 'example.com')"
+""",
+        ).splitlines()
+        self.assertEqual(out[0], "2h4s2d.ru")
+        self.assertEqual(out[1], "example.com")
+
+    def test_password_reset_base_url_prefers_public_proxy_host(self) -> None:
+        out = self._run_functions(
+            ["trim", "http_base_url_from_host_port", "derive_password_reset_base_url"],
+            """
+printf '%s\n' "$(derive_password_reset_base_url 'proxy' 'mail.2h4s2d.ru' '1' 'mail.2h4s2d.ru' '127.0.0.1:8080')"
+printf '%s\n' "$(derive_password_reset_base_url 'direct' '' '0' '2h4s2d.ru' '127.0.0.1:8080')"
+""",
+        ).splitlines()
+        self.assertEqual(out[0], "https://mail.2h4s2d.ru")
+        self.assertEqual(out[1], "http://2h4s2d.ru:8080")
 
 
 class FlowDefinitionTests(unittest.TestCase):

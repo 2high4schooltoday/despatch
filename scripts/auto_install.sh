@@ -787,6 +787,10 @@ detect_imap_port() {
 }
 
 detect_smtp_port() {
+  if port_open 127.0.0.1 25; then
+    echo 25
+    return
+  fi
   if port_open 127.0.0.1 587; then
     echo 587
     return
@@ -795,11 +799,63 @@ detect_smtp_port() {
     echo 465
     return
   fi
-  if port_open 127.0.0.1 25; then
-    echo 25
+  echo 25
+}
+
+derive_password_reset_sender_domain() {
+  local domain
+  domain="$(lower "$(trim "${1:-}")")"
+  if [[ -z "$domain" ]]; then
+    printf 'example.com'
     return
   fi
-  echo 587
+  case "$domain" in
+    mail.*)
+      printf '%s' "${domain#mail.}"
+      return
+      ;;
+  esac
+  printf '%s' "$domain"
+}
+
+derive_password_reset_base_url() {
+  local deploy_mode="$1" proxy_server_name="$2" proxy_tls="$3" base_domain="$4" listen_addr="$5"
+  local host="" port=""
+
+  if [[ "$deploy_mode" == "proxy" && -n "$(trim "$proxy_server_name")" ]]; then
+    if [[ "$proxy_tls" == "1" ]]; then
+      printf 'https://%s' "$(trim "$proxy_server_name")"
+      return
+    fi
+    printf 'http://%s' "$(trim "$proxy_server_name")"
+    return
+  fi
+
+  if [[ "$listen_addr" == :* ]]; then
+    host="$base_domain"
+    port="${listen_addr#:}"
+  elif [[ "$listen_addr" == *:* ]]; then
+    host="${listen_addr%:*}"
+    port="${listen_addr##*:}"
+    host="${host#[}"
+    host="${host%]}"
+  else
+    host="$base_domain"
+    port="8080"
+  fi
+
+  host="$(trim "$host")"
+  if [[ -z "$host" || "$host" == "127.0.0.1" || "$host" == "::1" || "$host" == "0.0.0.0" || "$host" == "::" ]]; then
+    host="$(trim "$base_domain")"
+  fi
+  if [[ -z "$host" ]]; then
+    host="127.0.0.1"
+  fi
+  if [[ -z "$port" || ! "$port" =~ ^[0-9]+$ ]]; then
+    port="8080"
+  fi
+
+  http_base_url_from_host_port "$host" "$port"
 }
 
 detect_web_servers() {
@@ -2075,6 +2131,13 @@ if [[ "$SMTP_PORT" == "25" ]]; then
   SMTP_STARTTLS="false"
 fi
 SMTP_INSECURE_SKIP_VERIFY="$(derive_smtp_insecure_skip_verify "$SMTP_HOST" "$SMTP_TLS" "$SMTP_STARTTLS")"
+PASSWORD_RESET_FROM_DOMAIN="$(derive_password_reset_sender_domain "$BASE_DOMAIN")"
+PASSWORD_RESET_FROM_ADDR="no-reply@${PASSWORD_RESET_FROM_DOMAIN}"
+PASSWORD_RESET_BASE_URL="$(derive_password_reset_base_url "$DEPLOY_MODE" "$PROXY_SERVER_NAME" "$PROXY_TLS" "$BASE_DOMAIN" "$LISTEN_ADDR")"
+PASSWORD_RESET_EXTERNAL_SENDER_READY="false"
+if [[ "$DOVECOT_AUTH_MODE" == "pam" && "$INSTALL_SERVICE" -eq 1 && "$SMTP_HOST" == "127.0.0.1" && "$SMTP_PORT" == "25" ]]; then
+  PASSWORD_RESET_EXTERNAL_SENDER_READY="true"
+fi
 
 finish_stage_ok
 begin_stage "env_generation" "Environment Generation" "10"
@@ -2152,7 +2215,9 @@ set_env_var "$OUT_ENV" "PASSWORD_RESET_TOKEN_TTL_MINUTES" "30"
 set_env_var "$OUT_ENV" "PASSWORD_RESET_PUBLIC_ENABLED" "true"
 set_env_var "$OUT_ENV" "PASSWORD_RESET_REQUIRE_MAPPED_LOGIN" "true"
 set_env_var "$OUT_ENV" "PASSWORD_RESET_SENDER" "smtp"
-set_env_var "$OUT_ENV" "PASSWORD_RESET_FROM" "no-reply@${BASE_DOMAIN}"
+set_env_var "$OUT_ENV" "PASSWORD_RESET_FROM" "$PASSWORD_RESET_FROM_ADDR"
+set_env_var "$OUT_ENV" "PASSWORD_RESET_BASE_URL" "$PASSWORD_RESET_BASE_URL"
+set_env_var "$OUT_ENV" "PASSWORD_RESET_EXTERNAL_SENDER_READY" "$PASSWORD_RESET_EXTERNAL_SENDER_READY"
 if [[ "$DOVECOT_AUTH_MODE" == "pam" && "$INSTALL_SERVICE" -eq 1 ]]; then
  set_env_var "$OUT_ENV" "PAM_RESET_HELPER_ENABLED" "true"
 else
@@ -2168,6 +2233,8 @@ set_env_var "$OUT_ENV" "MAILSEC_TIMEOUT_MS" "5000"
 
 log "Generated $OUT_ENV"
 log "Detected IMAP ${IMAP_HOST}:${IMAP_PORT} and SMTP ${SMTP_HOST}:${SMTP_PORT}"
+log "Password reset sender: ${PASSWORD_RESET_FROM_ADDR}"
+log "Password reset base URL: ${PASSWORD_RESET_BASE_URL}"
 if [[ "$IMAP_INSECURE_SKIP_VERIFY" == "true" ]]; then
   warn "IMAP host is loopback with TLS/STARTTLS enabled; auto-setting IMAP_INSECURE_SKIP_VERIFY=true to avoid local certificate SAN mismatches."
 fi

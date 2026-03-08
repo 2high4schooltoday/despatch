@@ -875,6 +875,13 @@ fn apply_release(cfg: &Config, req: &ApplyRequest) -> Result<ApplyResult, Worker
         }
     }
 
+    if let Err(err) = migrate_legacy_password_reset_env(&cfg.update_install_dir.join(".env")) {
+        rollback_paths(&swapped)?;
+        return Err(WorkerError::Message(format!(
+            "password reset env migration failed: {err}"
+        )));
+    }
+
     if let Err(err) = run_cmd(
         "systemctl",
         &["restart", cfg.update_service_name.trim()],
@@ -1420,6 +1427,212 @@ fn trim_backups(base: &Path, keep: usize) -> Result<(), WorkerError> {
     Ok(())
 }
 
+fn migrate_legacy_password_reset_env(path: &Path) -> Result<bool, WorkerError> {
+    let metadata = match fs::metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(WorkerError::Io(err)),
+    };
+    let raw = fs::read_to_string(path)?;
+    let mut lines: Vec<String> = raw
+        .replace("\r\n", "\n")
+        .lines()
+        .map(|line| line.to_string())
+        .collect();
+    let values = env_file_values(&lines);
+    if !should_migrate_legacy_password_reset_env(&values) {
+        return Ok(false);
+    }
+
+    let current_from = env_value_trimmed(&values, "PASSWORD_RESET_FROM");
+    if should_rewrite_password_reset_from(&current_from, &values) {
+        let target = format!(
+            "no-reply@{}",
+            derive_password_reset_sender_domain(&preferred_public_reset_host(&values))
+        );
+        env_file_set(&mut lines, "PASSWORD_RESET_FROM", &target);
+    }
+    if should_rewrite_password_reset_base_url(&env_value_trimmed(
+        &values,
+        "PASSWORD_RESET_BASE_URL",
+    )) {
+        let base_url = derive_password_reset_base_url(&values);
+        env_file_set(&mut lines, "PASSWORD_RESET_BASE_URL", &base_url);
+    }
+    env_file_set(&mut lines, "SMTP_PORT", "25");
+    env_file_set(&mut lines, "SMTP_STARTTLS", "false");
+    env_file_set(&mut lines, "SMTP_TLS", "false");
+    if env_value_trimmed(&values, "DOVECOT_AUTH_MODE").eq_ignore_ascii_case("pam")
+        && !env_value_trimmed(&values, "PASSWORD_RESET_SENDER").eq_ignore_ascii_case("log")
+    {
+        env_file_set(&mut lines, "PASSWORD_RESET_EXTERNAL_SENDER_READY", "true");
+    }
+
+    let mut output = lines.join("\n");
+    output.push('\n');
+    let tmp = path.with_extension("tmp-reset-migration");
+    {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .mode(metadata.permissions().mode() & 0o777)
+            .open(&tmp)?;
+        file.write_all(output.as_bytes())?;
+        file.sync_all()?;
+    }
+    fs::rename(&tmp, path)?;
+    fs::set_permissions(
+        path,
+        fs::Permissions::from_mode(metadata.permissions().mode() & 0o777),
+    )?;
+    Ok(true)
+}
+
+fn env_file_values(lines: &[String]) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in lines {
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            if key.is_empty() || key.starts_with('#') {
+                continue;
+            }
+            out.push((key.to_string(), value.trim().to_string()));
+        }
+    }
+    out
+}
+
+fn env_value_trimmed(values: &[(String, String)], key: &str) -> String {
+    values
+        .iter()
+        .find(|(candidate, _)| candidate == key)
+        .map(|(_, value)| value.trim().to_string())
+        .unwrap_or_default()
+}
+
+fn env_file_set(lines: &mut Vec<String>, key: &str, value: &str) {
+    let prefix = format!("{key}=");
+    if let Some(idx) = lines.iter().position(|line| line.starts_with(&prefix)) {
+        lines[idx] = format!("{prefix}{value}");
+        return;
+    }
+    lines.push(format!("{prefix}{value}"));
+}
+
+fn should_migrate_legacy_password_reset_env(values: &[(String, String)]) -> bool {
+    if env_value_trimmed(values, "PASSWORD_RESET_SENDER").eq_ignore_ascii_case("log") {
+        return false;
+    }
+    if !is_loopback_reset_smtp_host(&env_value_trimmed(values, "SMTP_HOST")) {
+        return false;
+    }
+    if env_value_trimmed(values, "SMTP_PORT") != "587" {
+        return false;
+    }
+    if !env_flag_true(values, "SMTP_STARTTLS") || env_flag_true(values, "SMTP_TLS") {
+        return false;
+    }
+    if !env_value_trimmed(values, "PASSWORD_RESET_SMTP_USER").is_empty()
+        || !env_value_trimmed(values, "SMTP_USER").is_empty()
+    {
+        return false;
+    }
+    true
+}
+
+fn env_flag_true(values: &[(String, String)], key: &str) -> bool {
+    matches!(
+        env_value_trimmed(values, key).to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "y" | "on"
+    )
+}
+
+fn is_loopback_reset_smtp_host(host: &str) -> bool {
+    matches!(
+        host.trim().to_ascii_lowercase().as_str(),
+        "127.0.0.1" | "localhost" | "::1" | "[::1]"
+    )
+}
+
+fn preferred_public_reset_host(values: &[(String, String)]) -> String {
+    if env_value_trimmed(values, "DEPLOY_MODE").eq_ignore_ascii_case("proxy") {
+        let host = env_value_trimmed(values, "PROXY_SERVER_NAME");
+        if !host.is_empty() {
+            return host;
+        }
+    }
+    env_value_trimmed(values, "BASE_DOMAIN")
+}
+
+fn derive_password_reset_sender_domain(host: &str) -> String {
+    let domain = host.trim().to_ascii_lowercase();
+    if domain.starts_with("mail.") && domain.len() > "mail.".len() {
+        return domain["mail.".len()..].to_string();
+    }
+    if domain.is_empty() {
+        return "example.com".to_string();
+    }
+    domain
+}
+
+fn should_rewrite_password_reset_from(current: &str, values: &[(String, String)]) -> bool {
+    let current = current.trim().to_ascii_lowercase();
+    if current.is_empty() || current.ends_with("@example.com") {
+        return true;
+    }
+    let base = env_value_trimmed(values, "BASE_DOMAIN").to_ascii_lowercase();
+    let public_host = preferred_public_reset_host(values).to_ascii_lowercase();
+    current == format!("no-reply@{base}") || current == format!("no-reply@{public_host}")
+}
+
+fn should_rewrite_password_reset_base_url(current: &str) -> bool {
+    let current = current.trim().to_ascii_lowercase();
+    current.is_empty()
+        || current.contains("127.0.0.1")
+        || current.contains("localhost")
+        || current.contains("example.com")
+}
+
+fn derive_password_reset_base_url(values: &[(String, String)]) -> String {
+    if env_value_trimmed(values, "DEPLOY_MODE").eq_ignore_ascii_case("proxy") {
+        let mut host = env_value_trimmed(values, "PROXY_SERVER_NAME");
+        if host.is_empty() {
+            host = env_value_trimmed(values, "BASE_DOMAIN");
+        }
+        if host.is_empty() {
+            host = "127.0.0.1".to_string();
+        }
+        if env_flag_true(values, "PROXY_TLS") {
+            return format!("https://{host}");
+        }
+        return format!("http://{host}");
+    }
+
+    let listen = env_value_trimmed(values, "LISTEN_ADDR");
+    let (mut host, mut port) = if let Some(port) = listen.strip_prefix(':') {
+        (env_value_trimmed(values, "BASE_DOMAIN"), port.to_string())
+    } else if let Some((host, port)) = listen.rsplit_once(':') {
+        (
+            host.trim().trim_matches('[').trim_matches(']').to_string(),
+            port.trim().to_string(),
+        )
+    } else {
+        (env_value_trimmed(values, "BASE_DOMAIN"), "8080".to_string())
+    };
+
+    if host.is_empty() || host == "0.0.0.0" || host == "::" || is_loopback_reset_smtp_host(&host) {
+        host = env_value_trimmed(values, "BASE_DOMAIN");
+    }
+    if host.is_empty() {
+        host = "127.0.0.1".to_string();
+    }
+    if port.is_empty() {
+        port = "8080".to_string();
+    }
+    format!("http://{host}:{port}")
+}
+
 fn wait_for_path(path: &Path, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() <= deadline {
@@ -1769,5 +1982,84 @@ mod tests {
         assert!(!is_read_only_or_permission_error(&WorkerError::Message(
             "random failure".to_string()
         )));
+    }
+
+    #[test]
+    fn migrate_legacy_password_reset_env_rewrites_broken_loopback_settings() {
+        let unique = format!(
+            "despatch-update-worker-reset-env-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let base = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&base).expect("mkdir temp");
+        let env_path = base.join(".env");
+        fs::write(
+            &env_path,
+            [
+                "BASE_DOMAIN=mail.2h4s2d.ru",
+                "DEPLOY_MODE=proxy",
+                "PROXY_SERVER_NAME=mail.2h4s2d.ru",
+                "PROXY_TLS=1",
+                "LISTEN_ADDR=127.0.0.1:8080",
+                "SMTP_HOST=127.0.0.1",
+                "SMTP_PORT=587",
+                "SMTP_TLS=false",
+                "SMTP_STARTTLS=true",
+                "PASSWORD_RESET_SENDER=smtp",
+                "PASSWORD_RESET_FROM=no-reply@mail.2h4s2d.ru",
+                "PASSWORD_RESET_BASE_URL=",
+                "DOVECOT_AUTH_MODE=pam",
+                "PASSWORD_RESET_EXTERNAL_SENDER_READY=false",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write env");
+
+        let migrated = migrate_legacy_password_reset_env(&env_path).expect("migrate env");
+        assert!(migrated);
+
+        let updated = fs::read_to_string(&env_path).expect("read migrated env");
+        assert!(updated.contains("SMTP_PORT=25"));
+        assert!(updated.contains("SMTP_STARTTLS=false"));
+        assert!(updated.contains("SMTP_TLS=false"));
+        assert!(updated.contains("PASSWORD_RESET_FROM=no-reply@2h4s2d.ru"));
+        assert!(updated.contains("PASSWORD_RESET_BASE_URL=https://mail.2h4s2d.ru"));
+        assert!(updated.contains("PASSWORD_RESET_EXTERNAL_SENDER_READY=true"));
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn migrate_legacy_password_reset_env_skips_custom_smtp_setup() {
+        let unique = format!(
+            "despatch-update-worker-reset-env-skip-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let base = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&base).expect("mkdir temp");
+        let env_path = base.join(".env");
+        fs::write(
+            &env_path,
+            [
+                "BASE_DOMAIN=mail.2h4s2d.ru",
+                "SMTP_HOST=smtp.example.net",
+                "SMTP_PORT=587",
+                "SMTP_TLS=false",
+                "SMTP_STARTTLS=true",
+                "PASSWORD_RESET_SENDER=smtp",
+                "PASSWORD_RESET_FROM=ops@example.net",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write env");
+
+        let migrated = migrate_legacy_password_reset_env(&env_path).expect("migrate env");
+        assert!(!migrated);
+
+        let _ = fs::remove_dir_all(base);
     }
 }

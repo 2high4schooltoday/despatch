@@ -59,6 +59,9 @@ func PasswordResetFromAddress(cfg config.Config) string {
 		if domain == "" {
 			domain = "example.com"
 		}
+		if strings.HasPrefix(domain, "mail.") && len(domain) > len("mail.") {
+			domain = domain[len("mail."):]
+		}
 		candidate = "no-reply@" + domain
 	}
 	return candidate

@@ -56,6 +56,16 @@ func TestNewSenderReturnsLogSenderWhenExplicitlyRequested(t *testing.T) {
 	}
 }
 
+func TestPasswordResetFromAddressStripsMailPrefixFromBaseDomain(t *testing.T) {
+	got := PasswordResetFromAddress(config.Config{
+		BaseDomain:        "mail.2h4s2d.ru",
+		PasswordResetFrom: "",
+	})
+	if got != "no-reply@2h4s2d.ru" {
+		t.Fatalf("expected derived sender from parent domain, got %q", got)
+	}
+}
+
 func TestSMTPSenderHonorsStartTLSConfiguration(t *testing.T) {
 	capture, host, port, stop := startSMTPTestServer(t, smtpTestOptions{requireStartTLS: true})
 	defer stop()

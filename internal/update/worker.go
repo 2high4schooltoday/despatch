@@ -522,6 +522,12 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 			}
 		}
 	}
+	if _, err := migrateLegacyPasswordResetEnv(filepath.Join(m.cfg.UpdateInstallDir, ".env")); err != nil {
+		if rbErr := rollback(); rbErr != nil {
+			return "", false, fmt.Errorf("password reset env migration failed: %v; rollback failed: %v", err, rbErr)
+		}
+		return "", true, fmt.Errorf("password reset env migration failed: %v", err)
+	}
 	if err := runCmd(ctx, "systemctl", "restart", m.cfg.UpdateServiceName); err != nil {
 		if rbErr := rollback(); rbErr != nil {
 			return "", false, fmt.Errorf("service restart failed: %v; rollback failed: %v", err, rbErr)
@@ -1051,6 +1057,200 @@ func trimBackups(base string, keep int) {
 	for i := keep; i < len(all); i++ {
 		_ = os.RemoveAll(filepath.Join(base, all[i].name))
 	}
+}
+
+func migrateLegacyPasswordResetEnv(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return false, err
+	}
+	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	values := envFileValues(lines)
+	if !shouldMigrateLegacyPasswordResetEnv(values) {
+		return false, nil
+	}
+	baseDomain := preferredPublicResetHost(values)
+	resetFrom := envValueTrimmed(values, "PASSWORD_RESET_FROM")
+	targetFrom := "no-reply@" + derivePasswordResetSenderDomain(baseDomain)
+	if shouldRewritePasswordResetFrom(resetFrom, values) {
+		envFileSet(&lines, "PASSWORD_RESET_FROM", targetFrom)
+	}
+	if shouldRewritePasswordResetBaseURL(envValueTrimmed(values, "PASSWORD_RESET_BASE_URL")) {
+		envFileSet(&lines, "PASSWORD_RESET_BASE_URL", derivePasswordResetBaseURL(values))
+	}
+	envFileSet(&lines, "SMTP_PORT", "25")
+	envFileSet(&lines, "SMTP_STARTTLS", "false")
+	envFileSet(&lines, "SMTP_TLS", "false")
+	if strings.EqualFold(envValueTrimmed(values, "DOVECOT_AUTH_MODE"), "pam") &&
+		!strings.EqualFold(envValueTrimmed(values, "PASSWORD_RESET_SENDER"), "log") {
+		envFileSet(&lines, "PASSWORD_RESET_EXTERNAL_SENDER_READY", "true")
+	}
+	tmp := path + ".tmp-reset-migration"
+	output := strings.Join(lines, "\n") + "\n"
+	if err := os.WriteFile(tmp, []byte(output), info.Mode().Perm()); err != nil {
+		return false, err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return false, err
+	}
+	return true, nil
+}
+
+func envFileValues(lines []string) map[string]string {
+	values := make(map[string]string, len(lines))
+	for _, line := range lines {
+		if idx := strings.IndexByte(line, '='); idx > 0 {
+			key := strings.TrimSpace(line[:idx])
+			if key == "" || strings.HasPrefix(key, "#") {
+				continue
+			}
+			values[key] = strings.TrimSpace(line[idx+1:])
+		}
+	}
+	return values
+}
+
+func envFileSet(lines *[]string, key, value string) {
+	prefix := key + "="
+	for i, line := range *lines {
+		if strings.HasPrefix(line, prefix) {
+			(*lines)[i] = prefix + value
+			return
+		}
+	}
+	*lines = append(*lines, prefix+value)
+}
+
+func envValueTrimmed(values map[string]string, key string) string {
+	return strings.TrimSpace(values[key])
+}
+
+func shouldMigrateLegacyPasswordResetEnv(values map[string]string) bool {
+	if strings.EqualFold(envValueTrimmed(values, "PASSWORD_RESET_SENDER"), "log") {
+		return false
+	}
+	if !isLoopbackResetSMTPHost(envValueTrimmed(values, "SMTP_HOST")) {
+		return false
+	}
+	if envValueTrimmed(values, "SMTP_PORT") != "587" {
+		return false
+	}
+	if !envFlagTrue(values, "SMTP_STARTTLS") || envFlagTrue(values, "SMTP_TLS") {
+		return false
+	}
+	if envValueTrimmed(values, "PASSWORD_RESET_SMTP_USER") != "" || envValueTrimmed(values, "SMTP_USER") != "" {
+		return false
+	}
+	return true
+}
+
+func envFlagTrue(values map[string]string, key string) bool {
+	switch strings.ToLower(strings.TrimSpace(values[key])) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func isLoopbackResetSMTPHost(host string) bool {
+	switch strings.ToLower(strings.TrimSpace(host)) {
+	case "127.0.0.1", "localhost", "::1", "[::1]":
+		return true
+	default:
+		return false
+	}
+}
+
+func preferredPublicResetHost(values map[string]string) string {
+	if strings.EqualFold(envValueTrimmed(values, "DEPLOY_MODE"), "proxy") {
+		if host := envValueTrimmed(values, "PROXY_SERVER_NAME"); host != "" {
+			return host
+		}
+	}
+	return envValueTrimmed(values, "BASE_DOMAIN")
+}
+
+func derivePasswordResetSenderDomain(host string) string {
+	domain := strings.ToLower(strings.TrimSpace(host))
+	if strings.HasPrefix(domain, "mail.") && len(domain) > len("mail.") {
+		return domain[len("mail."):]
+	}
+	if domain == "" {
+		return "example.com"
+	}
+	return domain
+}
+
+func shouldRewritePasswordResetFrom(current string, values map[string]string) bool {
+	current = strings.ToLower(strings.TrimSpace(current))
+	if current == "" || strings.HasSuffix(current, "@example.com") {
+		return true
+	}
+	base := strings.ToLower(strings.TrimSpace(envValueTrimmed(values, "BASE_DOMAIN")))
+	publicHost := strings.ToLower(strings.TrimSpace(preferredPublicResetHost(values)))
+	return current == "no-reply@"+base || current == "no-reply@"+publicHost
+}
+
+func shouldRewritePasswordResetBaseURL(current string) bool {
+	current = strings.ToLower(strings.TrimSpace(current))
+	if current == "" {
+		return true
+	}
+	return strings.Contains(current, "127.0.0.1") ||
+		strings.Contains(current, "localhost") ||
+		strings.Contains(current, "example.com")
+}
+
+func derivePasswordResetBaseURL(values map[string]string) string {
+	if strings.EqualFold(envValueTrimmed(values, "DEPLOY_MODE"), "proxy") {
+		host := envValueTrimmed(values, "PROXY_SERVER_NAME")
+		if host == "" {
+			host = envValueTrimmed(values, "BASE_DOMAIN")
+		}
+		if host == "" {
+			host = "127.0.0.1"
+		}
+		if envFlagTrue(values, "PROXY_TLS") {
+			return "https://" + host
+		}
+		return "http://" + host
+	}
+	listen := envValueTrimmed(values, "LISTEN_ADDR")
+	host := ""
+	port := ""
+	switch {
+	case strings.HasPrefix(listen, ":"):
+		host = envValueTrimmed(values, "BASE_DOMAIN")
+		port = strings.TrimPrefix(listen, ":")
+	case strings.Contains(listen, ":"):
+		host = strings.Trim(strings.TrimSpace(listen[:strings.LastIndex(listen, ":")]), "[]")
+		port = strings.TrimSpace(listen[strings.LastIndex(listen, ":")+1:])
+	default:
+		host = envValueTrimmed(values, "BASE_DOMAIN")
+		port = "8080"
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || isLoopbackResetSMTPHost(host) {
+		host = envValueTrimmed(values, "BASE_DOMAIN")
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	if port == "" {
+		port = "8080"
+	}
+	return fmt.Sprintf("http://%s:%s", host, port)
 }
 
 func sanitizePathToken(v string) string {
