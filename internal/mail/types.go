@@ -8,6 +8,7 @@ import (
 
 type Mailbox struct {
 	Name     string `json:"name"`
+	Role     string `json:"role,omitempty"`
 	Unread   int    `json:"unread"`
 	Messages int    `json:"messages"`
 }
@@ -19,6 +20,8 @@ type MessageSummary struct {
 	Subject  string    `json:"subject"`
 	Date     time.Time `json:"date"`
 	Seen     bool      `json:"seen"`
+	Flagged  bool      `json:"flagged,omitempty"`
+	Answered bool      `json:"answered,omitempty"`
 	Preview  string    `json:"preview,omitempty"`
 	ThreadID string    `json:"thread_id,omitempty"`
 }
@@ -40,9 +43,14 @@ type Message struct {
 	To          []string         `json:"to"`
 	Subject     string           `json:"subject"`
 	Date        time.Time        `json:"date"`
+	Seen        bool             `json:"seen"`
+	Flagged     bool             `json:"flagged,omitempty"`
+	Answered    bool             `json:"answered,omitempty"`
 	Body        string           `json:"body"`
 	BodyHTML    string           `json:"body_html,omitempty"`
 	Attachments []AttachmentMeta `json:"attachments"`
+	MessageID   string           `json:"-"`
+	References  []string         `json:"-"`
 }
 
 type AttachmentContent struct {
@@ -67,7 +75,20 @@ type SendRequest struct {
 	Body        string           `json:"body"`
 	BodyHTML    string           `json:"body_html,omitempty"`
 	InReplyToID string           `json:"in_reply_to_id,omitempty"`
+	References  []string         `json:"-"`
+	MessageID   string           `json:"-"`
 	Attachments []SendAttachment `json:"-"`
+}
+
+type SendResult struct {
+	SavedCopy        bool   `json:"saved_copy"`
+	SavedCopyMailbox string `json:"saved_copy_mailbox,omitempty"`
+	Warning          string `json:"warning,omitempty"`
+}
+
+type FlagPatch struct {
+	Add    []string `json:"add,omitempty"`
+	Remove []string `json:"remove,omitempty"`
 }
 
 type Client interface {
@@ -75,8 +96,9 @@ type Client interface {
 	ListMessages(ctx context.Context, user, pass, mailbox string, page, pageSize int) ([]MessageSummary, error)
 	GetMessage(ctx context.Context, user, pass, id string) (Message, error)
 	Search(ctx context.Context, user, pass, mailbox, query string, page, pageSize int) ([]MessageSummary, error)
-	Send(ctx context.Context, user, pass string, req SendRequest) error
+	Send(ctx context.Context, user, pass string, req SendRequest) (SendResult, error)
 	SetFlags(ctx context.Context, user, pass, id string, flags []string) error
+	UpdateFlags(ctx context.Context, user, pass, id string, patch FlagPatch) error
 	Move(ctx context.Context, user, pass, id, mailbox string) error
 	GetAttachment(ctx context.Context, user, pass, attachmentID string) (AttachmentContent, error)
 	GetAttachmentStream(ctx context.Context, user, pass, attachmentID string) (AttachmentMeta, io.ReadCloser, error)

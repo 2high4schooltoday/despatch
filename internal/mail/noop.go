@@ -30,11 +30,14 @@ func (NoopClient) Search(ctx context.Context, user, pass, mailbox, query string,
 	return []MessageSummary{}, nil
 }
 
-func (NoopClient) Send(ctx context.Context, user, pass string, req SendRequest) error {
-	return nil
+func (NoopClient) Send(ctx context.Context, user, pass string, req SendRequest) (SendResult, error) {
+	return SendResult{SavedCopy: true, SavedCopyMailbox: "Sent"}, nil
 }
 
 func (NoopClient) SetFlags(ctx context.Context, user, pass, id string, flags []string) error {
+	return nil
+}
+func (NoopClient) UpdateFlags(ctx context.Context, user, pass, id string, patch FlagPatch) error {
 	return nil
 }
 func (NoopClient) Move(ctx context.Context, user, pass, id, mailbox string) error { return nil }

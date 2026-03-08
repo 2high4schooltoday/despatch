@@ -1,8 +1,8 @@
 use base64::{engine::general_purpose, Engine as _};
-use chrono::{SecondsFormat, Utc};
+use chrono::{Local, SecondsFormat, TimeZone, Utc};
 use contracts::updater::{
-    sanitize_path_token, ApplyRequest, ApplyStatus, APPLY_STATE_COMPLETED, APPLY_STATE_FAILED,
-    APPLY_STATE_IN_PROGRESS, APPLY_STATE_ROLLED_BACK,
+    sanitize_path_token, ApplyRequest, ApplyStatus, APPLY_MODE_APPLY, APPLY_MODE_PREPARE,
+    APPLY_STATE_COMPLETED, APPLY_STATE_FAILED, APPLY_STATE_IN_PROGRESS, APPLY_STATE_ROLLED_BACK,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use nix::unistd::{chown, geteuid, Gid, Uid, User};
@@ -72,6 +72,22 @@ struct GithubReleaseAsset {
 struct ApplyResult {
     to_version: String,
     rolled_back: bool,
+}
+
+#[derive(Debug, Deserialize, serde::Serialize, Clone, Default)]
+struct AutoUpdateStateRecord {
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    target_version: String,
+    #[serde(default)]
+    downloaded_at: String,
+    #[serde(default)]
+    scheduled_for: String,
+    #[serde(default)]
+    error: String,
+    #[serde(default)]
+    deferred_version: String,
 }
 
 #[derive(Debug, Error)]
@@ -166,6 +182,45 @@ fn run() -> Result<(), WorkerError> {
     if req.requested_at.trim().is_empty() {
         req.requested_at = now_rfc3339();
     }
+    req.mode = normalize_apply_mode(&req.mode);
+
+    if req.mode == APPLY_MODE_PREPARE {
+        if let Ok(mut rec) = read_auto_update_state(&cfg) {
+            if rec.target_version.trim().is_empty()
+                || rec.target_version.trim() == req.target_version.trim()
+            {
+                rec.state = "preparing".to_string();
+                rec.target_version = req.target_version.trim().to_string();
+                rec.error.clear();
+                let _ = write_auto_update_state(&cfg, &rec);
+            }
+        }
+        match prepare_release_payload(&cfg, req.target_version.trim()) {
+            Ok((release, _prepared_dir)) => {
+                let rec = AutoUpdateStateRecord {
+                    state: "scheduled".to_string(),
+                    target_version: release.tag_name.trim().to_string(),
+                    downloaded_at: now_rfc3339(),
+                    scheduled_for: next_nightly_window(),
+                    error: String::new(),
+                    deferred_version: String::new(),
+                };
+                write_auto_update_state(&cfg, &rec)?;
+                let _ = fs::remove_file(&req_path);
+                return Ok(());
+            }
+            Err(err) => {
+                if let Ok(mut rec) = read_auto_update_state(&cfg) {
+                    rec.state = "failed".to_string();
+                    rec.target_version = req.target_version.trim().to_string();
+                    rec.error = err.to_string();
+                    let _ = write_auto_update_state(&cfg, &rec);
+                }
+                let _ = fs::remove_file(&req_path);
+                return Err(err);
+            }
+        }
+    }
 
     let started_at = now_rfc3339();
     let target_version = req.target_version.trim().to_string();
@@ -198,6 +253,13 @@ fn run() -> Result<(), WorkerError> {
             error: String::new(),
         },
     )?;
+    if let Ok(mut rec) = read_auto_update_state(&cfg) {
+        if !target_version.is_empty() && rec.target_version.trim() == target_version {
+            rec.state = "applying".to_string();
+            rec.error.clear();
+            let _ = write_auto_update_state(&cfg, &rec);
+        }
+    }
     match fs::remove_file(&req_path) {
         Ok(()) => {}
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -224,6 +286,13 @@ fn run() -> Result<(), WorkerError> {
             }
             final_status.finished_at = now_rfc3339();
             let _ = write_status(&cfg, &final_status);
+            if let Ok(mut rec) = read_auto_update_state(&cfg) {
+                if !target_version.is_empty() && rec.target_version.trim() == target_version {
+                    rec.state = "failed".to_string();
+                    rec.error = err.to_string();
+                    let _ = write_auto_update_state(&cfg, &rec);
+                }
+            }
             let _ = fs::remove_file(&req_path);
             return Err(err);
         }
@@ -231,6 +300,20 @@ fn run() -> Result<(), WorkerError> {
 
     final_status.finished_at = now_rfc3339();
     write_status(&cfg, &final_status)?;
+    if let Ok(rec) = read_auto_update_state(&cfg) {
+        if !final_status.to_version.trim().is_empty()
+            && rec.target_version.trim() == final_status.to_version.trim()
+        {
+            let _ = write_auto_update_state(
+                &cfg,
+                &AutoUpdateStateRecord {
+                    state: "idle".to_string(),
+                    ..AutoUpdateStateRecord::default()
+                },
+            );
+            let _ = fs::remove_dir_all(prepared_payload_dir(&cfg, final_status.to_version.trim()));
+        }
+    }
     let _ = fs::remove_file(&req_path);
     Ok(())
 }
@@ -445,6 +528,63 @@ fn lock_path(cfg: &Config) -> PathBuf {
     lock_dir(cfg).join("update.lock")
 }
 
+fn auto_status_path(cfg: &Config) -> PathBuf {
+    status_dir(cfg).join("update-auto-status.json")
+}
+
+fn prepared_payload_dir(cfg: &Config, version: &str) -> PathBuf {
+    work_dir(cfg).join(format!("prepared-{}", sanitize_path_token(version)))
+}
+
+fn normalize_apply_mode(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "" | APPLY_MODE_APPLY => APPLY_MODE_APPLY.to_string(),
+        APPLY_MODE_PREPARE => APPLY_MODE_PREPARE.to_string(),
+        _ => APPLY_MODE_APPLY.to_string(),
+    }
+}
+
+fn read_auto_update_state(cfg: &Config) -> Result<AutoUpdateStateRecord, WorkerError> {
+    if !auto_status_path(cfg).exists() {
+        return Ok(AutoUpdateStateRecord {
+            state: "idle".to_string(),
+            ..AutoUpdateStateRecord::default()
+        });
+    }
+    let mut rec: AutoUpdateStateRecord = read_json_file(&auto_status_path(cfg))?;
+    if rec.state.trim().is_empty() {
+        rec.state = "idle".to_string();
+    }
+    Ok(rec)
+}
+
+fn write_auto_update_state(cfg: &Config, rec: &AutoUpdateStateRecord) -> Result<(), WorkerError> {
+    let payload = serde_json::to_value(rec)?;
+    write_json_atomic(&auto_status_path(cfg), &payload, 0o640, 0o770)?;
+    ensure_despatch_readable(&auto_status_path(cfg))?;
+    Ok(())
+}
+
+fn next_nightly_window() -> String {
+    let now = Local::now();
+    let today = now
+        .date_naive()
+        .and_hms_opt(2, 0, 0)
+        .unwrap_or_else(|| now.naive_local());
+    let scheduled = if now.naive_local() < today {
+        today
+    } else {
+        (now + chrono::Duration::days(1))
+            .date_naive()
+            .and_hms_opt(2, 0, 0)
+            .unwrap_or_else(|| now.naive_local())
+    };
+    match Local.from_local_datetime(&scheduled).single() {
+        Some(value) => value.to_rfc3339_opts(SecondsFormat::Secs, true),
+        None => now.to_rfc3339_opts(SecondsFormat::Secs, true),
+    }
+}
+
 #[derive(Clone, Copy)]
 enum UpdaterDirGroup {
     Root,
@@ -613,73 +753,12 @@ fn apply_release(cfg: &Config, req: &ApplyRequest) -> Result<ApplyResult, Worker
         }
     }
 
-    let release = resolve_release(cfg, target)?;
-    let arch = env::consts::ARCH;
-    let (archive_name, archive_url) = resolve_archive_asset(&release, arch).ok_or_else(|| {
-        WorkerError::Message(format!(
-            "release archive for GOARCH={arch} not found (available: {})",
-            release
-                .assets
-                .iter()
-                .map(|a| a.name.trim())
-                .collect::<Vec<_>>()
-                .join(", ")
-        ))
-    })?;
-
-    let checksum_url = release
-        .assets
-        .iter()
-        .find(|a| a.name.trim().eq_ignore_ascii_case("checksums.txt"))
-        .map(|a| a.browser_download_url.trim().to_string())
-        .ok_or_else(|| WorkerError::Message("release asset checksums.txt not found".to_string()))?;
-    let signature_name = cfg.update_signature_asset.trim().to_string();
-    let signature_url = if cfg.update_require_signature {
-        Some(
-            release
-                .assets
-                .iter()
-                .find(|a| a.name.trim().eq_ignore_ascii_case(signature_name.trim()))
-                .map(|a| a.browser_download_url.trim().to_string())
-                .ok_or_else(|| {
-                    WorkerError::Message(format!(
-                        "release asset {} not found",
-                        signature_name.trim()
-                    ))
-                })?,
-        )
-    } else {
-        None
-    };
-
     let run_id = if req.request_id.trim().is_empty() {
         format!("run-{}", Utc::now().timestamp())
     } else {
         req.request_id.trim().to_string()
     };
-
-    let run_work = work_dir(cfg).join(sanitize_path_token(&run_id));
-    let _ = fs::remove_dir_all(&run_work);
-    fs::create_dir_all(&run_work)?;
-
-    let archive_path = run_work.join(&archive_name);
-    let checksum_path = run_work.join("checksums.txt");
-    download_asset(cfg, &archive_url, &archive_path)?;
-    download_asset(cfg, &checksum_url, &checksum_path)?;
-    if let Some(signature_url) = signature_url {
-        let signature_path = run_work.join(signature_name.trim());
-        download_asset(cfg, &signature_url, &signature_path)?;
-        verify_checksum_signature(
-            &checksum_path,
-            &signature_path,
-            &cfg.update_signing_public_keys,
-        )?;
-    }
-    verify_checksum_file(&checksum_path, &archive_path, &archive_name)?;
-
-    let extracted = run_work.join("extract");
-    extract_tar_gz(&archive_path, &extracted)?;
-    let payload_root = find_payload_root(&extracted)?;
+    let (release, payload_root) = prepare_release_payload(cfg, target)?;
 
     let stage_dir = cfg
         .update_install_dir
@@ -942,6 +1021,148 @@ fn apply_release(cfg: &Config, req: &ApplyRequest) -> Result<ApplyResult, Worker
         to_version: release.tag_name.trim().to_string(),
         rolled_back: false,
     })
+}
+
+fn prepare_release_payload(
+    cfg: &Config,
+    target_version: &str,
+) -> Result<(GithubRelease, PathBuf), WorkerError> {
+    let release = resolve_release(cfg, target_version)?;
+    let prepared_dir = prepared_payload_dir(cfg, release.tag_name.trim());
+    if prepared_payload_ready(&prepared_dir) {
+        trim_prepared_payloads(&work_dir(cfg), &prepared_dir)?;
+        return Ok((release, prepared_dir));
+    }
+
+    let arch = env::consts::ARCH;
+    let (archive_name, archive_url) = resolve_archive_asset(&release, arch).ok_or_else(|| {
+        WorkerError::Message(format!(
+            "release archive for GOARCH={arch} not found (available: {})",
+            release
+                .assets
+                .iter()
+                .map(|a| a.name.trim())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    })?;
+    let checksum_url = release
+        .assets
+        .iter()
+        .find(|a| a.name.trim().eq_ignore_ascii_case("checksums.txt"))
+        .map(|a| a.browser_download_url.trim().to_string())
+        .ok_or_else(|| WorkerError::Message("release asset checksums.txt not found".to_string()))?;
+    let signature_name = cfg.update_signature_asset.trim().to_string();
+    let signature_url = if cfg.update_require_signature {
+        Some(
+            release
+                .assets
+                .iter()
+                .find(|a| a.name.trim().eq_ignore_ascii_case(signature_name.trim()))
+                .map(|a| a.browser_download_url.trim().to_string())
+                .ok_or_else(|| {
+                    WorkerError::Message(format!(
+                        "release asset {} not found",
+                        signature_name.trim()
+                    ))
+                })?,
+        )
+    } else {
+        None
+    };
+
+    let run_work = work_dir(cfg).join(format!(
+        ".prepare-{}-{}",
+        sanitize_path_token(release.tag_name.trim()),
+        Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    ));
+    let _ = fs::remove_dir_all(&run_work);
+    fs::create_dir_all(&run_work)?;
+
+    let archive_path = run_work.join(&archive_name);
+    let checksum_path = run_work.join("checksums.txt");
+    download_asset(cfg, &archive_url, &archive_path)?;
+    download_asset(cfg, &checksum_url, &checksum_path)?;
+    if let Some(signature_url) = signature_url {
+        let signature_path = run_work.join(signature_name.trim());
+        download_asset(cfg, &signature_url, &signature_path)?;
+        verify_checksum_signature(
+            &checksum_path,
+            &signature_path,
+            &cfg.update_signing_public_keys,
+        )?;
+    }
+    verify_checksum_file(&checksum_path, &archive_path, &archive_name)?;
+
+    let extracted = run_work.join("extract");
+    extract_tar_gz(&archive_path, &extracted)?;
+    let payload_root = find_payload_root(&extracted)?;
+
+    let tmp_prepared = prepared_dir.with_extension("tmp");
+    let _ = fs::remove_dir_all(&tmp_prepared);
+    fs::create_dir_all(&tmp_prepared)?;
+    copy_file(&payload_root.join("despatch"), &tmp_prepared.join("despatch"), 0o755)?;
+    copy_file(
+        &payload_root.join("despatch-pam-reset-helper"),
+        &tmp_prepared.join("despatch-pam-reset-helper"),
+        0o755,
+    )?;
+    copy_file(
+        &payload_root.join("despatch-update-worker"),
+        &tmp_prepared.join("despatch-update-worker"),
+        0o755,
+    )?;
+    copy_dir(&payload_root.join("web"), &tmp_prepared.join("web"))?;
+    copy_dir(&payload_root.join("migrations"), &tmp_prepared.join("migrations"))?;
+    copy_dir(&payload_root.join("deploy"), &tmp_prepared.join("deploy"))?;
+    let mailsec_payload = payload_root.join("despatch-mailsec-service");
+    if mailsec_payload.exists() {
+        copy_file(
+            &mailsec_payload,
+            &tmp_prepared.join("despatch-mailsec-service"),
+            0o755,
+        )?;
+    }
+    let _ = fs::remove_dir_all(&prepared_dir);
+    fs::rename(&tmp_prepared, &prepared_dir)?;
+    let _ = fs::remove_dir_all(&run_work);
+    trim_prepared_payloads(&work_dir(cfg), &prepared_dir)?;
+    Ok((release, prepared_dir))
+}
+
+fn prepared_payload_ready(path: &Path) -> bool {
+    let required = [
+        path.join("despatch"),
+        path.join("despatch-pam-reset-helper"),
+        path.join("despatch-update-worker"),
+        path.join("web"),
+        path.join("migrations"),
+        path.join("deploy"),
+    ];
+    required.iter().all(|candidate| candidate.exists())
+}
+
+fn trim_prepared_payloads(base_dir: &Path, keep_path: &Path) -> Result<(), WorkerError> {
+    if !base_dir.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(base_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("prepared-") {
+            continue;
+        }
+        let path = entry.path();
+        if path == keep_path {
+            continue;
+        }
+        let _ = fs::remove_dir_all(path);
+    }
+    Ok(())
 }
 
 fn resolve_release(cfg: &Config, target_version: &str) -> Result<GithubRelease, WorkerError> {
@@ -1925,6 +2146,7 @@ mod tests {
             request_id: "second".to_string(),
             requested_at: "1970-01-01T00:00:00Z".to_string(),
             requested_by: String::new(),
+            mode: String::new(),
             target_version: String::new(),
         };
         fs::write(request_queue_path(&queued_req, &cfg), b"{}").expect("write queued request");

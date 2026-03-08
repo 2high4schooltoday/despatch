@@ -91,3 +91,19 @@ func TestBuildPreviewFromMIMERawSampleFallbackOnLongHeaders(t *testing.T) {
 		t.Fatalf("expected body-focused preview, got %q", got)
 	}
 }
+
+func TestMailboxRoleResolutionSupportsAttributesAndCommonNames(t *testing.T) {
+	if got := MailboxRole("Custom Sent Folder", []string{"\\Sent"}); got != "sent" {
+		t.Fatalf("expected attribute-based sent role, got %q", got)
+	}
+	if got := MailboxRole("Deleted Messages", nil); got != "trash" {
+		t.Fatalf("expected Deleted Messages trash role, got %q", got)
+	}
+	if got := ResolveMailboxByRole([]Mailbox{
+		{Name: "INBOX", Role: "inbox"},
+		{Name: "Sent Messages", Role: "sent"},
+		{Name: "Deleted Messages", Role: "trash"},
+	}, "sent"); got != "Sent Messages" {
+		t.Fatalf("expected Sent Messages mailbox resolution, got %q", got)
+	}
+}

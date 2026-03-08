@@ -206,87 +206,197 @@
         <article class="oobe-window" role="region" aria-label="Setup Assistant">
           <form id="form-setup" class="oobe-form" novalidate>
             <div class="oobe-content">
-              <div class="oobe-control-rail">
-                <button id="setup-back-icon" class="cmd-btn cmd-btn--dense cmd-btn--ghost oobe-icon-btn hidden" type="button" aria-label="Go to previous step">←</button>
+              <header class="oobe-header">
+                <div class="oobe-header-main">
+                  <button id="setup-back-icon" class="cmd-btn cmd-btn--dense cmd-btn--ghost oobe-icon-btn hidden" type="button" aria-label="Go to previous step">←</button>
+                  <div class="oobe-progress-copy">
+                    <p id="setup-progress-label" class="oobe-progress-label">Step 1 of 8</p>
+                    <p id="setup-progress-title" class="oobe-progress-title">Welcome</p>
+                  </div>
+                </div>
                 <button id="setup-close" class="cmd-btn cmd-btn--dense cmd-btn--ghost oobe-link-btn hidden" type="button" aria-label="Discard setup progress">Discard Changes</button>
-              </div>
+              </header>
 
-              <div id="setup-step-0" class="oobe-step">
-                <div class="oobe-hero-icon" aria-hidden="true">ENTRY</div>
-                <h2>Welcome</h2>
-                <p>This assistant configures your mail domain, webmaster identity, and first admin credentials. You can complete setup in a few minutes.</p>
-                <p class="hint">All settings remain editable from Admin after initialization.</p>
+              <div id="setup-step-0" class="oobe-step oobe-step--hero">
+                <div class="oobe-hero-mark" aria-hidden="true">DESPATCH</div>
+                <div class="oobe-step-copy">
+                  <h2>Welcome to Despatch</h2>
+                  <p>This setup assistant prepares your mail domain, first administrator, sign-in defaults, and update policy in a few focused steps.</p>
+                  <p class="hint">Everything here stays editable later from Admin.</p>
+                </div>
+                <div class="oobe-feature-grid" aria-label="What setup covers">
+                  <article class="oobe-feature-card">
+                    <span class="oobe-feature-index">01</span>
+                    <h3>Mail identity</h3>
+                    <p>Choose the domain, admin address, and recovery email used by the first account.</p>
+                  </article>
+                  <article class="oobe-feature-card">
+                    <span class="oobe-feature-index">02</span>
+                    <h3>Appearance</h3>
+                    <p>Pick the look that best fits this workstation now. You can switch later at any time.</p>
+                  </article>
+                  <article class="oobe-feature-card">
+                    <span class="oobe-feature-index">03</span>
+                    <h3>Updates and security</h3>
+                    <p>Decide how Despatch updates itself and whether passkeys are allowed for primary sign-in.</p>
+                  </article>
+                </div>
               </div>
 
               <div id="setup-step-1" class="oobe-step hidden">
-                <div class="oobe-hero-icon" aria-hidden="true">REGION</div>
-                <h2>Region And Time Profile</h2>
-                <p>Set your default region for timestamps and policy localization.</p>
-                <label>Region
-                  <select id="setup-region" name="region" autocomplete="off">
-                    <option value="us-east">United States - East</option>
-                    <option value="us-central">United States - Central</option>
-                    <option value="us-west">United States - West</option>
-                    <option value="eu-west">Europe - West</option>
-                    <option value="apac">Asia Pacific</option>
-                  </select>
-                </label>
-                <p class="hint">Timezone mapping follows the selected region profile.</p>
+                <div class="oobe-stage-mark" aria-hidden="true">01</div>
+                <div class="oobe-step-copy">
+                  <h2>Where Despatch will be set up</h2>
+                  <p>Choose the default region profile used for timestamps and region-sensitive defaults in the interface.</p>
+                </div>
+                <div class="oobe-field-stack">
+                  <label>Region profile
+                    <select id="setup-region" name="region" autocomplete="off">
+                      <option value="us-east">United States - East</option>
+                      <option value="us-central">United States - Central</option>
+                      <option value="us-west">United States - West</option>
+                      <option value="eu-west">Europe - West</option>
+                      <option value="apac">Asia Pacific</option>
+                    </select>
+                  </label>
+                </div>
+                <p class="hint">This affects defaults in the web client only. Server timezone stays under host control.</p>
               </div>
 
               <div id="setup-step-2" class="oobe-step hidden">
-                <div class="oobe-hero-icon" aria-hidden="true">DOMAIN</div>
-                <h2>Domain And Admin Identity</h2>
-                <p>This controls registration domain policy and default webmaster address.</p>
-                <label>Mail Domain
-                  <input id="setup-domain" name="base_domain" type="text" placeholder="example.com" autocomplete="off">
-                </label>
-                <label>Admin Email
-                  <input id="setup-admin-email" name="admin_email" type="email" autocomplete="email">
-                </label>
-                <label id="setup-mailbox-login-wrap" class="hidden">Mailbox Login (optional)
-                  <input id="setup-admin-mailbox-login" name="admin_mailbox_login" type="text" autocomplete="username" placeholder="e.g. webmaster or system user">
-                </label>
-                <p class="hint">Default is <code>webmaster@{domain}</code>; you can override it.</p>
+                <div class="oobe-stage-mark" aria-hidden="true">02</div>
+                <div class="oobe-step-copy">
+                  <h2>Choose your look</h2>
+                  <p>Select the interface style this browser should use during first run. You can change it later from the top bar.</p>
+                </div>
+                <div class="setup-choice-grid" role="radiogroup" aria-label="Theme choice">
+                  <button id="setup-theme-machine" class="setup-choice-card" type="button" data-theme-choice="machine-dark" aria-pressed="false">
+                    <span class="setup-choice-preview setup-choice-preview--machine" aria-hidden="true">
+                      <span class="setup-choice-preview-frame">
+                        <span class="setup-choice-preview-nav"></span>
+                        <span class="setup-choice-preview-pane"></span>
+                        <span class="setup-choice-preview-body"></span>
+                      </span>
+                    </span>
+                    <span class="setup-choice-copy">
+                      <strong>Machine</strong>
+                      <span class="hint">Dark, high-contrast, and operator-focused.</span>
+                    </span>
+                  </button>
+                  <button id="setup-theme-paper" class="setup-choice-card" type="button" data-theme-choice="paper-light" aria-pressed="false">
+                    <span class="setup-choice-preview setup-choice-preview--paper" aria-hidden="true">
+                      <span class="setup-choice-preview-frame">
+                        <span class="setup-choice-preview-nav"></span>
+                        <span class="setup-choice-preview-pane"></span>
+                        <span class="setup-choice-preview-body"></span>
+                      </span>
+                    </span>
+                    <span class="setup-choice-copy">
+                      <strong>Paper</strong>
+                      <span class="hint">Lighter surfaces with the same Despatch structure.</span>
+                    </span>
+                  </button>
+                </div>
               </div>
 
               <div id="setup-step-3" class="oobe-step hidden">
-                <div class="oobe-hero-icon" aria-hidden="true">ADMIN</div>
-                <h2>Create Webmaster Credentials</h2>
-                <p>Choose a strong password for the first administrator account.</p>
-                <label>Password
-                  <input id="setup-password" name="admin_password" type="password" autocomplete="new-password">
-                </label>
-                <label>Verify Password
-                  <input id="setup-password-confirm" name="admin_password_confirm" type="password" autocomplete="new-password">
-                </label>
+                <div class="oobe-stage-mark" aria-hidden="true">03</div>
+                <div class="oobe-step-copy">
+                  <h2>Software updates</h2>
+                  <p>Choose whether Despatch should stage verified releases automatically and install them during the nightly maintenance window.</p>
+                </div>
+                <div class="setup-choice-grid" role="radiogroup" aria-label="Automatic updates">
+                  <button id="setup-updates-auto" class="setup-choice-card" type="button" data-update-choice="auto" aria-pressed="false">
+                    <span class="setup-choice-copy">
+                      <strong>Automatic updates on</strong>
+                      <span class="hint">Downloads verified releases automatically and installs them around 02:00 server time.</span>
+                    </span>
+                  </button>
+                  <button id="setup-updates-manual" class="setup-choice-card" type="button" data-update-choice="manual" aria-pressed="false">
+                    <span class="setup-choice-copy">
+                      <strong>Manual updates only</strong>
+                      <span class="hint">You review and install updates later from Admin &gt; System.</span>
+                    </span>
+                  </button>
+                </div>
+                <p class="hint">This controls Despatch updates only. The host OS remains managed separately.</p>
+              </div>
+
+              <div id="setup-step-4" class="oobe-step hidden">
+                <div class="oobe-stage-mark" aria-hidden="true">04</div>
+                <div class="oobe-step-copy">
+                  <h2>Admin account</h2>
+                  <p>Create the first admin identity used to sign in, approve accounts, and recover access later if needed.</p>
+                </div>
+                <div class="oobe-field-stack">
+                  <label>Mail domain
+                    <input id="setup-domain" name="base_domain" type="text" placeholder="example.com" autocomplete="off">
+                  </label>
+                  <label>Admin email
+                    <input id="setup-admin-email" name="admin_email" type="email" autocomplete="email">
+                  </label>
+                  <label>Recovery email
+                    <input id="setup-admin-recovery-email" name="admin_recovery_email" type="email" autocomplete="email" placeholder="you@example.net">
+                  </label>
+                  <label id="setup-mailbox-login-wrap" class="hidden">Mailbox login (optional)
+                    <input id="setup-admin-mailbox-login" name="admin_mailbox_login" type="text" autocomplete="username" placeholder="e.g. webmaster or system user">
+                  </label>
+                </div>
+                <p class="hint">The admin email defaults to <code>webmaster@{domain}</code>. Recovery email must be different from the admin email.</p>
+              </div>
+
+              <div id="setup-step-5" class="oobe-step hidden">
+                <div class="oobe-stage-mark" aria-hidden="true">05</div>
+                <div class="oobe-step-copy">
+                  <h2>Sign-in and security</h2>
+                  <p>Choose the first admin password and whether passkeys should be allowed for primary sign-in on this server.</p>
+                </div>
+                <div class="oobe-field-stack">
+                  <label>Password
+                    <input id="setup-password" name="admin_password" type="password" autocomplete="new-password">
+                  </label>
+                  <label>Verify password
+                    <input id="setup-password-confirm" name="admin_password_confirm" type="password" autocomplete="new-password">
+                  </label>
+                </div>
                 <p id="setup-password-hint" class="hint">Use at least 12 characters and 3 character classes.</p>
                 <label class="setup-option">
                   <span class="setup-option-control">
                     <input id="setup-passkey-primary-enabled" name="passkey_primary_sign_in_enabled" type="checkbox" checked>
-                    <span>Enable passkey primary sign-in</span>
+                    <span>Allow passkey primary sign-in</span>
                   </span>
-                  <span class="hint">Enabled by default. Availability still depends on MailSec and WebAuthn server configuration.</span>
+                  <span class="hint">Passkeys are enabled by default. Availability still depends on MailSec and WebAuthn support.</span>
                 </label>
+                <details class="oobe-inline-details">
+                  <summary>Data &amp; Privacy</summary>
+                  <p>Despatch stores the admin email, recovery email, sign-in preference, and password hash needed to run the first account. Recovery email is only used for account recovery and password reset.</p>
+                </details>
               </div>
 
-              <div id="setup-step-4" class="oobe-step hidden">
-                <div class="oobe-hero-icon" aria-hidden="true">REVIEW</div>
-                <h2>Review And Initialize</h2>
+              <div id="setup-step-6" class="oobe-step hidden">
+                <div class="oobe-stage-mark" aria-hidden="true">06</div>
+                <div class="oobe-step-copy">
+                  <h2>Ready to initialize</h2>
+                  <p>Review the setup choices below. Initialization will write baseline settings, create the first admin account, and sign you in.</p>
+                </div>
                 <div class="oobe-summary-card setup-summary">
                   <div><b>Region:</b> <span id="setup-summary-region">-</span></div>
+                  <div><b>Theme:</b> <span id="setup-summary-theme">-</span></div>
+                  <div><b>Software Updates:</b> <span id="setup-summary-updates">Automatic updates on</span></div>
                   <div><b>Domain:</b> <span id="setup-summary-domain">-</span></div>
                   <div><b>Admin:</b> <span id="setup-summary-email">-</span></div>
+                  <div><b>Recovery Email:</b> <span id="setup-summary-recovery-email">-</span></div>
                   <div><b>Passkey Sign-In:</b> <span id="setup-summary-passkey">Enabled</span></div>
                 </div>
-                <p>Initialize writes your baseline settings and signs in as webmaster.</p>
-                <p class="hint">Admin MFA setup is mandatory and will start immediately after initialization.</p>
+                <p class="hint">Admin MFA setup is mandatory and will begin immediately after initialization.</p>
               </div>
 
-              <div id="setup-step-5" class="oobe-step hidden">
-                <div class="oobe-hero-icon" aria-hidden="true">READY</div>
-                <h2>Setup Complete</h2>
-                <p>Despatch is ready. You can open mailbox view now, or go straight to admin controls.</p>
+              <div id="setup-step-7" class="oobe-step hidden">
+                <div class="oobe-stage-mark" aria-hidden="true">DONE</div>
+                <div class="oobe-step-copy">
+                  <h2>Finished</h2>
+                  <p>Despatch is ready. Open the mailbox now or go straight to Admin to review server settings.</p>
+                </div>
                 <div class="actions">
                   <button id="setup-open-mail" class="cmd-btn cmd-btn--primary" type="button">Open Mail</button>
                   <button id="setup-open-admin" class="cmd-btn" type="button">Open Admin</button>
@@ -298,7 +408,6 @@
             <footer class="oobe-footer">
               <p id="setup-inline-status" class="hint" aria-live="polite"></p>
               <div class="oobe-footer-actions">
-                <button id="setup-back" class="cmd-btn cmd-btn--dense cmd-btn--ghost oobe-link-btn hidden" type="button">Back</button>
                 <button id="setup-next" class="cmd-btn cmd-btn--primary" type="submit">Continue</button>
               </div>
             </footer>
@@ -405,7 +514,7 @@
             <div id="admin-search-results" class="settings-search-results hidden"></div>
             <button id="admin-nav-users" class="admin-nav-btn" type="button">Users</button>
             <button id="admin-nav-registrations" class="admin-nav-btn" type="button">Registrations</button>
-            <button id="admin-nav-system" class="admin-nav-btn is-active" type="button">System</button>
+            <button id="admin-nav-system" class="admin-nav-btn is-active" type="button">System <span id="admin-system-badge" class="admin-nav-badge hidden">1</span></button>
             <button id="admin-nav-audit" class="admin-nav-btn" type="button">Audit Log</button>
           </aside>
 
@@ -417,18 +526,72 @@
               </header>
               <section class="setting-section">
                 <h4>Software Update</h4>
-                <div class="settings-list system-metrics">
-                  <div class="setting-list-item"><span class="setting-list-main"><span class="setting-list-title">Current Version</span></span><span id="update-current-version" class="setting-list-action">-</span></div>
-                  <div class="setting-list-item"><span class="setting-list-main"><span class="setting-list-title">Current Commit</span></span><span id="update-current-commit" class="setting-list-action">-</span></div>
-                  <div class="setting-list-item"><span class="setting-list-main"><span class="setting-list-title">Latest Release</span></span><span id="update-latest-version" class="setting-list-action">-</span></div>
-                  <div class="setting-list-item"><span class="setting-list-main"><span class="setting-list-title">Available</span></span><span id="update-available" class="setting-list-action">-</span></div>
-                  <div class="setting-list-item"><span class="setting-list-main"><span class="setting-list-title">Last Checked</span></span><span id="update-last-checked" class="setting-list-action">-</span></div>
-                  <div class="setting-list-item"><span class="setting-list-main"><span class="setting-list-title">Apply State</span></span><span id="update-apply-state" class="setting-list-action">idle</span></div>
-                </div>
-                <p id="update-note" class="hint">Updates check GitHub Releases and require updater units on Ubuntu.</p>
-                <div class="actions setting-actions">
-                  <button id="btn-update-check" class="cmd-btn cmd-btn--dense" type="button">Check Now</button>
-                  <button id="btn-update-apply" class="cmd-btn cmd-btn--primary cmd-btn--dense" type="button">Update</button>
+                <div class="update-stack">
+                  <article id="update-hero-card" class="update-hero-card">
+                    <div class="update-hero-main">
+                      <div id="update-hero-icon" class="update-hero-icon" aria-hidden="true">↑</div>
+                      <div class="update-hero-copy">
+                        <p id="update-hero-eyebrow" class="update-hero-eyebrow">Software Update</p>
+                        <h5 id="update-hero-headline" class="update-hero-headline">Checking software update status…</h5>
+                        <p id="update-hero-subline" class="update-hero-subline hint">Despatch checks GitHub Releases and stages verified updates through the privileged updater.</p>
+                      </div>
+                    </div>
+                    <div class="update-hero-actions">
+                      <button id="btn-update-check" class="cmd-btn cmd-btn--dense" type="button">Check for Update</button>
+                      <button id="btn-update-apply" class="cmd-btn cmd-btn--primary cmd-btn--dense" type="button">Install Now</button>
+                      <button id="btn-update-cancel-scheduled" class="cmd-btn cmd-btn--dense" type="button">Cancel Scheduled</button>
+                    </div>
+                  </article>
+
+                  <article class="update-detail-card">
+                    <div class="update-detail-grid">
+                      <div class="update-detail-item">
+                        <span class="update-detail-label">Installed</span>
+                        <strong id="update-current-version">-</strong>
+                        <span id="update-current-commit" class="update-detail-meta">-</span>
+                      </div>
+                      <div class="update-detail-item">
+                        <span class="update-detail-label">Latest</span>
+                        <strong id="update-latest-version">-</strong>
+                        <span id="update-last-checked" class="update-detail-meta">-</span>
+                      </div>
+                      <div class="update-detail-item">
+                        <span class="update-detail-label">Published</span>
+                        <strong id="update-latest-published">-</strong>
+                        <span id="update-source-link-wrap" class="update-detail-meta"><a id="update-source-link" href="#" target="_blank" rel="noreferrer noopener">View release</a></span>
+                      </div>
+                      <div class="update-detail-item">
+                        <span class="update-detail-label">Schedule</span>
+                        <strong id="update-scheduled-for">-</strong>
+                        <span id="update-auto-state" class="update-detail-meta">Automatic updates on</span>
+                      </div>
+                    </div>
+                    <p id="update-note" class="hint">Updates check GitHub Releases and require updater units on Ubuntu.</p>
+                  </article>
+
+                  <div class="settings-list update-settings-list">
+                    <div class="setting-list-item">
+                      <span class="setting-list-main">
+                        <span class="setting-list-title">Installed</span>
+                        <span class="setting-list-meta">Current version and active updater state on this server.</span>
+                      </span>
+                      <span id="update-apply-state" class="setting-list-action">idle</span>
+                    </div>
+                    <div class="setting-list-item">
+                      <span class="setting-list-main">
+                        <span class="setting-list-title">Automatic Updates</span>
+                        <span class="setting-list-meta">Download verified releases automatically and schedule installation for 02:00 server time.</span>
+                      </span>
+                      <button id="btn-update-auto" class="setting-list-action" type="button">On</button>
+                    </div>
+                    <div class="setting-list-item">
+                      <span class="setting-list-main">
+                        <span class="setting-list-title">Update Source</span>
+                        <span class="setting-list-meta">Release metadata comes from GitHub Releases for this Despatch repository.</span>
+                      </span>
+                      <span id="update-available" class="setting-list-action">-</span>
+                    </div>
+                  </div>
                 </div>
               </section>
               <section class="setting-section">
@@ -581,6 +744,7 @@
         <header id="compose-toolbar-layer" class="compose-toolbar-layer">
           <div class="compose-window-actions compose-window-actions--left">
             <button id="btn-compose-close" class="cmd-btn compose-close-btn" type="button" aria-label="Close compose">Close</button>
+            <button id="btn-compose-discard" class="cmd-btn compose-close-btn" type="button" aria-label="Discard draft">Discard</button>
             <span id="compose-draft-state" class="compose-draft-state" aria-live="polite">Draft</span>
           </div>
           <div class="compose-window-actions compose-window-actions--right">
@@ -645,6 +809,7 @@
         </section>
 
         <section class="compose-body-layer">
+          <p id="compose-draft-note" class="compose-inline-note hidden" aria-live="polite"></p>
           <div id="compose-editor-tools" class="compose-editor-tools hidden" role="toolbar" aria-label="Formatting tools">
             <button id="compose-tool-undo" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Undo">Undo</button>
             <button id="compose-tool-typography" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Paragraph style">Style</button>

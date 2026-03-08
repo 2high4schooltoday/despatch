@@ -175,6 +175,136 @@ func TestQueueApplyValidationAndInProgress(t *testing.T) {
 	}
 }
 
+func TestAutomaticUpdatesDefaultOnAndCanBeDisabled(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "active", "loaded", "inactive")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	mgr := NewManager(cfg)
+
+	enabled, err := mgr.autoUpdateEnabled(context.Background(), st)
+	if err != nil {
+		t.Fatalf("autoUpdateEnabled default: %v", err)
+	}
+	if !enabled {
+		t.Fatalf("expected automatic updates to default on")
+	}
+
+	auto, err := mgr.SetAutomaticEnabled(context.Background(), st, "admin@example.com", false)
+	if err != nil {
+		t.Fatalf("disable automatic updates: %v", err)
+	}
+	if auto.Enabled {
+		t.Fatalf("expected automatic updates disabled")
+	}
+}
+
+func TestAutomaticTickQueuesPrepareForLatestRelease(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "active", "loaded", "inactive")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	mgr := NewManager(cfg)
+	ctx := context.Background()
+	_ = st.UpsertSetting(ctx, settingLastCheckAt, time.Now().UTC().Format(time.RFC3339))
+	_ = st.UpsertSetting(ctx, settingLatestTag, "v9.9.9")
+	_ = st.UpsertSetting(ctx, settingLatestPublished, time.Now().UTC().Format(time.RFC3339))
+
+	if err := mgr.AutomaticTick(ctx, st); err != nil {
+		t.Fatalf("automatic tick: %v", err)
+	}
+	rec, err := readAutoUpdateState(autoStatusPath(cfg))
+	if err != nil {
+		t.Fatalf("read auto state: %v", err)
+	}
+	if rec.State != AutoUpdateStatePreparing {
+		t.Fatalf("expected preparing state, got %q", rec.State)
+	}
+	pending, err := pendingRequests(cfg)
+	if err != nil {
+		t.Fatalf("pending requests: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected one pending request, got %d", len(pending))
+	}
+	if pending[0].Request.Mode != ApplyModePrepare {
+		t.Fatalf("expected prepare request, got %q", pending[0].Request.Mode)
+	}
+}
+
+func TestCancelScheduledUpdateDefersCurrentVersion(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "active", "loaded", "inactive")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	mgr := NewManager(cfg)
+	if err := os.MkdirAll(statusDir(cfg), 0o770); err != nil {
+		t.Fatalf("mkdir status dir: %v", err)
+	}
+	rec := autoUpdateStateRecord{
+		State:         AutoUpdateStateScheduled,
+		TargetVersion: "v9.9.9",
+		ScheduledFor:  time.Now().Add(2 * time.Hour).UTC(),
+	}
+	if err := writeJSONAtomic(autoStatusPath(cfg), rec, 0o640, 0o770); err != nil {
+		t.Fatalf("write auto state: %v", err)
+	}
+
+	auto, err := mgr.CancelScheduledUpdate(context.Background(), st, "admin@example.com")
+	if err != nil {
+		t.Fatalf("cancel scheduled: %v", err)
+	}
+	if auto.State != AutoUpdateStateDownloaded {
+		t.Fatalf("expected downloaded state after cancel, got %q", auto.State)
+	}
+	rec, err = readAutoUpdateState(autoStatusPath(cfg))
+	if err != nil {
+		t.Fatalf("read auto state: %v", err)
+	}
+	if rec.DeferredVersion != "v9.9.9" {
+		t.Fatalf("expected deferred version recorded, got %q", rec.DeferredVersion)
+	}
+}
+
 func TestRunWorkerEnsuresDirectoryContract(t *testing.T) {
 	base := t.TempDir()
 	cfg := config.Config{

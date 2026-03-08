@@ -46,7 +46,7 @@ test('auth hides passkey sign-in when unavailable', async ({ page }) => {
   await expect(page.locator('#auth-passkey-card')).toHaveClass(/hidden/);
 });
 
-test('oobe shows passkey primary sign-in toggle', async ({ page }) => {
+test('oobe uses the new focused setup flow', async ({ page }) => {
   await page.route('**/api/v1/setup/status', async (route) => {
     await route.fulfill({
       status: 200,
@@ -59,6 +59,7 @@ test('oobe shows passkey primary sign-in toggle', async ({ page }) => {
         password_min_length: 12,
         password_max_length: 128,
         password_class_min: 3,
+        automatic_updates_enabled: true,
         passkey_primary_sign_in_enabled: true,
       }),
     });
@@ -67,17 +68,37 @@ test('oobe shows passkey primary sign-in toggle', async ({ page }) => {
   await page.setViewportSize({ width: 1366, height: 900 });
   await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
   await expect(page.locator('#view-setup')).toBeVisible();
+  await expect(page.locator('#setup-progress-title')).toHaveText(/Welcome/i);
+  await expect(page.locator('#setup-step-0')).not.toHaveClass(/hidden/);
 
   await page.click('#setup-next');
+  await expect(page.locator('#setup-progress-title')).toHaveText(/Where Despatch will be set up/i);
   await page.click('#setup-next');
+  await expect(page.locator('#setup-progress-title')).toHaveText(/Choose your look/i);
+  await page.click('#setup-theme-paper');
+  await expect(page.locator('#setup-theme-paper')).toHaveClass(/is-selected/);
+  await page.click('#setup-next');
+  await expect(page.locator('#setup-progress-title')).toHaveText(/Software updates/i);
+  await expect(page.locator('#setup-updates-auto')).toHaveClass(/is-selected/);
+  await page.click('#setup-updates-manual');
+  await expect(page.locator('#setup-updates-manual')).toHaveClass(/is-selected/);
+  await page.click('#setup-next');
+  await expect(page.locator('#setup-progress-title')).toHaveText(/Admin account/i);
   await page.fill('#setup-domain', 'example.com');
   await page.fill('#setup-admin-email', 'webmaster@example.com');
+  await page.fill('#setup-admin-recovery-email', 'recovery@example.net');
   await page.click('#setup-next');
 
   await expect(page.locator('#setup-passkey-primary-enabled')).toBeVisible();
   await expect(page.locator('#setup-passkey-primary-enabled')).toBeChecked();
+  await page.fill('#setup-password', 'SecretPass123!');
+  await page.fill('#setup-password-confirm', 'SecretPass123!');
   await page.uncheck('#setup-passkey-primary-enabled');
   await page.click('#setup-next');
+  await expect(page.locator('#setup-progress-title')).toHaveText(/Ready to initialize/i);
+  await expect(page.locator('#setup-summary-theme')).toHaveText(/Paper/i);
+  await expect(page.locator('#setup-summary-updates')).toHaveText(/Manual updates only/i);
+  await expect(page.locator('#setup-summary-recovery-email')).toHaveText(/recovery@example.net/i);
   await expect(page.locator('#setup-summary-passkey')).toHaveText(/disabled/i);
 });
 
@@ -113,6 +134,7 @@ test('desktop ux pass', async ({ page }) => {
   await expect(page.locator('#view-mail')).toBeVisible();
   await expect(page.locator('.mail-commandbar')).toBeVisible();
   await expect(page.locator('.mail-commandbar-group')).toHaveCount(4);
+  await expect(page.locator('#mailboxes .mailbox-row button', { hasText: /^Drafts/ })).toBeVisible();
   await expect(page.locator('#btn-reader-view-html')).toBeVisible();
   await expect(page.locator('#btn-reader-view-plain')).toBeVisible();
   await expect(page.locator('#btn-compose-open')).toBeVisible();
@@ -141,6 +163,8 @@ test('desktop ux pass', async ({ page }) => {
   await expect(page.locator('#compose-toolbar-layer')).toBeVisible();
   await expect(page.locator('#compose-window-more-menu')).toHaveCount(0);
   await expect(page.locator('#compose-toolbar-layer .compose-window-actions--right > button')).toHaveCount(3);
+  await expect(page.locator('#btn-compose-discard')).toBeVisible();
+  await expect(page.locator('#compose-draft-note')).toHaveClass(/hidden/);
   await expect(page.locator('#compose-tool-attach')).toBeVisible();
   await expect(page.locator('#compose-toggle-formatting')).toBeVisible();
   await expect(page.locator('#compose-editor-tools')).toHaveClass(/hidden/);
@@ -189,6 +213,8 @@ test('desktop ux pass', async ({ page }) => {
   await expect(inlinePreview).toHaveAttribute('src', /^blob:/);
   await page.locator('#compose-editor').click();
   await page.keyboard.type('Hello from compose test.');
+  await page.waitForTimeout(1100);
+  await expect(page.locator('#compose-draft-state')).toContainText(/Saved|Saving|Unsaved/);
   await expect(page.locator('#btn-compose-send')).toBeEnabled();
 
   await page.keyboard.press('Escape');
@@ -277,6 +303,12 @@ test('desktop ux pass', async ({ page }) => {
   await page.click('#tab-admin');
   await page.waitForTimeout(700);
   await expect(page.locator('.admin-layout')).toHaveCount(1);
+  await expect(page.locator('#update-hero-card')).toBeVisible();
+  await expect(page.locator('#update-hero-headline')).toBeVisible();
+  await expect(page.locator('#btn-update-check')).toBeVisible();
+  await expect(page.locator('#btn-update-auto')).toBeVisible();
+  await expect(page.locator('.update-detail-card')).toBeVisible();
+  await expect(page.locator('#update-source-link')).toBeVisible();
   await page.screenshot({ path: '/tmp/ux-desktop-admin-system.png', fullPage: true });
 
   await page.fill('#admin-search-input', 'feature flags');

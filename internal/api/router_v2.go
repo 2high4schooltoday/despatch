@@ -1540,6 +1540,21 @@ func (h *Handlers) V2ListDrafts(w http.ResponseWriter, r *http.Request) {
 	util.WriteJSON(w, 200, map[string]any{"items": items, "page": page, "page_size": pageSize, "total": total})
 }
 
+func (h *Handlers) V2GetDraft(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	item, err := h.svc.Store().GetDraftByID(r.Context(), u.ID, id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, 404, "draft_not_found", "draft not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, 500, "draft_get_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	util.WriteJSON(w, 200, item)
+}
+
 func (h *Handlers) V2CreateDraft(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
 	var req models.Draft
@@ -1596,6 +1611,24 @@ func (h *Handlers) V2UpdateDraft(w http.ResponseWriter, r *http.Request) {
 	util.WriteJSON(w, 200, out)
 }
 
+func (h *Handlers) V2DeleteDraft(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	id := strings.TrimSpace(chi.URLParam(r, "id"))
+	if id == "" {
+		util.WriteError(w, 400, "bad_request", "id is required", middleware.RequestID(r.Context()))
+		return
+	}
+	if err := h.svc.Store().DeleteDraft(r.Context(), u.ID, id); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, 404, "draft_not_found", "draft not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, 500, "delete_draft_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	util.WriteJSON(w, 200, map[string]any{"status": "deleted"})
+}
+
 func (h *Handlers) V2ListDraftVersions(w http.ResponseWriter, r *http.Request) {
 	versions, err := h.svc.Store().ListDraftVersions(r.Context(), chi.URLParam(r, "id"), 20)
 	if err != nil {
@@ -1627,6 +1660,10 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	sendMode := strings.ToLower(strings.TrimSpace(draft.SendMode))
 	if sendMode == "scheduled" && !draft.ScheduledFor.IsZero() && draft.ScheduledFor.After(time.Now().UTC()) {
+		if strings.TrimSpace(draft.AccountID) == "" {
+			util.WriteError(w, 400, "schedule_requires_account", "scheduled send requires an account-backed draft", middleware.RequestID(r.Context()))
+			return
+		}
 		if err := h.svc.Store().QueueScheduledSend(r.Context(), draft); err != nil {
 			util.WriteError(w, 500, "schedule_failed", err.Error(), middleware.RequestID(r.Context()))
 			return
@@ -1640,14 +1677,6 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	sendReq := mail.SendRequest{
-		To:       splitCSV(draft.ToValue),
-		CC:       splitCSV(draft.CCValue),
-		BCC:      splitCSV(draft.BCCValue),
-		Subject:  draft.Subject,
-		Body:     draft.BodyText,
-		BodyHTML: draft.BodyHTML,
-	}
 	cryptoJSON := strings.TrimSpace(draft.CryptoOptions)
 	if len(sendReqPayload.CryptoOptions) > 0 {
 		b, err := json.Marshal(sendReqPayload.CryptoOptions)
@@ -1657,18 +1686,113 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 		}
 		cryptoJSON = string(b)
 	}
-	sendReq, err = h.applyCryptoToSendRequest(r.Context(), u, draft.AccountID, sendReq, cryptoJSON, sendReqPayload.CryptoPassphrase)
+	sendReq, sendAccountID, markAnswered, err := h.buildDraftSendRequest(r.Context(), u, draft)
+	if err != nil {
+		code := "send_failed"
+		status := 400
+		if errors.Is(err, store.ErrNotFound) {
+			code = "context_message_not_found"
+			status = 404
+		}
+		util.WriteError(w, status, code, err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	sendReq, err = h.applyCryptoToSendRequest(r.Context(), u, sendAccountID, sendReq, cryptoJSON, sendReqPayload.CryptoPassphrase)
 	if err != nil {
 		util.WriteError(w, 422, "crypto_send_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	if err := h.v2SendWithAccount(r.Context(), u, draft.AccountID, sendReq); err != nil {
+	result, err := h.v2SendWithAccount(r.Context(), u, sendAccountID, sendReq)
+	if err != nil {
+		if errors.Is(err, mail.ErrSMTPSenderRejected) {
+			util.WriteError(w, 422, "smtp_sender_rejected", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
 		util.WriteError(w, 502, "send_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	draft.Status = "sent"
-	_, _ = h.svc.Store().UpdateDraft(r.Context(), draft)
-	util.WriteJSON(w, 200, map[string]any{"status": "sent"})
+	_ = h.svc.Store().SetDraftStatus(r.Context(), u.ID, draft.ID, "sent")
+	if markAnswered && strings.TrimSpace(draft.ContextMessageID) != "" {
+		pass, passErr := h.sessionMailPasswordFromContext(r.Context())
+		if passErr == nil {
+			login := service.MailIdentity(u)
+			_ = h.svc.Mail().UpdateFlags(r.Context(), login, pass, draft.ContextMessageID, mail.FlagPatch{Add: []string{"\\Answered"}})
+		}
+	}
+	util.WriteJSON(w, 200, map[string]any{
+		"status":             "sent",
+		"saved_copy":         result.SavedCopy,
+		"saved_copy_mailbox": result.SavedCopyMailbox,
+		"warning":            result.Warning,
+	})
+}
+
+func (h *Handlers) buildDraftSendRequest(ctx context.Context, u models.User, draft models.Draft) (mail.SendRequest, string, bool, error) {
+	sendAccountID := strings.TrimSpace(draft.AccountID)
+	if sendAccountID != "" {
+		if _, err := h.svc.Store().GetMailAccountByID(ctx, u.ID, sendAccountID); err != nil {
+			return mail.SendRequest{}, "", false, err
+		}
+	}
+	req := mail.SendRequest{
+		To:       splitCSV(draft.ToValue),
+		CC:       splitCSV(draft.CCValue),
+		BCC:      splitCSV(draft.BCCValue),
+		Subject:  draft.Subject,
+		Body:     draft.BodyText,
+		BodyHTML: draft.BodyHTML,
+	}
+	switch strings.ToLower(strings.TrimSpace(draft.FromMode)) {
+	case "", "default":
+		req.From = strings.TrimSpace(u.Email)
+	case "manual":
+		manualSender := strings.TrimSpace(draft.FromManual)
+		if manualSender == "" {
+			manualSender = strings.TrimSpace(u.Email)
+		}
+		if !strings.EqualFold(manualSender, strings.TrimSpace(u.Email)) {
+			return mail.SendRequest{}, "", false, fmt.Errorf("manual sender must match authenticated account email")
+		}
+		req.From = strings.TrimSpace(u.Email)
+	case "identity":
+		if strings.TrimSpace(draft.IdentityID) == "" {
+			return mail.SendRequest{}, "", false, fmt.Errorf("identity_id is required when from_mode=identity")
+		}
+		identity, err := h.svc.Store().GetMailIdentityByID(ctx, strings.TrimSpace(draft.IdentityID))
+		if err != nil {
+			return mail.SendRequest{}, "", false, err
+		}
+		account, err := h.svc.Store().GetMailAccountByID(ctx, u.ID, identity.AccountID)
+		if err != nil {
+			return mail.SendRequest{}, "", false, err
+		}
+		fromEmail := strings.TrimSpace(identity.FromEmail)
+		if fromEmail == "" {
+			return mail.SendRequest{}, "", false, fmt.Errorf("selected identity is missing from_email")
+		}
+		req.From = fromEmail
+		sendAccountID = account.ID
+	default:
+		return mail.SendRequest{}, "", false, fmt.Errorf("unsupported from_mode")
+	}
+	if req.From == "" {
+		req.From = strings.TrimSpace(u.Email)
+	}
+	if strings.ToLower(strings.TrimSpace(draft.ComposeMode)) != "reply" || strings.TrimSpace(draft.ContextMessageID) == "" {
+		return req, sendAccountID, false, nil
+	}
+	pass, err := h.sessionMailPasswordFromContext(ctx)
+	if err != nil {
+		return mail.SendRequest{}, "", false, err
+	}
+	login := service.MailIdentity(u)
+	original, err := h.svc.Mail().GetMessage(ctx, login, pass, strings.TrimSpace(draft.ContextMessageID))
+	if err != nil {
+		return mail.SendRequest{}, "", false, err
+	}
+	req.InReplyToID = strings.TrimSpace(original.MessageID)
+	req.References = append([]string{}, original.References...)
+	return req, sendAccountID, true, nil
 }
 
 func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
@@ -1715,7 +1839,7 @@ func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 422, "crypto_send_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	if err := h.v2SendWithAccount(r.Context(), u, strings.TrimSpace(req.AccountID), sendReq); err != nil {
+	if _, err := h.v2SendWithAccount(r.Context(), u, strings.TrimSpace(req.AccountID), sendReq); err != nil {
 		if errors.Is(err, mail.ErrSMTPSenderRejected) {
 			util.WriteError(w, 422, "smtp_sender_rejected", err.Error(), middleware.RequestID(r.Context()))
 			return
@@ -2934,25 +3058,25 @@ func (h *Handlers) V2GetQuota(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handlers) v2SendWithAccount(ctx context.Context, u models.User, accountID string, req mail.SendRequest) error {
+func (h *Handlers) v2SendWithAccount(ctx context.Context, u models.User, accountID string, req mail.SendRequest) (mail.SendResult, error) {
 	if strings.TrimSpace(req.From) == "" {
 		req.From = u.Email
 	}
 	if strings.TrimSpace(accountID) == "" {
 		pass, err := h.sessionMailPasswordFromContext(ctx)
 		if err != nil {
-			return err
+			return mail.SendResult{}, err
 		}
 		login := service.MailIdentity(u)
 		return h.svc.Mail().Send(ctx, login, pass, req)
 	}
 	acc, err := h.svc.Store().GetMailAccountByID(ctx, u.ID, accountID)
 	if err != nil {
-		return err
+		return mail.SendResult{}, err
 	}
 	pass, err := util.DecryptString(util.Derive32ByteKey(h.cfg.SessionEncryptKey), acc.SecretEnc)
 	if err != nil {
-		return fmt.Errorf("cannot decrypt account secret")
+		return mail.SendResult{}, fmt.Errorf("cannot decrypt account secret")
 	}
 	cfg := h.cfg
 	cfg.IMAPHost = acc.IMAPHost
@@ -3333,6 +3457,21 @@ func mergeDraftPatch(current *models.Draft, patch map[string]any) {
 	}
 	if v, ok := patch["identity_id"].(string); ok {
 		current.IdentityID = strings.TrimSpace(v)
+	}
+	if v, ok := patch["compose_mode"].(string); ok {
+		current.ComposeMode = strings.TrimSpace(v)
+	}
+	if v, ok := patch["context_message_id"].(string); ok {
+		current.ContextMessageID = strings.TrimSpace(v)
+	}
+	if v, ok := patch["from_mode"].(string); ok {
+		current.FromMode = strings.TrimSpace(v)
+	}
+	if v, ok := patch["from_manual"].(string); ok {
+		current.FromManual = strings.TrimSpace(v)
+	}
+	if v, ok := patch["client_state_json"].(string); ok {
+		current.ClientStateJSON = v
 	}
 	if v, ok := patch["to"].(string); ok {
 		current.ToValue = strings.TrimSpace(v)

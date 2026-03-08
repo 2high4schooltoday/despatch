@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -30,8 +31,11 @@ import (
 type sendTestDespatch struct {
 	mu           sync.Mutex
 	sendErr      error
+	sendResult   mail.SendResult
 	capturedReq  mail.SendRequest
 	capturedUser string
+	messageByID  map[string]mail.Message
+	patches      map[string]mail.FlagPatch
 }
 
 func (m *sendTestDespatch) ListMailboxes(ctx context.Context, user, pass string) ([]mail.Mailbox, error) {
@@ -43,6 +47,9 @@ func (m *sendTestDespatch) ListMessages(ctx context.Context, user, pass, mailbox
 }
 
 func (m *sendTestDespatch) GetMessage(ctx context.Context, user, pass, id string) (mail.Message, error) {
+	if msg, ok := m.messageByID[id]; ok {
+		return msg, nil
+	}
 	return mail.Message{}, nil
 }
 
@@ -50,15 +57,31 @@ func (m *sendTestDespatch) Search(ctx context.Context, user, pass, mailbox, quer
 	return nil, nil
 }
 
-func (m *sendTestDespatch) Send(ctx context.Context, user, pass string, req mail.SendRequest) error {
+func (m *sendTestDespatch) Send(ctx context.Context, user, pass string, req mail.SendRequest) (mail.SendResult, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.capturedUser = user
 	m.capturedReq = req
-	return m.sendErr
+	if m.sendErr != nil {
+		return mail.SendResult{}, m.sendErr
+	}
+	if !m.sendResult.SavedCopy && m.sendResult.Warning == "" && m.sendResult.SavedCopyMailbox == "" {
+		return mail.SendResult{SavedCopy: true, SavedCopyMailbox: "Sent"}, nil
+	}
+	return m.sendResult, nil
 }
 
 func (m *sendTestDespatch) SetFlags(ctx context.Context, user, pass, id string, flags []string) error {
+	return nil
+}
+
+func (m *sendTestDespatch) UpdateFlags(ctx context.Context, user, pass, id string, patch mail.FlagPatch) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.patches == nil {
+		m.patches = map[string]mail.FlagPatch{}
+	}
+	m.patches[id] = patch
 	return nil
 }
 
@@ -78,6 +101,13 @@ func (m *sendTestDespatch) snapshot() (string, mail.SendRequest) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.capturedUser, m.capturedReq
+}
+
+func (m *sendTestDespatch) patchFor(id string) (mail.FlagPatch, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	patch, ok := m.patches[id]
+	return patch, ok
 }
 
 const sendTestSessionEncryptKey = "this_is_a_valid_long_session_encrypt_key_123456"
@@ -181,7 +211,12 @@ func loginForSend(t *testing.T, router http.Handler) (*http.Cookie, *http.Cookie
 
 func postSendJSON(t *testing.T, router http.Handler, sessionCookie, csrfCookie *http.Cookie, body []byte) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/messages/send", bytes.NewReader(body))
+	return postMailJSON(t, router, "/api/v1/messages/send", sessionCookie, csrfCookie, body)
+}
+
+func postMailJSON(t *testing.T, router http.Handler, path string, sessionCookie, csrfCookie *http.Cookie, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-CSRF-Token", csrfCookie.Value)
 	req.AddCookie(sessionCookie)
@@ -301,6 +336,100 @@ func TestSendJSONSupportsCCBCCAndBodyHTML(t *testing.T) {
 	}
 	if req.BodyHTML == "" {
 		t.Fatalf("expected body_html to be forwarded")
+	}
+}
+
+func TestReplyUsesOriginalRFCMessageIDAndMarksOriginalAnswered(t *testing.T) {
+	originalID := mail.EncodeMessageID("INBOX", 1)
+	despatch := &sendTestDespatch{
+		sendResult: mail.SendResult{
+			SavedCopy:        false,
+			SavedCopyMailbox: "Sent Messages",
+			Warning:          "Message sent, but the Sent copy could not be saved.",
+		},
+		messageByID: map[string]mail.Message{
+			originalID: {
+				ID:        originalID,
+				MessageID: "orig-message@example.com",
+				References: []string{
+					"older@example.com",
+					"orig-message@example.com",
+				},
+			},
+		},
+	}
+	router := newSendRouter(t, despatch, "")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	body, _ := json.Marshal(map[string]any{
+		"to":      []string{"alice@example.com"},
+		"subject": "reply",
+		"body":    "world",
+	})
+	rec := postMailJSON(t, router, "/api/v1/messages/"+originalID+"/reply", sessionCookie, csrfCookie, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Status           string `json:"status"`
+		SavedCopy        bool   `json:"saved_copy"`
+		SavedCopyMailbox string `json:"saved_copy_mailbox"`
+		Warning          string `json:"warning"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode reply payload: %v body=%s", err, rec.Body.String())
+	}
+	if payload.Status != "sent" {
+		t.Fatalf("expected status sent, got %+v", payload)
+	}
+	if payload.SavedCopy {
+		t.Fatalf("expected saved_copy=false warning payload, got %+v", payload)
+	}
+	if payload.Warning == "" {
+		t.Fatalf("expected warning payload when sent copy save fails")
+	}
+
+	_, req := despatch.snapshot()
+	if req.InReplyToID != "orig-message@example.com" {
+		t.Fatalf("expected RFC Message-ID in reply request, got %q", req.InReplyToID)
+	}
+	if len(req.References) != 2 || req.References[0] != "older@example.com" || req.References[1] != "orig-message@example.com" {
+		t.Fatalf("unexpected references: %#v", req.References)
+	}
+	patch, ok := despatch.patchFor(originalID)
+	if !ok {
+		t.Fatalf("expected answered flag patch to be issued")
+	}
+	if len(patch.Add) != 1 || patch.Add[0] != "\\Answered" {
+		t.Fatalf("unexpected answered patch: %#v", patch)
+	}
+}
+
+func TestSetMessageFlagsSupportsPatchSemantics(t *testing.T) {
+	messageID := mail.EncodeMessageID("INBOX", 1)
+	despatch := &sendTestDespatch{}
+	router := newSendRouter(t, despatch, "")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	body, _ := json.Marshal(map[string]any{
+		"add":    []string{"\\Seen"},
+		"remove": []string{"\\Flagged"},
+	})
+	rec := postMailJSON(t, router, "/api/v1/messages/"+messageID+"/flags", sessionCookie, csrfCookie, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	patch, ok := despatch.patchFor(messageID)
+	if !ok {
+		t.Fatalf("expected patch flags call")
+	}
+	if len(patch.Add) != 1 || patch.Add[0] != "\\Seen" {
+		t.Fatalf("unexpected add patch: %#v", patch)
+	}
+	if len(patch.Remove) != 1 || patch.Remove[0] != "\\Flagged" {
+		t.Fatalf("unexpected remove patch: %#v", patch)
 	}
 }
 
@@ -426,12 +555,15 @@ func TestSendIdentityModeUsesAccountIdentity(t *testing.T) {
 	}
 
 	smtpCapture.wait(t)
-	from, rcpt, _ := smtpCapture.snapshot()
+	from, rcpt, _, authUser := smtpCapture.snapshot()
 	if !strings.Contains(strings.ToLower(from), "alias@example.com") {
 		t.Fatalf("expected smtp from to use identity sender, got %q", from)
 	}
 	if len(rcpt) != 1 || !strings.Contains(strings.ToLower(rcpt[0]), "alice@example.com") {
 		t.Fatalf("unexpected recipients: %#v", rcpt)
+	}
+	if authUser != "mailbox@example.com" {
+		t.Fatalf("expected smtp auth to use mailbox login, got %q", authUser)
 	}
 }
 
@@ -506,10 +638,11 @@ func TestSendIdentityModeRejectsForeignIdentity(t *testing.T) {
 type fakeSMTPServer struct {
 	addr string
 
-	mu   sync.Mutex
-	from string
-	rcpt []string
-	data string
+	mu       sync.Mutex
+	from     string
+	rcpt     []string
+	data     string
+	authUser string
 
 	done chan struct{}
 	ln   net.Listener
@@ -569,7 +702,42 @@ func (s *fakeSMTPServer) serve() {
 			if !writeLine("250-fake-smtp") {
 				return
 			}
+			if !writeLine("250-AUTH PLAIN") {
+				return
+			}
 			if !writeLine("250 OK") {
+				return
+			}
+		case strings.HasPrefix(upper, "AUTH PLAIN"):
+			payload := strings.TrimSpace(cmd[len("AUTH PLAIN"):])
+			if payload == "" {
+				if !writeLine("334 ") {
+					return
+				}
+				challenge, err := rw.ReadString('\n')
+				if err != nil {
+					return
+				}
+				payload = strings.TrimSpace(challenge)
+			}
+			decoded, err := base64.StdEncoding.DecodeString(payload)
+			if err != nil {
+				if !writeLine("535 invalid auth") {
+					return
+				}
+				return
+			}
+			parts := strings.Split(string(decoded), "\x00")
+			if len(parts) < 3 {
+				if !writeLine("535 invalid auth") {
+					return
+				}
+				return
+			}
+			s.mu.Lock()
+			s.authUser = parts[1]
+			s.mu.Unlock()
+			if !writeLine("235 2.7.0 Authentication successful") {
 				return
 			}
 		case strings.HasPrefix(upper, "MAIL FROM:"):
@@ -627,9 +795,9 @@ func (s *fakeSMTPServer) wait(t *testing.T) {
 	}
 }
 
-func (s *fakeSMTPServer) snapshot() (string, []string, string) {
+func (s *fakeSMTPServer) snapshot() (string, []string, string, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	outRcpt := append([]string(nil), s.rcpt...)
-	return s.from, outRcpt, s.data
+	return s.from, outRcpt, s.data, s.authUser
 }

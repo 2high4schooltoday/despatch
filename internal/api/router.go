@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/emersion/go-imap"
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
@@ -208,6 +209,8 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 						r.Post("/users/{id}/retry-provision", h.AdminRetryProvisionUser)
 						r.With(middleware.RateLimit(h.limiter, "update_check", 20, time.Minute, h.cfg.TrustProxy)).Post("/system/update/check", h.AdminUpdateCheck)
 						r.With(middleware.RateLimit(h.limiter, "update_apply", 10, time.Minute, h.cfg.TrustProxy)).Post("/system/update/apply", h.AdminUpdateApply)
+						r.With(middleware.RateLimit(h.limiter, "update_auto", 20, time.Minute, h.cfg.TrustProxy)).Post("/system/update/automatic", h.AdminUpdateAutomatic)
+						r.With(middleware.RateLimit(h.limiter, "update_cancel_scheduled", 20, time.Minute, h.cfg.TrustProxy)).Post("/system/update/cancel-scheduled", h.AdminUpdateCancelScheduled)
 						r.Post("/system/feature-flags/{id}", h.AdminSetFeatureFlag)
 						r.Post("/system/feature-flags/{id}/reset", h.AdminResetFeatureFlag)
 					})
@@ -254,6 +257,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Get("/search", h.V2Search)
 				r.Get("/saved-searches", h.V2ListSavedSearches)
 				r.Get("/drafts", h.V2ListDrafts)
+				r.Get("/drafts/{id}", h.V2GetDraft)
 				r.Get("/drafts/{id}/versions", h.V2ListDraftVersions)
 				r.Get("/rules/scripts", h.V2ListRuleScripts)
 				r.Get("/rules/scripts/{name}", h.V2GetRuleScript)
@@ -289,6 +293,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 
 					r.Post("/drafts", h.V2CreateDraft)
 					r.Patch("/drafts/{id}", h.V2UpdateDraft)
+					r.Delete("/drafts/{id}", h.V2DeleteDraft)
 					r.Post("/drafts/{id}/send", h.V2SendDraft)
 					r.With(middleware.RateLimit(h.limiter, "send_v2", 30, time.Minute, h.cfg.TrustProxy)).Post("/messages/send", h.V2SendMessage)
 
@@ -376,6 +381,11 @@ func (h *Handlers) SetupStatus(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 500, "internal_error", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	if enabled, autoErr := h.updateMgr.AutomaticEnabled(r.Context(), h.svc.Store()); autoErr == nil {
+		status.AutomaticUpdatesEnabled = enabled
+	} else {
+		status.AutomaticUpdatesEnabled = true
+	}
 	util.WriteJSON(w, 200, status)
 }
 
@@ -383,10 +393,12 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		BaseDomain                  string `json:"base_domain"`
 		AdminEmail                  string `json:"admin_email"`
+		AdminRecoveryEmail          string `json:"admin_recovery_email"`
 		AdminMailboxLogin           string `json:"admin_mailbox_login"`
 		AdminPassword               string `json:"admin_password"`
 		Region                      string `json:"region"`
 		PasskeyPrimarySignInEnabled *bool  `json:"passkey_primary_sign_in_enabled"`
+		AutomaticUpdatesEnabled     *bool  `json:"automatic_updates_enabled"`
 	}
 	if err := decodeJSON(w, r, &req, jsonLimitAuthControl, false); err != nil {
 		writeJSONDecodeError(w, r, err)
@@ -395,6 +407,7 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 	token, user, err := h.svc.CompleteSetup(r.Context(), service.SetupCompleteRequest{
 		BaseDomain:                  req.BaseDomain,
 		AdminEmail:                  req.AdminEmail,
+		AdminRecoveryEmail:          req.AdminRecoveryEmail,
 		AdminMailboxLogin:           req.AdminMailboxLogin,
 		AdminPassword:               req.AdminPassword,
 		Region:                      req.Region,
@@ -428,6 +441,15 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 			code = "invalid_admin_email"
 		case strings.Contains(strings.ToLower(msg), "must use @"):
 			code = "admin_email_domain_mismatch"
+		case errors.Is(err, service.ErrRecoveryEmailRequired):
+			code = "recovery_email_required"
+			msg = "recovery email is required"
+		case errors.Is(err, service.ErrRecoveryEmailMatchesLogin):
+			code = "recovery_email_matches_login"
+			msg = "recovery email must differ from admin email"
+		case errors.Is(err, service.ErrInvalidRecoveryEmail):
+			code = "invalid_recovery_email"
+			msg = "enter a valid recovery email"
 		case strings.Contains(strings.ToLower(msg), "password"):
 			code = "invalid_password"
 		case errors.As(err, &pamCredErr):
@@ -457,6 +479,17 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 		)
 		util.WriteError(w, status, code, msg, middleware.RequestID(r.Context()))
 		return
+	}
+	autoEnabled := true
+	if req.AutomaticUpdatesEnabled != nil {
+		autoEnabled = *req.AutomaticUpdatesEnabled
+	}
+	if err := h.updateMgr.PersistAutomaticPreference(r.Context(), h.svc.Store(), user.Email, autoEnabled); err != nil {
+		util.WriteError(w, 500, "internal_error", "cannot persist automatic update preference", middleware.RequestID(r.Context()))
+		return
+	}
+	if autoEnabled {
+		_ = h.updateMgr.AutomaticTick(r.Context(), h.svc.Store())
 	}
 	csrfToken, err := randomToken()
 	if err != nil {
@@ -1048,10 +1081,8 @@ func threadConversationScanMailboxes(current string, available []mail.Mailbox) [
 
 	add(current)
 	for _, role := range []string{"inbox", "sent", "archive"} {
-		for _, mb := range available {
-			if threadMailboxRole(mb.Name) == role {
-				add(mb.Name)
-			}
+		if resolved := mail.ResolveMailboxByRole(available, role); resolved != "" {
+			add(resolved)
 		}
 	}
 	if len(out) == 0 {
@@ -1060,30 +1091,16 @@ func threadConversationScanMailboxes(current string, available []mail.Mailbox) [
 	return out
 }
 
-func threadMailboxRole(name string) string {
-	v := strings.ToLower(strings.TrimSpace(name))
-	switch {
-	case v == "inbox" || strings.HasSuffix(v, "/inbox"):
-		return "inbox"
-	case v == "sent", v == "sent messages", strings.Contains(v, "sent"):
-		return "sent"
-	case v == "archive", strings.Contains(v, "archive"), strings.Contains(v, "all mail"):
-		return "archive"
-	default:
-		return ""
-	}
-}
-
 func (h *Handlers) SendMessage(w http.ResponseWriter, r *http.Request) {
-	h.handleSend(w, r, "")
+	h.handleSend(w, r, "", false)
 }
 
 func (h *Handlers) ReplyMessage(w http.ResponseWriter, r *http.Request) {
-	h.handleSend(w, r, chi.URLParam(r, "id"))
+	h.handleSend(w, r, chi.URLParam(r, "id"), true)
 }
 
 func (h *Handlers) ForwardMessage(w http.ResponseWriter, r *http.Request) {
-	h.handleSend(w, r, chi.URLParam(r, "id"))
+	h.handleSend(w, r, chi.URLParam(r, "id"), false)
 }
 
 func (h *Handlers) ComposeIdentities(w http.ResponseWriter, r *http.Request) {
@@ -1136,7 +1153,7 @@ func (h *Handlers) ComposeIdentities(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply string) {
+func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply string, markAnswered bool) {
 	u, _ := middleware.User(r.Context())
 	decoded, err := decodeSendRequest(w, r)
 	if err != nil {
@@ -1148,7 +1165,24 @@ func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply st
 		return
 	}
 	req := decoded.Request
-	req.InReplyToID = inReply
+	originalMessageID := ""
+	mailLogin := service.MailIdentity(u)
+	sessionPass := ""
+	if strings.TrimSpace(inReply) != "" {
+		sessionPass, err = h.sessionMailPassword(r)
+		if err != nil {
+			h.writeMailAuthError(w, r, err)
+			return
+		}
+		original, getErr := h.svc.Mail().GetMessage(r.Context(), mailLogin, sessionPass, strings.TrimSpace(inReply))
+		if getErr != nil {
+			util.WriteError(w, 404, "not_found", getErr.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		originalMessageID = strings.TrimSpace(original.MessageID)
+		req.InReplyToID = originalMessageID
+		req.References = append([]string{}, original.References...)
+	}
 
 	sendAccountID := ""
 	switch decoded.FromMode {
@@ -1212,16 +1246,19 @@ func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply st
 		sendAccountID = accountID
 	}
 
+	var sendResult mail.SendResult
 	if sendAccountID != "" {
-		err = h.v2SendWithAccount(r.Context(), u, sendAccountID, req)
+		sendResult, err = h.v2SendWithAccount(r.Context(), u, sendAccountID, req)
 	} else {
-		pass, passErr := h.sessionMailPassword(r)
-		if passErr != nil {
-			h.writeMailAuthError(w, r, passErr)
-			return
+		if sessionPass == "" {
+			pass, passErr := h.sessionMailPassword(r)
+			if passErr != nil {
+				h.writeMailAuthError(w, r, passErr)
+				return
+			}
+			sessionPass = pass
 		}
-		mailLogin := service.MailIdentity(u)
-		err = h.svc.Mail().Send(r.Context(), mailLogin, pass, req)
+		sendResult, err = h.svc.Mail().Send(r.Context(), mailLogin, sessionPass, req)
 	}
 	if err != nil {
 		if errors.Is(err, mail.ErrSMTPSenderRejected) {
@@ -1231,7 +1268,17 @@ func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply st
 		util.WriteError(w, 502, "smtp_error", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	util.WriteJSON(w, 200, map[string]string{"status": "sent"})
+	if markAnswered && strings.TrimSpace(inReply) != "" && sessionPass != "" && originalMessageID != "" {
+		_ = h.svc.Mail().UpdateFlags(r.Context(), mailLogin, sessionPass, strings.TrimSpace(inReply), mail.FlagPatch{
+			Add: []string{imap.AnsweredFlag},
+		})
+	}
+	util.WriteJSON(w, 200, map[string]any{
+		"status":             "sent",
+		"saved_copy":         sendResult.SavedCopy,
+		"saved_copy_mailbox": sendResult.SavedCopyMailbox,
+		"warning":            sendResult.Warning,
+	})
 }
 
 func (h *Handlers) SetMessageFlags(w http.ResponseWriter, r *http.Request) {
@@ -1243,13 +1290,26 @@ func (h *Handlers) SetMessageFlags(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chi.URLParam(r, "id")
 	var req struct {
-		Flags []string `json:"flags"`
+		Flags  []string `json:"flags"`
+		Add    []string `json:"add"`
+		Remove []string `json:"remove"`
 	}
 	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
 		writeJSONDecodeError(w, r, err)
 		return
 	}
 	mailLogin := service.MailIdentity(u)
+	if len(req.Add) > 0 || len(req.Remove) > 0 {
+		if err := h.svc.Mail().UpdateFlags(r.Context(), mailLogin, pass, id, mail.FlagPatch{
+			Add:    req.Add,
+			Remove: req.Remove,
+		}); err != nil {
+			util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteJSON(w, 200, map[string]string{"status": "ok"})
+		return
+	}
 	if err := h.svc.Mail().SetFlags(r.Context(), mailLogin, pass, id, req.Flags); err != nil {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
 		return
@@ -1679,6 +1739,10 @@ func (h *Handlers) AdminUpdateCheck(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 502, "update_check_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	_ = h.updateMgr.AutomaticTick(r.Context(), h.svc.Store())
+	if refreshed, err := h.updateMgr.Status(r.Context(), h.svc.Store(), false); err == nil {
+		status = refreshed
+	}
 	util.WriteJSON(w, 200, status)
 }
 
@@ -1720,6 +1784,36 @@ func (h *Handlers) AdminUpdateApply(w http.ResponseWriter, r *http.Request) {
 		"requested_at":   applyReq.RequestedAt,
 		"target_version": applyReq.TargetVersion,
 	})
+}
+
+func (h *Handlers) AdminUpdateAutomatic(w http.ResponseWriter, r *http.Request) {
+	admin, _ := middleware.User(r.Context())
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := decodeJSON(w, r, &req, jsonLimitAuthControl, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	auto, err := h.updateMgr.SetAutomaticEnabled(r.Context(), h.svc.Store(), admin.Email, req.Enabled)
+	if err != nil {
+		util.WriteError(w, 500, "internal_error", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	if req.Enabled {
+		_ = h.updateMgr.AutomaticTick(r.Context(), h.svc.Store())
+	}
+	util.WriteJSON(w, 200, map[string]any{"auto_update": auto})
+}
+
+func (h *Handlers) AdminUpdateCancelScheduled(w http.ResponseWriter, r *http.Request) {
+	admin, _ := middleware.User(r.Context())
+	auto, err := h.updateMgr.CancelScheduledUpdate(r.Context(), h.svc.Store(), admin.Email)
+	if err != nil {
+		util.WriteError(w, 500, "internal_error", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	util.WriteJSON(w, 200, map[string]any{"auto_update": auto})
 }
 
 func (h *Handlers) AdminListFeatureFlags(w http.ResponseWriter, r *http.Request) {

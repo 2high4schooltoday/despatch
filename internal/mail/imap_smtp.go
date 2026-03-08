@@ -3,7 +3,9 @@ package mail
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"html"
 	"io"
@@ -11,7 +13,6 @@ import (
 	"mime/multipart"
 	"mime/quotedprintable"
 	"net"
-	"net/smtp"
 	"net/textproto"
 	"regexp"
 	"sort"
@@ -48,6 +49,10 @@ func (c *IMAPSMTPClient) ListMailboxes(ctx context.Context, user, pass string) (
 	}
 	defer cli.Logout()
 
+	return c.listMailboxesWithClient(cli, true)
+}
+
+func (c *IMAPSMTPClient) listMailboxesWithClient(cli *imapclient.Client, withStatus bool) ([]Mailbox, error) {
 	ch := make(chan *imap.MailboxInfo, 32)
 	done := make(chan error, 1)
 	go func() {
@@ -56,24 +61,32 @@ func (c *IMAPSMTPClient) ListMailboxes(ctx context.Context, user, pass string) (
 
 	var out []Mailbox
 	for mb := range ch {
-		status, err := cli.Status(mb.Name, []imap.StatusItem{imap.StatusMessages, imap.StatusUnseen})
-		if err != nil {
-			continue
+		item := Mailbox{Name: mb.Name, Role: MailboxRole(mb.Name, mb.Attributes)}
+		if withStatus {
+			status, err := cli.Status(mb.Name, []imap.StatusItem{imap.StatusMessages, imap.StatusUnseen})
+			if err != nil {
+				continue
+			}
+			item.Unread = int(status.Unseen)
+			item.Messages = int(status.Messages)
 		}
-		out = append(out, Mailbox{Name: mb.Name, Unread: int(status.Unseen), Messages: int(status.Messages)})
+		out = append(out, item)
 	}
 	if err := <-done; err != nil {
 		return nil, err
 	}
 	if len(out) == 0 {
-		out = []Mailbox{{Name: "INBOX"}}
+		out = []Mailbox{{Name: "INBOX", Role: "inbox"}}
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Name == "INBOX" {
+		if out[i].Role == "inbox" || out[i].Name == "INBOX" {
 			return true
 		}
-		if out[j].Name == "INBOX" {
+		if out[j].Role == "inbox" || out[j].Name == "INBOX" {
 			return false
+		}
+		if out[i].Role != out[j].Role {
+			return out[i].Role < out[j].Role
 		}
 		return out[i].Name < out[j].Name
 	})
@@ -153,7 +166,7 @@ func (c *IMAPSMTPClient) GetMessage(ctx context.Context, user, pass, id string) 
 	if err != nil {
 		return Message{}, err
 	}
-	raw, env, err := c.fetchRawMessage(ctx, user, pass, mailbox, uid)
+	raw, env, flags, err := c.fetchRawMessage(ctx, user, pass, mailbox, uid)
 	if err != nil {
 		return Message{}, err
 	}
@@ -170,6 +183,9 @@ func (c *IMAPSMTPClient) GetMessage(ctx context.Context, user, pass, id string) 
 	if parsed.Date.IsZero() && env != nil {
 		parsed.Date = env.Date
 	}
+	parsed.Seen = hasFlag(flags, imap.SeenFlag)
+	parsed.Flagged = hasFlag(flags, imap.FlaggedFlag)
+	parsed.Answered = hasFlag(flags, imap.AnsweredFlag)
 	return parsed, nil
 }
 
@@ -178,7 +194,7 @@ func (c *IMAPSMTPClient) GetRawMessage(ctx context.Context, user, pass, id strin
 	if err != nil {
 		return nil, err
 	}
-	raw, _, err := c.fetchRawMessage(ctx, user, pass, mailbox, uid)
+	raw, _, _, err := c.fetchRawMessage(ctx, user, pass, mailbox, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -272,12 +288,12 @@ func (c *IMAPSMTPClient) Search(ctx context.Context, user, pass, mailbox, query 
 	return out, nil
 }
 
-func (c *IMAPSMTPClient) Send(ctx context.Context, user, pass string, req SendRequest) error {
+func (c *IMAPSMTPClient) Send(ctx context.Context, user, pass string, req SendRequest) (SendResult, error) {
 	req.To = normalizedRecipients(req.To)
 	req.CC = normalizedRecipients(req.CC)
 	req.BCC = normalizedRecipients(req.BCC)
 	if len(mergeRecipients(req.To, req.CC, req.BCC)) == 0 {
-		return fmt.Errorf("at least one recipient is required")
+		return SendResult{}, fmt.Errorf("at least one recipient is required")
 	}
 	if req.From == "" {
 		req.From = user
@@ -285,10 +301,13 @@ func (c *IMAPSMTPClient) Send(ctx context.Context, user, pass string, req SendRe
 
 	msg, err := buildRFC822(req)
 	if err != nil {
-		return err
+		return SendResult{}, err
 	}
 
-	return c.sendWithSenderFallback(ctx, user, pass, req, msg, c.sendSMTP)
+	if err := c.sendWithSenderFallback(ctx, user, pass, req, msg, c.sendSMTP); err != nil {
+		return SendResult{}, err
+	}
+	return c.appendSentCopy(ctx, user, pass, msg)
 }
 
 func (c *IMAPSMTPClient) sendWithSenderFallback(
@@ -328,6 +347,31 @@ func (c *IMAPSMTPClient) sendWithSenderFallback(
 	return WrapSMTPSenderRejected(err)
 }
 
+func (c *IMAPSMTPClient) appendSentCopy(ctx context.Context, user, pass string, raw []byte) (SendResult, error) {
+	cli, err := c.connectIMAP(ctx, user, pass)
+	if err != nil {
+		return SendResult{SavedCopy: false, Warning: fmt.Sprintf("Message sent, but a Sent copy could not be saved: %v", err)}, nil
+	}
+	defer cli.Logout()
+
+	mailboxes, err := c.listMailboxesWithClient(cli, false)
+	if err != nil {
+		return SendResult{SavedCopy: false, Warning: fmt.Sprintf("Message sent, but a Sent copy could not be saved: %v", err)}, nil
+	}
+	sentMailbox := ResolveMailboxByRole(mailboxes, "sent")
+	if sentMailbox == "" {
+		return SendResult{SavedCopy: false, Warning: "Message sent, but no Sent mailbox could be found to save a copy."}, nil
+	}
+	if err := cli.Append(sentMailbox, []string{imap.SeenFlag}, time.Now().UTC(), bytes.NewReader(raw)); err != nil {
+		return SendResult{
+			SavedCopy:        false,
+			SavedCopyMailbox: sentMailbox,
+			Warning:          fmt.Sprintf("Message sent, but the Sent copy could not be saved to %s: %v", sentMailbox, err),
+		}, nil
+	}
+	return SendResult{SavedCopy: true, SavedCopyMailbox: sentMailbox}, nil
+}
+
 func (c *IMAPSMTPClient) SetFlags(ctx context.Context, user, pass, id string, flags []string) error {
 	mailbox, uid, err := DecodeMessageID(id)
 	if err != nil {
@@ -350,6 +394,45 @@ func (c *IMAPSMTPClient) SetFlags(ctx context.Context, user, pass, id string, fl
 	}
 	item := imap.FormatFlagsOp(imap.SetFlags, true)
 	return cli.UidStore(seq, item, values, nil)
+}
+
+func (c *IMAPSMTPClient) UpdateFlags(ctx context.Context, user, pass, id string, patch FlagPatch) error {
+	mailbox, uid, err := DecodeMessageID(id)
+	if err != nil {
+		return err
+	}
+	cli, err := c.connectIMAP(ctx, user, pass)
+	if err != nil {
+		return err
+	}
+	defer cli.Logout()
+	if _, err := cli.Select(mailbox, false); err != nil {
+		return err
+	}
+	seq := new(imap.SeqSet)
+	seq.AddNum(uid)
+
+	if len(patch.Add) > 0 {
+		values := make([]interface{}, 0, len(patch.Add))
+		for _, f := range patch.Add {
+			values = append(values, canonicalFlag(f))
+		}
+		item := imap.FormatFlagsOp(imap.AddFlags, true)
+		if err := cli.UidStore(seq, item, values, nil); err != nil {
+			return err
+		}
+	}
+	if len(patch.Remove) > 0 {
+		values := make([]interface{}, 0, len(patch.Remove))
+		for _, f := range patch.Remove {
+			values = append(values, canonicalFlag(f))
+		}
+		item := imap.FormatFlagsOp(imap.RemoveFlags, true)
+		if err := cli.UidStore(seq, item, values, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *IMAPSMTPClient) Move(ctx context.Context, user, pass, id, mailbox string) error {
@@ -392,7 +475,7 @@ func (c *IMAPSMTPClient) GetAttachmentStream(ctx context.Context, user, pass, at
 	if err != nil {
 		return AttachmentMeta{}, nil, err
 	}
-	raw, _, err := c.fetchRawMessage(ctx, user, pass, mailbox, uid)
+	raw, _, _, err := c.fetchRawMessage(ctx, user, pass, mailbox, uid)
 	if err != nil {
 		return AttachmentMeta{}, nil, err
 	}
@@ -403,19 +486,19 @@ func (c *IMAPSMTPClient) GetAttachmentStream(ctx context.Context, user, pass, at
 	return meta, io.NopCloser(bytes.NewReader(data)), nil
 }
 
-func (c *IMAPSMTPClient) fetchRawMessage(ctx context.Context, user, pass, mailbox string, uid uint32) ([]byte, *imap.Envelope, error) {
+func (c *IMAPSMTPClient) fetchRawMessage(ctx context.Context, user, pass, mailbox string, uid uint32) ([]byte, *imap.Envelope, []string, error) {
 	cli, err := c.connectIMAP(ctx, user, pass)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer cli.Logout()
 	if _, err := cli.Select(mailbox, true); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	seq := new(imap.SeqSet)
 	seq.AddNum(uid)
 	section := &imap.BodySectionName{}
-	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, section.FetchItem()}
+	items := []imap.FetchItem{imap.FetchUid, imap.FetchEnvelope, imap.FetchFlags, section.FetchItem()}
 	messages := make(chan *imap.Message, 1)
 	done := make(chan error, 1)
 	go func() {
@@ -423,20 +506,20 @@ func (c *IMAPSMTPClient) fetchRawMessage(ctx context.Context, user, pass, mailbo
 	}()
 	msg := <-messages
 	if err := <-done; err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if msg == nil {
-		return nil, nil, fmt.Errorf("message not found")
+		return nil, nil, nil, fmt.Errorf("message not found")
 	}
 	body := msg.GetBody(section)
 	if body == nil {
-		return nil, nil, fmt.Errorf("server did not return message body")
+		return nil, nil, nil, fmt.Errorf("server did not return message body")
 	}
 	raw, err := io.ReadAll(body)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return raw, msg.Envelope, nil
+	return raw, msg.Envelope, msg.Flags, nil
 }
 
 func (c *IMAPSMTPClient) connectIMAP(ctx context.Context, user, pass string) (*imapclient.Client, error) {
@@ -468,60 +551,15 @@ func (c *IMAPSMTPClient) connectIMAP(ctx context.Context, user, pass string) (*i
 }
 
 func (c *IMAPSMTPClient) sendSMTP(ctx context.Context, user, pass, from string, rcpt []string, raw []byte) error {
-	addr := net.JoinHostPort(c.cfg.SMTPHost, strconv.Itoa(c.cfg.SMTPPort))
-	tlsConfig := &tls.Config{ServerName: c.cfg.SMTPHost, InsecureSkipVerify: c.cfg.SMTPInsecureSkipVerify}
-
-	dialer := &net.Dialer{Timeout: defaultDialTimeout}
-	conn, err := dialer.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return err
-	}
-
-	if c.cfg.SMTPTLS {
-		conn = tls.Client(conn, tlsConfig)
-	}
-
-	client, err := smtp.NewClient(conn, c.cfg.SMTPHost)
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-
-	if c.cfg.SMTPStartTLS {
-		if ok, _ := client.Extension("STARTTLS"); ok {
-			if err := client.StartTLS(tlsConfig); err != nil {
-				return err
-			}
-		}
-	}
-
-	if ok, _ := client.Extension("AUTH"); ok {
-		auth := smtp.PlainAuth("", user, pass, c.cfg.SMTPHost)
-		if err := client.Auth(auth); err != nil {
-			return err
-		}
-	}
-
-	if err := client.Mail(from); err != nil {
-		return err
-	}
-	for _, r := range rcpt {
-		if err := client.Rcpt(strings.TrimSpace(r)); err != nil {
-			return err
-		}
-	}
-
-	wc, err := client.Data()
-	if err != nil {
-		return err
-	}
-	if _, err := wc.Write(raw); err != nil {
-		return err
-	}
-	if err := wc.Close(); err != nil {
-		return err
-	}
-	return client.Quit()
+	return SubmitSMTP(ctx, SMTPSubmissionConfig{
+		Host:               c.cfg.SMTPHost,
+		Port:               c.cfg.SMTPPort,
+		TLS:                c.cfg.SMTPTLS,
+		StartTLS:           c.cfg.SMTPStartTLS,
+		InsecureSkipVerify: c.cfg.SMTPInsecureSkipVerify,
+		Username:           user,
+		Password:           pass,
+	}, from, rcpt, raw)
 }
 
 func buildRFC822(req SendRequest) ([]byte, error) {
@@ -548,6 +586,10 @@ func buildRFC822(req SendRequest) ([]byte, error) {
 	var buf bytes.Buffer
 	mixed := multipart.NewWriter(&buf)
 	boundary := mixed.Boundary()
+	messageID := strings.TrimSpace(req.MessageID)
+	if messageID == "" {
+		messageID = generateMessageID(req.From)
+	}
 
 	fmt.Fprintf(&buf, "From: %s\r\n", req.From)
 	fmt.Fprintf(&buf, "To: %s\r\n", strings.Join(to, ", "))
@@ -556,8 +598,12 @@ func buildRFC822(req SendRequest) ([]byte, error) {
 	}
 	fmt.Fprintf(&buf, "Subject: %s\r\n", req.Subject)
 	fmt.Fprintf(&buf, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
+	fmt.Fprintf(&buf, "Message-ID: %s\r\n", formatMessageIDHeader(messageID))
 	if req.InReplyToID != "" {
-		fmt.Fprintf(&buf, "In-Reply-To: %s\r\n", req.InReplyToID)
+		fmt.Fprintf(&buf, "In-Reply-To: %s\r\n", formatMessageIDHeader(req.InReplyToID))
+	}
+	if refs := formatReferencesHeader(req.References, req.InReplyToID); refs != "" {
+		fmt.Fprintf(&buf, "References: %s\r\n", refs)
 	}
 	fmt.Fprintf(&buf, "MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&buf, "Content-Type: multipart/mixed; boundary=%q\r\n", boundary)
@@ -697,6 +743,58 @@ func normalizeContentID(v string) string {
 		return "inline"
 	}
 	return v
+}
+
+func formatMessageIDHeader(value string) string {
+	clean := strings.TrimSpace(value)
+	if clean == "" {
+		return ""
+	}
+	clean = strings.TrimPrefix(clean, "<")
+	clean = strings.TrimSuffix(clean, ">")
+	return fmt.Sprintf("<%s>", clean)
+}
+
+func formatReferencesHeader(references []string, inReplyTo string) string {
+	items := make([]string, 0, len(references)+1)
+	seen := map[string]struct{}{}
+	appendID := func(value string) {
+		clean := strings.TrimSpace(value)
+		clean = strings.TrimPrefix(clean, "<")
+		clean = strings.TrimSuffix(clean, ">")
+		if clean == "" {
+			return
+		}
+		key := strings.ToLower(clean)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		items = append(items, formatMessageIDHeader(clean))
+	}
+	for _, ref := range references {
+		appendID(ref)
+	}
+	appendID(inReplyTo)
+	return strings.Join(items, " ")
+}
+
+func generateMessageID(from string) string {
+	domain := "localhost"
+	addr := strings.TrimSpace(from)
+	if idx := strings.LastIndex(addr, "@"); idx >= 0 && idx+1 < len(addr) {
+		host := strings.TrimSpace(addr[idx+1:])
+		host = strings.TrimSuffix(host, ">")
+		host = strings.TrimSpace(host)
+		if host != "" {
+			domain = host
+		}
+	}
+	var token [12]byte
+	if _, err := rand.Read(token[:]); err != nil {
+		return fmt.Sprintf("%d@%s", time.Now().UTC().UnixNano(), domain)
+	}
+	return fmt.Sprintf("%s@%s", hex.EncodeToString(token[:]), domain)
 }
 
 func mergeRecipients(to, cc, bcc []string) []string {
@@ -843,6 +941,20 @@ func parseMessage(raw []byte, messageID, mailbox string, uid uint32) (Message, e
 	if date, err := mr.Header.Date(); err == nil {
 		msg.Date = date
 	}
+	if messageIDHeader, err := mr.Header.MessageID(); err == nil {
+		msg.MessageID = strings.TrimSpace(messageIDHeader)
+	}
+	if references, err := mr.Header.MsgIDList("References"); err == nil {
+		msg.References = append([]string{}, references...)
+	}
+	if replyRefs, err := mr.Header.MsgIDList("In-Reply-To"); err == nil && len(replyRefs) > 0 {
+		for _, item := range replyRefs {
+			if strings.TrimSpace(item) == "" {
+				continue
+			}
+			msg.References = append(msg.References, item)
+		}
+	}
 
 	partIdx := 0
 	for {
@@ -986,6 +1098,8 @@ func buildMessageSummary(msg *imap.Message, mailbox, from, subject string, date 
 		Subject:  subject,
 		Date:     date,
 		Seen:     hasFlag(msg.Flags, imap.SeenFlag),
+		Flagged:  hasFlag(msg.Flags, imap.FlaggedFlag),
+		Answered: hasFlag(msg.Flags, imap.AnsweredFlag),
 		Preview:  preview,
 		ThreadID: DeriveThreadID(mailbox, subject, from),
 	}

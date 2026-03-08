@@ -25,6 +25,7 @@ type ApplyRequest struct {
 	RequestID     string    `json:"request_id"`
 	RequestedAt   time.Time `json:"requested_at"`
 	RequestedBy   string    `json:"requested_by"`
+	Mode          string    `json:"mode,omitempty"`
 	TargetVersion string    `json:"target_version,omitempty"`
 }
 
@@ -37,6 +38,11 @@ const (
 	ApplyStateCompleted  ApplyState = "completed"
 	ApplyStateFailed     ApplyState = "failed"
 	ApplyStateRolledBack ApplyState = "rolled_back"
+)
+
+const (
+	ApplyModeApply   = "apply"
+	ApplyModePrepare = "prepare"
 )
 
 type ApplyStatus struct {
@@ -52,6 +58,26 @@ type ApplyStatus struct {
 	Error         string     `json:"error,omitempty"`
 }
 
+type AutoUpdateState string
+
+const (
+	AutoUpdateStateIdle       AutoUpdateState = "idle"
+	AutoUpdateStatePreparing  AutoUpdateState = "preparing"
+	AutoUpdateStateDownloaded AutoUpdateState = "downloaded"
+	AutoUpdateStateScheduled  AutoUpdateState = "scheduled"
+	AutoUpdateStateApplying   AutoUpdateState = "applying"
+	AutoUpdateStateFailed     AutoUpdateState = "failed"
+)
+
+type AutoUpdateStatus struct {
+	Enabled       bool            `json:"enabled"`
+	State         AutoUpdateState `json:"state"`
+	TargetVersion string          `json:"target_version,omitempty"`
+	DownloadedAt  time.Time       `json:"downloaded_at,omitempty"`
+	ScheduledFor  time.Time       `json:"scheduled_for,omitempty"`
+	Error         string          `json:"error,omitempty"`
+}
+
 type StatusResponse struct {
 	Enabled          bool              `json:"enabled"`
 	Configured       bool              `json:"configured"`
@@ -61,6 +87,7 @@ type StatusResponse struct {
 	LastCheckError   string            `json:"last_check_error,omitempty"`
 	UpdateAvailable  bool              `json:"update_available"`
 	Apply            ApplyStatus       `json:"apply"`
+	AutoUpdate       AutoUpdateStatus  `json:"auto_update"`
 	ConfigDiagnostic *ConfigDiagnostic `json:"config_diagnostic,omitempty"`
 }
 

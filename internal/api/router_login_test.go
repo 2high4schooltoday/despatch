@@ -53,11 +53,15 @@ func (m pamLoginTestDespatch) Search(ctx context.Context, user, pass, mailbox, q
 	return nil, nil
 }
 
-func (m pamLoginTestDespatch) Send(ctx context.Context, user, pass string, req mail.SendRequest) error {
-	return nil
+func (m pamLoginTestDespatch) Send(ctx context.Context, user, pass string, req mail.SendRequest) (mail.SendResult, error) {
+	return mail.SendResult{SavedCopy: true, SavedCopyMailbox: "Sent"}, nil
 }
 
 func (m pamLoginTestDespatch) SetFlags(ctx context.Context, user, pass, id string, flags []string) error {
+	return nil
+}
+
+func (m pamLoginTestDespatch) UpdateFlags(ctx context.Context, user, pass, id string, patch mail.FlagPatch) error {
 	return nil
 }
 

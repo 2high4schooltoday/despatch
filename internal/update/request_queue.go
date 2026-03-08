@@ -13,6 +13,11 @@ import (
 
 const updateQueuePickupGrace = 30 * time.Second
 
+type pendingRequest struct {
+	Path    string
+	Request ApplyRequest
+}
+
 func requestQueuePattern(cfg config.Config) string {
 	return filepath.Join(requestDir(cfg), "update-request-*.json")
 }
@@ -57,6 +62,29 @@ func pendingRequestPaths(cfg config.Config) ([]string, error) {
 	sort.Strings(matches)
 	for _, match := range matches {
 		add(match)
+	}
+	return out, nil
+}
+
+func pendingRequests(cfg config.Config) ([]pendingRequest, error) {
+	paths, err := pendingRequestPaths(cfg)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]pendingRequest, 0, len(paths))
+	for _, path := range paths {
+		var req ApplyRequest
+		if err := readJSONFile(path, &req); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			req.Mode = ApplyModeApply
+		}
+		req.Mode = normalizeApplyMode(req.Mode)
+		out = append(out, pendingRequest{
+			Path:    path,
+			Request: req,
+		})
 	}
 	return out, nil
 }

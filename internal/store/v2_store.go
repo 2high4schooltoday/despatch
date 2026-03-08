@@ -580,7 +580,7 @@ func (s *Store) DeleteSavedSearch(ctx context.Context, userID, id string) error 
 }
 
 func (s *Store) ListDrafts(ctx context.Context, userID, accountID string, limit, offset int) ([]models.Draft, int, error) {
-	where := []string{"user_id=?"}
+	where := []string{"user_id=?", "status<>'sent'"}
 	args := []any{userID}
 	if strings.TrimSpace(accountID) != "" {
 		where = append(where, "account_id=?")
@@ -596,7 +596,7 @@ func (s *Store) ListDrafts(ctx context.Context, userID, accountID string, limit,
 	limit = clampLimit(limit)
 	offset = clampOffset(offset)
 	query := fmt.Sprintf(
-		`SELECT id,user_id,account_id,identity_id,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,created_at,updated_at
+		`SELECT id,user_id,account_id,identity_id,compose_mode,context_message_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,created_at,updated_at
 		 FROM drafts
 		 WHERE %s
 		 ORDER BY updated_at DESC
@@ -623,7 +623,7 @@ func (s *Store) ListDrafts(ctx context.Context, userID, accountID string, limit,
 
 func (s *Store) GetDraftByID(ctx context.Context, userID, id string) (models.Draft, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id,user_id,account_id,identity_id,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,created_at,updated_at
+		`SELECT id,user_id,account_id,identity_id,compose_mode,context_message_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,created_at,updated_at
 		 FROM drafts
 		 WHERE user_id=? AND id=?`,
 		userID, id,
@@ -648,14 +648,25 @@ func (s *Store) CreateDraft(ctx context.Context, in models.Draft) (models.Draft,
 	}
 	in.CreatedAt = now
 	in.UpdatedAt = now
+	if strings.TrimSpace(in.ComposeMode) == "" {
+		in.ComposeMode = "send"
+	}
+	if strings.TrimSpace(in.FromMode) == "" {
+		in.FromMode = "default"
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO drafts(
-		  id,user_id,account_id,identity_id,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,created_at,updated_at
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		  id,user_id,account_id,identity_id,compose_mode,context_message_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		in.ID,
 		in.UserID,
-		in.AccountID,
+		nullStringValue(in.AccountID),
 		in.IdentityID,
+		in.ComposeMode,
+		in.ContextMessageID,
+		in.FromMode,
+		in.FromManual,
+		in.ClientStateJSON,
 		in.ToValue,
 		in.CCValue,
 		in.BCCValue,
@@ -680,11 +691,23 @@ func (s *Store) CreateDraft(ctx context.Context, in models.Draft) (models.Draft,
 
 func (s *Store) UpdateDraft(ctx context.Context, in models.Draft) (models.Draft, error) {
 	in.UpdatedAt = time.Now().UTC()
+	if strings.TrimSpace(in.ComposeMode) == "" {
+		in.ComposeMode = "send"
+	}
+	if strings.TrimSpace(in.FromMode) == "" {
+		in.FromMode = "default"
+	}
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE drafts SET
-		  identity_id=?,to_value=?,cc_value=?,bcc_value=?,subject=?,body_text=?,body_html=?,attachments_json=?,crypto_options_json=?,send_mode=?,scheduled_for=?,status=?,updated_at=?
+		  account_id=?,identity_id=?,compose_mode=?,context_message_id=?,from_mode=?,from_manual=?,client_state_json=?,to_value=?,cc_value=?,bcc_value=?,subject=?,body_text=?,body_html=?,attachments_json=?,crypto_options_json=?,send_mode=?,scheduled_for=?,status=?,updated_at=?
 		 WHERE user_id=? AND id=?`,
+		nullStringValue(in.AccountID),
 		in.IdentityID,
+		in.ComposeMode,
+		in.ContextMessageID,
+		in.FromMode,
+		in.FromManual,
+		in.ClientStateJSON,
 		in.ToValue,
 		in.CCValue,
 		in.BCCValue,
@@ -710,6 +733,29 @@ func (s *Store) UpdateDraft(ctx context.Context, in models.Draft) (models.Draft,
 	snap, _ := json.Marshal(in)
 	_, _ = s.AddDraftVersion(ctx, in.ID, string(snap))
 	return s.GetDraftByID(ctx, in.UserID, in.ID)
+}
+
+func (s *Store) DeleteDraft(ctx context.Context, userID, draftID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM draft_versions WHERE draft_id=?`, draftID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM scheduled_send_queue WHERE draft_id=?`, draftID); err != nil {
+		return err
+	}
+	res, err := tx.ExecContext(ctx, `DELETE FROM drafts WHERE user_id=? AND id=?`, userID, draftID)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return tx.Commit()
 }
 
 func (s *Store) AddDraftVersion(ctx context.Context, draftID, snapshotJSON string) (models.DraftVersion, error) {
@@ -2554,12 +2600,18 @@ func scanIndexedMessage(scanner interface{ Scan(dest ...any) error }) (models.In
 
 func scanDraft(scanner interface{ Scan(dest ...any) error }) (models.Draft, error) {
 	var item models.Draft
+	var accountID sql.NullString
 	var scheduledAt sql.NullTime
 	if err := scanner.Scan(
 		&item.ID,
 		&item.UserID,
-		&item.AccountID,
+		&accountID,
 		&item.IdentityID,
+		&item.ComposeMode,
+		&item.ContextMessageID,
+		&item.FromMode,
+		&item.FromManual,
+		&item.ClientStateJSON,
 		&item.ToValue,
 		&item.CCValue,
 		&item.BCCValue,
@@ -2575,6 +2627,9 @@ func scanDraft(scanner interface{ Scan(dest ...any) error }) (models.Draft, erro
 		&item.UpdatedAt,
 	); err != nil {
 		return models.Draft{}, err
+	}
+	if accountID.Valid {
+		item.AccountID = accountID.String
 	}
 	if scheduledAt.Valid {
 		item.ScheduledFor = scheduledAt.Time

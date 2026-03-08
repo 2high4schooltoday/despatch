@@ -274,6 +274,84 @@ func TestAdminUpdateStatusIncludesConfigDiagnosticWhenNotConfigured(t *testing.T
 	}
 }
 
+func TestAdminUpdateStatusIncludesAutomaticUpdatesByDefault(t *testing.T) {
+	fx := newUpdateFixture(t, true, true)
+	sessionCookie, _ := loginCookies(t, fx.router, "admin@example.com", "SecretPass123!")
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/update/status", nil)
+	req.AddCookie(sessionCookie)
+	rec := httptest.NewRecorder()
+	fx.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	auto, _ := payload["auto_update"].(map[string]any)
+	if enabled, _ := auto["enabled"].(bool); !enabled {
+		t.Fatalf("expected auto_update.enabled default true, got %#v", auto["enabled"])
+	}
+}
+
+func TestAdminUpdateAutomaticTogglePersists(t *testing.T) {
+	fx := newUpdateFixture(t, true, true)
+	sessionCookie, csrfCookie := loginCookies(t, fx.router, "admin@example.com", "SecretPass123!")
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/update/automatic", bytes.NewReader([]byte(`{"enabled":false}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrfCookie.Value)
+	req.AddCookie(sessionCookie)
+	req.AddCookie(csrfCookie)
+	rec := httptest.NewRecorder()
+	fx.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/update/status", nil)
+	statusReq.AddCookie(sessionCookie)
+	statusRec := httptest.NewRecorder()
+	fx.router.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", statusRec.Code, statusRec.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(statusRec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode status response: %v", err)
+	}
+	auto, _ := payload["auto_update"].(map[string]any)
+	if enabled, _ := auto["enabled"].(bool); enabled {
+		t.Fatalf("expected auto_update.enabled false after toggle, got %#v", auto["enabled"])
+	}
+}
+
+func TestAdminUpdateCancelScheduled(t *testing.T) {
+	fx := newUpdateFixture(t, true, true)
+	sessionCookie, csrfCookie := loginCookies(t, fx.router, "admin@example.com", "SecretPass123!")
+	cfg := config.Config{
+		UpdateEnabled:        true,
+		UpdateBaseDir:        filepath.Dir(fx.requestDir),
+		UpdateSystemdUnitDir: filepath.Join(filepath.Dir(filepath.Dir(fx.requestDir)), "units"),
+	}
+	if err := os.MkdirAll(filepath.Join(cfg.UpdateBaseDir, "status"), 0o770); err != nil {
+		t.Fatalf("mkdir status dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cfg.UpdateBaseDir, "status", "update-auto-status.json"), []byte("{\n  \"state\": \"scheduled\",\n  \"target_version\": \"v9.9.9\",\n  \"scheduled_for\": \"2030-01-01T02:00:00Z\"\n}\n"), 0o640); err != nil {
+		t.Fatalf("write auto status: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/update/cancel-scheduled", bytes.NewReader([]byte(`{}`)))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrfCookie.Value)
+	req.AddCookie(sessionCookie)
+	req.AddCookie(csrfCookie)
+	rec := httptest.NewRecorder()
+	fx.router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAdminUpdateStatusOmitsConfigDiagnosticWhenConfigured(t *testing.T) {
 	fx := newUpdateFixture(t, true, true)
 	sessionCookie, _ := loginCookies(t, fx.router, "admin@example.com", "SecretPass123!")

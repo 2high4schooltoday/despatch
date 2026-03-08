@@ -1,0 +1,5 @@
+ALTER TABLE drafts ADD COLUMN compose_mode TEXT NOT NULL DEFAULT 'send';
+ALTER TABLE drafts ADD COLUMN context_message_id TEXT NOT NULL DEFAULT '';
+ALTER TABLE drafts ADD COLUMN from_mode TEXT NOT NULL DEFAULT 'default';
+ALTER TABLE drafts ADD COLUMN from_manual TEXT NOT NULL DEFAULT '';
+ALTER TABLE drafts ADD COLUMN client_state_json TEXT NOT NULL DEFAULT '';

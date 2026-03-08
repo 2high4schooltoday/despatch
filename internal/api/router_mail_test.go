@@ -53,11 +53,15 @@ func (m *mailRouterTestClient) Search(ctx context.Context, user, pass, mailbox, 
 	return m.search, nil
 }
 
-func (m *mailRouterTestClient) Send(ctx context.Context, user, pass string, req mail.SendRequest) error {
-	return nil
+func (m *mailRouterTestClient) Send(ctx context.Context, user, pass string, req mail.SendRequest) (mail.SendResult, error) {
+	return mail.SendResult{SavedCopy: true, SavedCopyMailbox: "Sent"}, nil
 }
 
 func (m *mailRouterTestClient) SetFlags(ctx context.Context, user, pass, id string, flags []string) error {
+	return nil
+}
+
+func (m *mailRouterTestClient) UpdateFlags(ctx context.Context, user, pass, id string, patch mail.FlagPatch) error {
 	return nil
 }
 
@@ -147,6 +151,33 @@ func TestV1SearchIncludesPreviewAndThreadID(t *testing.T) {
 	}
 }
 
+func TestV1ListMailboxesIncludesRole(t *testing.T) {
+	router := newSendRouter(t, &mailRouterTestClient{
+		mailboxes: []mail.Mailbox{
+			{Name: "INBOX", Role: "inbox", Unread: 2, Messages: 7},
+			{Name: "Sent Messages", Role: "sent", Unread: 0, Messages: 4},
+			{Name: "Deleted Messages", Role: "trash", Unread: 0, Messages: 1},
+		},
+	}, "")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	rec := authedV1Get(t, router, "/api/v1/mailboxes", sessionCookie, csrfCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload []mail.Mailbox
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode mailboxes payload: %v body=%s", err, rec.Body.String())
+	}
+	if len(payload) != 3 {
+		t.Fatalf("expected 3 mailboxes, got %+v", payload)
+	}
+	if payload[1].Role != "sent" || payload[2].Role != "trash" {
+		t.Fatalf("expected roles in payload, got %+v", payload)
+	}
+}
+
 func TestV1ThreadMessagesFiltersAndPaginates(t *testing.T) {
 	threadID := mail.DeriveThreadID("INBOX", "Release Plan", "alice@example.com")
 	otherThreadID := mail.DeriveThreadID("INBOX", "Unrelated", "charlie@example.com")
@@ -219,10 +250,10 @@ func TestV1ThreadMessagesConversationScopeScansDefaultFolders(t *testing.T) {
 	threadID := mail.DeriveThreadID("INBOX", "Release Plan", "alice@example.com")
 	router := newSendRouter(t, &mailRouterTestClient{
 		mailboxes: []mail.Mailbox{
-			{Name: "INBOX", Unread: 1, Messages: 10},
-			{Name: "Sent", Unread: 0, Messages: 5},
-			{Name: "Archive", Unread: 0, Messages: 6},
-			{Name: "Trash", Unread: 0, Messages: 2},
+			{Name: "INBOX", Role: "inbox", Unread: 1, Messages: 10},
+			{Name: "Sent Messages", Role: "sent", Unread: 0, Messages: 5},
+			{Name: "All Mail", Role: "archive", Unread: 0, Messages: 6},
+			{Name: "Deleted Messages", Role: "trash", Unread: 0, Messages: 2},
 		},
 		listByMailboxPage: map[string]map[int][]mail.MessageSummary{
 			"INBOX": {
@@ -231,21 +262,21 @@ func TestV1ThreadMessagesConversationScopeScansDefaultFolders(t *testing.T) {
 				},
 				2: {},
 			},
-			"Sent": {
+			"Sent Messages": {
 				1: {
-					{ID: "s1", Mailbox: "Sent", Subject: "Release Plan", From: "alice@example.com", ThreadID: threadID},
+					{ID: "s1", Mailbox: "Sent Messages", Subject: "Release Plan", From: "alice@example.com", ThreadID: threadID},
 				},
 				2: {},
 			},
-			"Archive": {
+			"All Mail": {
 				1: {
-					{ID: "a1", Mailbox: "Archive", Subject: "Fwd: Release Plan", From: "alice@example.com", ThreadID: threadID},
+					{ID: "a1", Mailbox: "All Mail", Subject: "Fwd: Release Plan", From: "alice@example.com", ThreadID: threadID},
 				},
 				2: {},
 			},
-			"Trash": {
+			"Deleted Messages": {
 				1: {
-					{ID: "t1", Mailbox: "Trash", Subject: "Release Plan", From: "alice@example.com", ThreadID: threadID},
+					{ID: "t1", Mailbox: "Deleted Messages", Subject: "Release Plan", From: "alice@example.com", ThreadID: threadID},
 				},
 				2: {},
 			},
@@ -276,7 +307,7 @@ func TestV1ThreadMessagesConversationScopeScansDefaultFolders(t *testing.T) {
 		t.Fatalf("expected 3 cross-mailbox thread items, got %+v", payload.Items)
 	}
 	for _, item := range payload.Items {
-		if item.Mailbox == "Trash" {
+		if item.Mailbox == "Deleted Messages" {
 			t.Fatalf("did not expect trash mailbox in default conversation scan: %+v", payload.Items)
 		}
 	}

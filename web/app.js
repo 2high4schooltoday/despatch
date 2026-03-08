@@ -2,6 +2,13 @@ const state = {
   user: null,
   mailbox: "INBOX",
   messages: [],
+  mail: {
+    mailboxes: [],
+    drafts: [],
+    selectedDraftID: "",
+    pollTimer: 0,
+    refreshInFlight: false,
+  },
   selectedMessage: null,
   selectedMessageSummary: null,
   thread: {
@@ -25,6 +32,7 @@ const state = {
     step: 0,
     baseDomain: "",
     defaultAdminEmail: "",
+    automaticUpdatesEnabled: true,
     passkeyPrimaryEnabled: true,
     authMode: "sql",
     passwordMinLength: 12,
@@ -41,6 +49,8 @@ const state = {
     pollTimer: 0,
     checking: false,
     applying: false,
+    autoSaving: false,
+    cancelingScheduled: false,
     lastStatus: null,
     apiMissing: false,
   },
@@ -77,6 +87,14 @@ const state = {
     attachments: [],
     inlineImages: [],
     submitInFlight: false,
+    draftID: "",
+    draftLoaded: false,
+    draftDirty: false,
+    draftSaving: false,
+    draftError: "",
+    draftLastSavedAt: "",
+    draftSaveTimer: 0,
+    draftBaselineJSON: "",
   },
   ui: {
     activeAuthTask: "login",
@@ -214,6 +232,7 @@ const el = {
   btnTrash: document.getElementById("btn-trash"),
   btnComposeOpen: document.getElementById("btn-compose-open"),
   btnComposeClose: document.getElementById("btn-compose-close"),
+  btnComposeDiscard: document.getElementById("btn-compose-discard"),
   composeOverlay: document.getElementById("compose-overlay"),
   composeDialog: document.getElementById("compose-dialog"),
   composeTitle: document.getElementById("compose-title"),
@@ -245,6 +264,7 @@ const el = {
   composeBodyTextInput: document.getElementById("compose-body-text"),
   composeBodyHTMLInput: document.getElementById("compose-body-html"),
   composeDraftState: document.getElementById("compose-draft-state"),
+  composeDraftNote: document.getElementById("compose-draft-note"),
   composeToggleFormatting: document.getElementById("compose-toggle-formatting"),
   composeEditorTools: document.getElementById("compose-editor-tools"),
   composeEditor: document.getElementById("compose-editor"),
@@ -357,33 +377,55 @@ const el = {
   adminAuditSort: document.getElementById("admin-audit-sort"),
   adminAuditOrder: document.getElementById("admin-audit-order"),
   btnAdminAuditApply: document.getElementById("btn-admin-audit-apply"),
+  adminSystemBadge: document.getElementById("admin-system-badge"),
+  updateHeroCard: document.getElementById("update-hero-card"),
+  updateHeroIcon: document.getElementById("update-hero-icon"),
+  updateHeroEyebrow: document.getElementById("update-hero-eyebrow"),
+  updateHeroHeadline: document.getElementById("update-hero-headline"),
+  updateHeroSubline: document.getElementById("update-hero-subline"),
   updateCurrentVersion: document.getElementById("update-current-version"),
   updateCurrentCommit: document.getElementById("update-current-commit"),
   updateLatestVersion: document.getElementById("update-latest-version"),
+  updateLatestPublished: document.getElementById("update-latest-published"),
   updateAvailable: document.getElementById("update-available"),
   updateLastChecked: document.getElementById("update-last-checked"),
   updateApplyState: document.getElementById("update-apply-state"),
+  updateScheduledFor: document.getElementById("update-scheduled-for"),
+  updateAutoState: document.getElementById("update-auto-state"),
+  updateSourceLink: document.getElementById("update-source-link"),
+  updateSourceLinkWrap: document.getElementById("update-source-link-wrap"),
   updateNote: document.getElementById("update-note"),
   btnUpdateCheck: document.getElementById("btn-update-check"),
   btnUpdateApply: document.getElementById("btn-update-apply"),
+  btnUpdateCancelScheduled: document.getElementById("btn-update-cancel-scheduled"),
+  btnUpdateAuto: document.getElementById("btn-update-auto"),
   setupBackIcon: document.getElementById("setup-back-icon"),
   setupClose: document.getElementById("setup-close"),
+  setupProgressLabel: document.getElementById("setup-progress-label"),
+  setupProgressTitle: document.getElementById("setup-progress-title"),
   setupForm: document.getElementById("form-setup"),
-  setupBack: document.getElementById("setup-back"),
   setupNext: document.getElementById("setup-next"),
   setupOpenMail: document.getElementById("setup-open-mail"),
   setupOpenAdmin: document.getElementById("setup-open-admin"),
   setupRegion: document.getElementById("setup-region"),
+  setupThemeMachine: document.getElementById("setup-theme-machine"),
+  setupThemePaper: document.getElementById("setup-theme-paper"),
+  setupUpdatesAuto: document.getElementById("setup-updates-auto"),
+  setupUpdatesManual: document.getElementById("setup-updates-manual"),
   setupDomain: document.getElementById("setup-domain"),
   setupAdminEmail: document.getElementById("setup-admin-email"),
+  setupAdminRecoveryEmail: document.getElementById("setup-admin-recovery-email"),
   setupAdminMailboxLogin: document.getElementById("setup-admin-mailbox-login"),
   setupAdminMailboxLoginWrap: document.getElementById("setup-mailbox-login-wrap"),
   setupPassword: document.getElementById("setup-password"),
   setupPasswordConfirm: document.getElementById("setup-password-confirm"),
   setupPasskeyPrimaryEnabled: document.getElementById("setup-passkey-primary-enabled"),
   setupSummaryRegion: document.getElementById("setup-summary-region"),
+  setupSummaryTheme: document.getElementById("setup-summary-theme"),
+  setupSummaryUpdates: document.getElementById("setup-summary-updates"),
   setupSummaryDomain: document.getElementById("setup-summary-domain"),
   setupSummaryEmail: document.getElementById("setup-summary-email"),
+  setupSummaryRecoveryEmail: document.getElementById("setup-summary-recovery-email"),
   setupSummaryPasskey: document.getElementById("setup-summary-passkey"),
   setupPasswordHint: document.getElementById("setup-password-hint"),
   setupInlineStatus: document.getElementById("setup-inline-status"),
@@ -395,6 +437,8 @@ const el = {
   setupModalConfirm: document.getElementById("setup-modal-confirm"),
 };
 
+const APP_DRAFTS_MAILBOX = "__despatch_app_drafts__";
+
 const setupSteps = [
   document.getElementById("setup-step-0"),
   document.getElementById("setup-step-1"),
@@ -402,7 +446,33 @@ const setupSteps = [
   document.getElementById("setup-step-3"),
   document.getElementById("setup-step-4"),
   document.getElementById("setup-step-5"),
+  document.getElementById("setup-step-6"),
+  document.getElementById("setup-step-7"),
 ];
+
+const setupStepTitles = [
+  "Welcome",
+  "Where Despatch will be set up",
+  "Choose your look",
+  "Software updates",
+  "Admin account",
+  "Sign-in and security",
+  "Ready to initialize",
+  "Finished",
+];
+
+const setupReviewStep = setupSteps.length - 2;
+const setupCompleteStep = setupSteps.length - 1;
+
+function setSetupChoicePressed(button, selected) {
+  if (!button) return;
+  button.classList.toggle("is-selected", !!selected);
+  button.setAttribute("aria-pressed", selected ? "true" : "false");
+}
+
+function normalizeRecoveryEmailInput(value) {
+  return String(value || "").trim().toLowerCase();
+}
 
 const ThemeController = {
   getTheme() {
@@ -718,6 +788,150 @@ function composeDraftKey() {
   return "despatch.compose.draft.v2";
 }
 
+function composeCrashBufferKey(draftID = "") {
+  return `despatch.compose.crash.v1.${String(draftID || "new").trim() || "new"}`;
+}
+
+function normalizeComposeClientStateJSON(raw) {
+  if (typeof raw === "string" && raw.trim() !== "") {
+    try {
+      return JSON.stringify(JSON.parse(raw));
+    } catch {
+      return raw;
+    }
+  }
+  if (raw && typeof raw === "object") {
+    return JSON.stringify(raw);
+  }
+  return "";
+}
+
+function composeClientStateObject() {
+  return {
+    cc_visible: !!state.compose.ccVisible,
+    bcc_visible: !!state.compose.bccVisible,
+    format_tools_visible: !!state.compose.formatToolsVisible,
+    to_pending: String(el.composeToInput?.value || ""),
+    cc_pending: String(el.composeCcInput?.value || ""),
+    bcc_pending: String(el.composeBccInput?.value || ""),
+  };
+}
+
+function composeClientStateJSON() {
+  return normalizeComposeClientStateJSON(composeClientStateObject());
+}
+
+function composeComparableDraftPayload(raw = {}) {
+  return {
+    account_id: String(raw.account_id ?? raw.accountID ?? "").trim(),
+    identity_id: String(raw.identity_id ?? raw.identityID ?? "").trim(),
+    compose_mode: String(raw.compose_mode ?? raw.composeMode ?? "send").trim().toLowerCase() || "send",
+    context_message_id: String(raw.context_message_id ?? raw.contextMessageID ?? "").trim(),
+    from_mode: String(raw.from_mode ?? raw.fromMode ?? "default").trim().toLowerCase() || "default",
+    from_manual: String(raw.from_manual ?? raw.fromManual ?? "").trim(),
+    client_state_json: normalizeComposeClientStateJSON(raw.client_state_json ?? raw.clientStateJSON ?? ""),
+    to: String(raw.to ?? raw.to_value ?? raw.toValue ?? "").trim(),
+    cc: String(raw.cc ?? raw.cc_value ?? raw.ccValue ?? "").trim(),
+    bcc: String(raw.bcc ?? raw.bcc_value ?? raw.bccValue ?? "").trim(),
+    subject: String(raw.subject ?? "").trim(),
+    body_text: String(raw.body_text ?? raw.bodyText ?? "").trim(),
+    body_html: String(raw.body_html ?? raw.bodyHTML ?? "").trim(),
+  };
+}
+
+function composeDraftPayloadJSON(raw) {
+  return JSON.stringify(composeComparableDraftPayload(raw));
+}
+
+function composeCurrentDraftPayload() {
+  syncComposeDraftFields();
+  return composeComparableDraftPayload({
+    account_id: state.compose.selectedAccountID || "",
+    identity_id: state.compose.selectedIdentityID || "",
+    compose_mode: state.compose.sendContext?.mode || "send",
+    context_message_id: state.compose.sendContext?.messageID || "",
+    from_mode: state.compose.fromMode,
+    from_manual: String(el.composeFromManualInput?.value || ""),
+    client_state_json: composeClientStateJSON(),
+    to: serializeComposeRecipients("to"),
+    cc: serializeComposeRecipients("cc"),
+    bcc: serializeComposeRecipients("bcc"),
+    subject: String(el.composeSubjectInput?.value || ""),
+    body_text: composeEditorText(),
+    body_html: composeEditorHTML(),
+  });
+}
+
+function composeDraftHasMeaningfulContent(raw = {}) {
+  const payload = composeComparableDraftPayload(raw);
+  return [
+    payload.to,
+    payload.cc,
+    payload.bcc,
+    payload.subject,
+    payload.body_text,
+    payload.body_html,
+  ].some((value) => String(value || "").trim() !== "");
+}
+
+function composeHasLiveMedia() {
+  return state.compose.attachments.length > 0 || state.compose.inlineImages.length > 0;
+}
+
+function writeComposeCrashBuffer(draftID = state.compose.draftID || "") {
+  try {
+    const payload = {
+      ...composeCurrentDraftPayload(),
+      draft_id: String(draftID || "").trim(),
+      updated_at_ms: Date.now(),
+    };
+    localStorage.setItem(composeCrashBufferKey(draftID), JSON.stringify(payload));
+  } catch {
+    // Best effort crash recovery only.
+  }
+}
+
+function readComposeCrashBuffer(draftID = "") {
+  try {
+    const raw = localStorage.getItem(composeCrashBufferKey(draftID));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearComposeCrashBuffer(draftID = "") {
+  try {
+    localStorage.removeItem(composeCrashBufferKey(draftID));
+    if (!draftID) {
+      localStorage.removeItem(composeCrashBufferKey("new"));
+      localStorage.removeItem(composeDraftKey());
+    }
+  } catch {
+    // Ignore local cleanup failures.
+  }
+}
+
+function migrateLegacyComposeDraftToCrashBuffer() {
+  try {
+    const raw = localStorage.getItem(composeDraftKey());
+    if (!raw) return;
+    if (!localStorage.getItem(composeCrashBufferKey("new"))) {
+      const parsed = JSON.parse(raw);
+      const payload = {
+        ...composeComparableDraftPayload(parsed),
+        updated_at_ms: Date.now(),
+      };
+      localStorage.setItem(composeCrashBufferKey("new"), JSON.stringify(payload));
+    }
+    localStorage.removeItem(composeDraftKey());
+  } catch {
+    localStorage.removeItem(composeDraftKey());
+  }
+}
+
 function splitComposeRecipients(raw) {
   const seen = new Set();
   return String(raw || "")
@@ -844,12 +1058,26 @@ function composeRecipientChipContainer(field) {
 function setComposeDraftState(text, tone = "muted") {
   if (!el.composeDraftState) return;
   el.composeDraftState.textContent = String(text || "Draft");
+  el.composeDraftState.dataset.tone = tone === "ok" || tone === "warn" || tone === "error" ? tone : "muted";
+}
+
+function setComposeDraftNote(text = "", tone = "muted") {
+  if (!el.composeDraftNote) return;
+  const msg = String(text || "").trim();
+  el.composeDraftNote.classList.remove("compose-inline-note--ok", "compose-inline-note--warn", "compose-inline-note--error");
+  if (!msg) {
+    el.composeDraftNote.textContent = "";
+    el.composeDraftNote.classList.add("hidden");
+    return;
+  }
+  el.composeDraftNote.textContent = msg;
+  el.composeDraftNote.classList.remove("hidden");
   if (tone === "ok") {
-    el.composeDraftState.style.color = "var(--sig-ok)";
+    el.composeDraftNote.classList.add("compose-inline-note--ok");
   } else if (tone === "warn") {
-    el.composeDraftState.style.color = "var(--sig-err)";
-  } else {
-    el.composeDraftState.style.color = "var(--fg-muted)";
+    el.composeDraftNote.classList.add("compose-inline-note--warn");
+  } else if (tone === "error") {
+    el.composeDraftNote.classList.add("compose-inline-note--error");
   }
 }
 
@@ -920,7 +1148,7 @@ function renderComposeRecipientTokens(field) {
       state.compose.recipients[field] = rows.filter((_, i) => i !== index);
       renderComposeRecipientTokens(field);
       syncComposeDraftFields();
-      saveComposeDraft(el.composeForm);
+      queueComposeDraftSave();
       updateComposeSubmitState();
     });
     chip.appendChild(removeBtn);
@@ -1039,8 +1267,9 @@ function updateComposeSubmitState() {
     el.btnComposeSend.disabled = disabled;
     el.btnComposeSend.textContent = state.compose.submitInFlight ? "Sending..." : "Send";
   }
-  if (state.compose.submitInFlight) {
-    setComposeDraftState("Sending", "muted");
+  const [draftText, draftTone] = composeDraftStatusText();
+  if (draftText !== "Draft") {
+    setComposeDraftState(draftText, draftTone);
     return;
   }
   if (composeHasInvalidRecipients()) {
@@ -1075,68 +1304,300 @@ function syncComposeDraftFields() {
   updateComposeFromFields();
 }
 
-function saveComposeDraft(form) {
-  if (String(state.compose.sendContext?.mode || "send") !== "send") return;
-  if (!form) return;
-  const payload = {
-    to: serializeComposeRecipients("to"),
-    cc: serializeComposeRecipients("cc"),
-    bcc: serializeComposeRecipients("bcc"),
-    to_pending: String(el.composeToInput?.value || ""),
-    cc_pending: String(el.composeCcInput?.value || ""),
-    bcc_pending: String(el.composeBccInput?.value || ""),
-    subject: String(el.composeSubjectInput?.value || ""),
-    body_text: composeEditorText(),
-    body_html: composeEditorHTML(),
-    from_mode: state.compose.fromMode,
-    identity_id: state.compose.selectedIdentityID,
-    account_id: state.compose.selectedAccountID,
-    from_manual: String(el.composeFromManualInput?.value || ""),
-    cc_visible: state.compose.ccVisible,
-    bcc_visible: state.compose.bccVisible,
-    format_tools_visible: state.compose.formatToolsVisible,
-  };
-  localStorage.setItem(composeDraftKey(), JSON.stringify(payload));
+function clearComposeDraftSaveTimer() {
+  if (!state.compose.draftSaveTimer) return;
+  clearTimeout(state.compose.draftSaveTimer);
+  state.compose.draftSaveTimer = 0;
 }
 
 function clearComposeDraft() {
-  localStorage.removeItem(composeDraftKey());
+  clearComposeDraftSaveTimer();
+  state.compose.draftID = "";
+  state.compose.draftLoaded = false;
+  state.compose.draftDirty = false;
+  state.compose.draftSaving = false;
+  state.compose.draftError = "";
+  state.compose.draftLastSavedAt = "";
+  state.compose.draftBaselineJSON = "";
+  clearComposeCrashBuffer();
+}
+
+function applyComposeDraftPayload(payload, opts = {}) {
+  const draft = composeComparableDraftPayload(payload);
+  let clientState = {};
+  if (draft.client_state_json) {
+    try {
+      clientState = JSON.parse(draft.client_state_json);
+    } catch {
+      clientState = {};
+    }
+  }
+  state.compose.recipients.to = [];
+  state.compose.recipients.cc = [];
+  state.compose.recipients.bcc = [];
+  renderComposeRecipientTokens("to");
+  renderComposeRecipientTokens("cc");
+  renderComposeRecipientTokens("bcc");
+  if (draft.to) hydrateComposeRecipientTokens("to", draft.to);
+  if (draft.cc) hydrateComposeRecipientTokens("cc", draft.cc);
+  if (draft.bcc) hydrateComposeRecipientTokens("bcc", draft.bcc);
+  if (el.composeToInput) el.composeToInput.value = String(clientState.to_pending || "");
+  if (el.composeCcInput) el.composeCcInput.value = String(clientState.cc_pending || "");
+  if (el.composeBccInput) el.composeBccInput.value = String(clientState.bcc_pending || "");
+  if (el.composeSubjectInput) el.composeSubjectInput.value = draft.subject;
+  if (el.composeEditor) {
+    if (draft.body_html) {
+      el.composeEditor.innerHTML = draft.body_html;
+      if (opts.normalizeDraftMedia) normalizeComposeEditorDraftMedia();
+    } else if (draft.body_text) {
+      const lines = draft.body_text.split(/\r?\n/);
+      el.composeEditor.innerHTML = lines.map((line) => `<p>${escapeHtml(line || "")}</p>`).join("");
+    } else {
+      el.composeEditor.innerHTML = "";
+    }
+  }
+  if (el.composeFromManualInput) {
+    el.composeFromManualInput.value = draft.from_manual;
+  }
+  state.compose.fromMode = draft.from_mode || "default";
+  state.compose.selectedIdentityID = draft.identity_id || "";
+  state.compose.selectedAccountID = draft.account_id || "";
+  setComposeSendContext(draft.compose_mode || "send", draft.context_message_id || "");
+  renderComposeFromControls();
+  if (state.compose.fromMode === "manual") {
+    setComposeFromMode("manual");
+  } else if (state.compose.fromMode === "identity" && el.composeFromSelect && state.compose.selectedIdentityID) {
+    el.composeFromSelect.value = state.compose.selectedIdentityID;
+    const selectedOption = el.composeFromSelect.selectedOptions[0] || null;
+    if (selectedOption) {
+      state.compose.selectedAccountID = String(selectedOption.dataset.accountId || state.compose.selectedAccountID || "");
+    }
+    setComposeFromMode("identity");
+  } else {
+    setComposeFromMode(state.compose.fromMode || "default");
+  }
+  setComposeCcVisible(Boolean(clientState.cc_visible || draft.cc || String(clientState.cc_pending || "").trim() !== ""), { clearWhenHidden: false });
+  setComposeBccVisible(Boolean(clientState.bcc_visible || draft.bcc || String(clientState.bcc_pending || "").trim() !== ""), { clearWhenHidden: false });
+  setComposeFormatToolsVisible(Boolean(clientState.format_tools_visible));
+  syncComposeDraftFields();
 }
 
 function restoreComposeDraft(form) {
-  if (!form) return;
-  const raw = localStorage.getItem(composeDraftKey());
-  if (!raw) return;
-  try {
-    const draft = JSON.parse(raw);
-    if (typeof draft.to === "string") hydrateComposeRecipientTokens("to", draft.to);
-    if (typeof draft.cc === "string") hydrateComposeRecipientTokens("cc", draft.cc);
-    if (typeof draft.bcc === "string") hydrateComposeRecipientTokens("bcc", draft.bcc);
-    if (typeof draft.to_pending === "string" && el.composeToInput) el.composeToInput.value = draft.to_pending;
-    if (typeof draft.cc_pending === "string" && el.composeCcInput) el.composeCcInput.value = draft.cc_pending;
-    if (typeof draft.bcc_pending === "string" && el.composeBccInput) el.composeBccInput.value = draft.bcc_pending;
-    if (typeof draft.subject === "string" && el.composeSubjectInput) el.composeSubjectInput.value = draft.subject;
-    if (typeof draft.body_html === "string" && draft.body_html.trim() !== "" && el.composeEditor) {
-      el.composeEditor.innerHTML = draft.body_html;
-      normalizeComposeEditorDraftMedia();
-    } else if (typeof draft.body_text === "string" && draft.body_text.trim() !== "" && el.composeEditor) {
-      const lines = draft.body_text.split(/\r?\n/);
-      el.composeEditor.innerHTML = lines.map((line) => `<p>${escapeHtml(line || "")}</p>`).join("");
-    }
-    if (typeof draft.from_manual === "string" && el.composeFromManualInput) {
-      el.composeFromManualInput.value = draft.from_manual;
-    }
-    state.compose.fromMode = typeof draft.from_mode === "string" ? draft.from_mode : state.compose.fromMode;
-    state.compose.selectedIdentityID = typeof draft.identity_id === "string" ? draft.identity_id : "";
-    state.compose.selectedAccountID = typeof draft.account_id === "string" ? draft.account_id : "";
-    setComposeCcVisible(Boolean(draft.cc_visible || state.compose.recipients.cc.length > 0 || String(draft.cc_pending || "").trim() !== ""), { clearWhenHidden: false });
-    setComposeBccVisible(Boolean(draft.bcc_visible || state.compose.recipients.bcc.length > 0 || String(draft.bcc_pending || "").trim() !== ""), { clearWhenHidden: false });
-    setComposeFormatToolsVisible(Boolean(draft.format_tools_visible));
-  } catch {
-    localStorage.removeItem(composeDraftKey());
-  }
+  if (!form) return false;
+  migrateLegacyComposeDraftToCrashBuffer();
+  const draft = readComposeCrashBuffer("");
+  if (!draft || !composeDraftHasMeaningfulContent(draft)) return false;
+  applyComposeDraftPayload(draft, { normalizeDraftMedia: true });
+  setComposeDraftNote("Recovered unsynced text from this browser. Attachments and inline images must be re-added.", "warn");
+  state.compose.draftDirty = true;
   syncComposeDraftFields();
   updateComposeSubmitState();
+  return true;
+}
+
+function upsertLocalDraft(draft) {
+  if (!draft || !draft.id) return;
+  const items = Array.isArray(state.mail.drafts) ? [...state.mail.drafts] : [];
+  const idx = items.findIndex((item) => String(item?.id || "") === String(draft.id || ""));
+  if (idx >= 0) items[idx] = draft;
+  else items.unshift(draft);
+  items.sort((a, b) => new Date(b?.updated_at || 0).getTime() - new Date(a?.updated_at || 0).getTime());
+  state.mail.drafts = items.filter((item) => String(item?.status || "").toLowerCase() !== "sent");
+  renderMailboxes();
+  if (isDraftsMailboxSelected()) {
+    renderMessages(state.mail.drafts.map((item) => buildDraftMessageSummary(item)));
+  }
+}
+
+function removeLocalDraft(draftID) {
+  const id = String(draftID || "").trim();
+  if (!id) return;
+  state.mail.drafts = (Array.isArray(state.mail.drafts) ? state.mail.drafts : []).filter((item) => String(item?.id || "") !== id);
+  if (state.mail.selectedDraftID === id) {
+    state.mail.selectedDraftID = "";
+  }
+  renderMailboxes();
+  if (isDraftsMailboxSelected()) {
+    renderMessages(state.mail.drafts.map((item) => buildDraftMessageSummary(item)));
+  }
+}
+
+async function createServerDraft(payload) {
+  return api("/api/v2/drafts", {
+    method: "POST",
+    json: {
+      account_id: payload.account_id,
+      identity_id: payload.identity_id,
+      compose_mode: payload.compose_mode,
+      context_message_id: payload.context_message_id,
+      from_mode: payload.from_mode,
+      from_manual: payload.from_manual,
+      client_state_json: payload.client_state_json,
+      to: payload.to,
+      cc: payload.cc,
+      bcc: payload.bcc,
+      subject: payload.subject,
+      body_text: payload.body_text,
+      body_html: payload.body_html,
+      status: "active",
+    },
+    logErrors: false,
+  });
+}
+
+async function updateServerDraft(draftID, payload) {
+  return api(`/api/v2/drafts/${encodeURIComponent(draftID)}`, {
+    method: "PATCH",
+    json: {
+      account_id: payload.account_id,
+      identity_id: payload.identity_id,
+      compose_mode: payload.compose_mode,
+      context_message_id: payload.context_message_id,
+      from_mode: payload.from_mode,
+      from_manual: payload.from_manual,
+      client_state_json: payload.client_state_json,
+      to: payload.to,
+      cc: payload.cc,
+      bcc: payload.bcc,
+      subject: payload.subject,
+      body_text: payload.body_text,
+      body_html: payload.body_html,
+      status: "active",
+    },
+    logErrors: false,
+  });
+}
+
+async function loadComposeDraftByID(draftID) {
+  return api(`/api/v2/drafts/${encodeURIComponent(draftID)}`, { logErrors: false });
+}
+
+function composeDraftStatusText() {
+  if (state.compose.submitInFlight) return ["Sending", "muted"];
+  if (state.compose.draftSaving) return ["Saving", "muted"];
+  if (state.compose.draftError) return ["Save failed", "error"];
+  if (state.compose.draftDirty) return ["Unsaved", "warn"];
+  if (state.compose.draftLastSavedAt) return ["Saved", "ok"];
+  return ["Draft", "muted"];
+}
+
+async function flushComposeDraft(options = {}) {
+  if (!el.composeForm || state.compose.submitInFlight) return null;
+  clearComposeDraftSaveTimer();
+  syncComposeDraftFields();
+  const payload = composeCurrentDraftPayload();
+  const payloadJSON = composeDraftPayloadJSON(payload);
+  writeComposeCrashBuffer(state.compose.draftID || "");
+
+  if (!state.compose.draftID) {
+    if (!composeDraftHasMeaningfulContent(payload) || payloadJSON === state.compose.draftBaselineJSON) {
+      return null;
+    }
+  } else if (payloadJSON === state.compose.draftBaselineJSON) {
+    state.compose.draftDirty = false;
+    updateComposeSubmitState();
+    return null;
+  }
+
+  state.compose.draftSaving = true;
+  state.compose.draftDirty = true;
+  state.compose.draftError = "";
+  updateComposeSubmitState();
+  try {
+    const saved = state.compose.draftID
+      ? await updateServerDraft(state.compose.draftID, payload)
+      : await createServerDraft(payload);
+    const oldDraftID = String(state.compose.draftID || "");
+    state.compose.draftID = String(saved?.id || oldDraftID);
+    state.compose.draftLoaded = true;
+    state.compose.draftDirty = false;
+    state.compose.draftSaving = false;
+    state.compose.draftError = "";
+    state.compose.draftLastSavedAt = String(saved?.updated_at || new Date().toISOString());
+    state.compose.draftBaselineJSON = composeDraftPayloadJSON(saved || payload);
+    writeComposeCrashBuffer(state.compose.draftID);
+    if (!oldDraftID && state.compose.draftID) {
+      clearComposeCrashBuffer("");
+    }
+    upsertLocalDraft(saved);
+    updateComposeSubmitState();
+    return saved;
+  } catch (err) {
+    state.compose.draftSaving = false;
+    state.compose.draftDirty = true;
+    state.compose.draftError = formatAPIError(err, "Draft save failed.");
+    updateComposeSubmitState();
+    return null;
+  }
+}
+
+function queueComposeDraftSave() {
+  if (!state.ui.composeOpen || !el.composeForm) return;
+  state.compose.draftDirty = true;
+  state.compose.draftError = "";
+  writeComposeCrashBuffer(state.compose.draftID || "");
+  updateComposeSubmitState();
+  clearComposeDraftSaveTimer();
+  state.compose.draftSaveTimer = window.setTimeout(() => {
+    state.compose.draftSaveTimer = 0;
+    void flushComposeDraft({ immediate: false });
+  }, 900);
+}
+
+function composeDraftContextLabel(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (normalized === "reply") return "Reply";
+  if (normalized === "forward") return "Forward";
+  return "Draft";
+}
+
+function stripHTMLToText(rawHTML) {
+  const node = document.createElement("div");
+  node.innerHTML = String(rawHTML || "");
+  return String(node.textContent || "").replace(/\u00a0/g, " ").trim();
+}
+
+function draftPrimaryLine(draft) {
+  const toValue = String(draft?.to || "").trim();
+  if (toValue) return toValue;
+  const sender = String(draft?.from_manual || "").trim();
+  if (sender) return sender;
+  return composeDraftContextLabel(draft?.compose_mode);
+}
+
+function buildDraftMessageSummary(draft) {
+  const bodyText = String(draft?.body_text || "").trim() || stripHTMLToText(draft?.body_html || "");
+  return {
+    id: String(draft?.id || ""),
+    mailbox: APP_DRAFTS_MAILBOX,
+    isDraft: true,
+    subject: String(draft?.subject || "").trim() || "(no subject)",
+    from: draftPrimaryLine(draft),
+    preview: bodyText,
+    date: draft?.updated_at || draft?.created_at || new Date().toISOString(),
+    seen: true,
+    flagged: false,
+    answered: false,
+    draft_id: String(draft?.id || ""),
+    compose_mode: String(draft?.compose_mode || "send"),
+    context_badge: composeDraftContextLabel(draft?.compose_mode),
+  };
+}
+
+function isDraftsMailboxSelected() {
+  return String(state.mailbox || "").trim() === APP_DRAFTS_MAILBOX;
+}
+
+function isAppDraftMailboxName(name) {
+  return String(name || "").trim() === APP_DRAFTS_MAILBOX;
+}
+
+async function loadDrafts(opts = {}) {
+  if (!state.user) return [];
+  const payload = await api("/api/v2/drafts?page=1&page_size=100", { logErrors: opts.logErrors });
+  state.mail.drafts = Array.isArray(payload?.items) ? payload.items : [];
+  renderMailboxes();
+  return state.mail.drafts;
 }
 
 function composeID(prefix) {
@@ -1289,7 +1750,7 @@ function addComposeFiles(files) {
     addComposeAttachmentChipToEditor(item);
   }
   syncComposeDraftFields();
-  saveComposeDraft(el.composeForm);
+  queueComposeDraftSave();
   updateComposeSubmitState();
 }
 
@@ -1388,6 +1849,48 @@ async function loadComposeIdentities() {
     state.compose.identityLookupError = String(err.message || "lookup failed");
   }
   renderComposeFromControls();
+}
+
+function resetComposeDraftSession(options = {}) {
+  const keepCrash = options.keepCrash === true;
+  clearComposeDraftSaveTimer();
+  state.compose.submitInFlight = false;
+  state.compose.draftID = "";
+  state.compose.draftLoaded = false;
+  state.compose.draftDirty = false;
+  state.compose.draftSaving = false;
+  state.compose.draftError = "";
+  state.compose.draftLastSavedAt = "";
+  state.compose.draftBaselineJSON = "";
+  state.compose.fromMode = "default";
+  state.compose.selectedIdentityID = "";
+  state.compose.selectedAccountID = "";
+  state.mail.selectedDraftID = "";
+  if (!keepCrash) {
+    clearComposeCrashBuffer("");
+  }
+}
+
+function mergeCrashBufferIntoCompose(draftID, serverUpdatedAt) {
+  const crash = readComposeCrashBuffer(draftID);
+  if (!crash) return false;
+  const crashAt = Number(crash.updated_at_ms || 0);
+  const serverAt = Date.parse(String(serverUpdatedAt || ""));
+  if (Number.isFinite(serverAt) && crashAt > 0 && crashAt <= serverAt) {
+    return false;
+  }
+  applyComposeDraftPayload(crash, { normalizeDraftMedia: true });
+  state.compose.draftDirty = true;
+  setComposeDraftNote("Recovered newer unsynced text from this browser. Attachments and inline images must be re-added.", "warn");
+  return true;
+}
+
+async function openComposeDraft(draftID, trigger = null) {
+  await openComposeOverlay(trigger, {
+    draftID,
+    useDraft: false,
+    title: composeDraftContextLabel("draft"),
+  });
 }
 
 function composeFocusableElements() {
@@ -1514,6 +2017,7 @@ async function openComposeOverlay(trigger = null, opts = {}) {
   if (!el.composeOverlay) return;
   const title = String(opts.title || "New Message").trim() || "New Message";
   const useDraft = opts.useDraft !== false;
+  const draftID = String(opts.draftID || "").trim();
   const prefill = opts.prefill && typeof opts.prefill === "object" ? opts.prefill : null;
   const sendContext = opts.sendContext && typeof opts.sendContext === "object" ? opts.sendContext : { mode: "send", messageID: "" };
   state.ui.composeOpen = true;
@@ -1525,7 +2029,7 @@ async function openComposeOverlay(trigger = null, opts = {}) {
     el.composeTitle.textContent = title;
   }
 
-  state.compose.submitInFlight = false;
+  resetComposeDraftSession({ keepCrash: true });
   state.compose.authEmail = String(state.user?.email || "").trim();
   setComposeSendContext("send", "");
   state.compose.recipients.to = [];
@@ -1543,24 +2047,59 @@ async function openComposeOverlay(trigger = null, opts = {}) {
   setComposeBccVisible(false);
   setComposeFormatToolsVisible(false);
   setComposeFromNote("");
+  setComposeDraftNote("");
   setComposeDraftState("Draft", "muted");
   if (el.composeEditor) el.composeEditor.innerHTML = "";
-  if (useDraft && !prefill) {
-    restoreComposeDraft(el.composeForm);
-  }
   await loadComposeIdentities();
-  if (prefill) {
+  if (draftID) {
+    const draft = await loadComposeDraftByID(draftID);
+    state.compose.draftID = String(draft?.id || draftID);
+    state.compose.draftLoaded = true;
+    state.compose.draftLastSavedAt = String(draft?.updated_at || "");
+    applyComposeDraftPayload(draft, { normalizeDraftMedia: true });
+    state.compose.draftBaselineJSON = composeDraftPayloadJSON(draft);
+    state.mail.selectedDraftID = state.compose.draftID;
+    const merged = mergeCrashBufferIntoCompose(state.compose.draftID, draft?.updated_at);
+    if (!merged) {
+      setComposeDraftNote("Attachments and inline images are not saved yet. Re-add them before sending.", "warn");
+    }
+    if (String(draft?.compose_mode || "").trim()) {
+      el.composeTitle.textContent = composeDraftContextLabel(draft.compose_mode);
+    }
+  } else if (prefill) {
     applyComposePrefill(prefill);
+    state.compose.draftBaselineJSON = composeDraftPayloadJSON(composeCurrentDraftPayload());
+  } else if (useDraft) {
+    const restored = restoreComposeDraft(el.composeForm);
+    state.compose.draftBaselineJSON = composeDraftPayloadJSON(restored ? {} : composeCurrentDraftPayload());
+  } else {
+    state.compose.draftBaselineJSON = composeDraftPayloadJSON(composeCurrentDraftPayload());
   }
-  setComposeSendContext(sendContext.mode, sendContext.messageID);
+  if (!draftID) {
+    setComposeSendContext(sendContext.mode, sendContext.messageID);
+  }
   syncComposeDraftFields();
   updateComposeSubmitState();
   focusComposeEditorAtEnd();
 }
 
-function closeComposeOverlay(restoreFocus = true) {
+function closeComposeOverlay(options = true) {
   if (!el.composeOverlay) return;
+  let restoreFocus = true;
+  let persistDraft = true;
+  if (typeof options === "object" && options !== null) {
+    restoreFocus = options.restoreFocus !== false;
+    persistDraft = options.persistDraft !== false;
+  } else {
+    restoreFocus = options !== false;
+  }
   state.ui.composeOpen = false;
+  if (persistDraft) {
+    writeComposeCrashBuffer(state.compose.draftID || "");
+    void flushComposeDraft({ immediate: true });
+  } else {
+    clearComposeDraftSaveTimer();
+  }
   el.composeOverlay.classList.add("hidden");
   el.composeOverlay.setAttribute("aria-hidden", "true");
   document.body.style.overflow = state.ui.modalOpen || state.ui.mfaModalOpen ? "hidden" : "";
@@ -1570,6 +2109,7 @@ function closeComposeOverlay(restoreFocus = true) {
     el.composeTitle.textContent = "New Message";
   }
   clearComposeAssets();
+  setComposeDraftNote("");
   if (restoreFocus && state.ui.composeLastTrigger && typeof state.ui.composeLastTrigger.focus === "function") {
     state.ui.composeLastTrigger.focus();
   }
@@ -3266,6 +3806,12 @@ function showView(name) {
     return;
   }
   el.appShell.classList.add("page-office");
+
+  if (name === "mail") {
+    startMailPolling();
+  } else {
+    stopMailPolling();
+  }
 }
 
 function isMobileLayout() {
@@ -4309,6 +4855,14 @@ function domainToDefaultEmail(domain) {
   return `webmaster@${d}`;
 }
 
+function setupThemeLabel(themeName) {
+  return themeName === "paper-light" ? "Paper" : "Machine";
+}
+
+function setupAutomaticUpdatesLabel(enabled) {
+  return enabled === false ? "Manual updates only" : "Automatic updates on";
+}
+
 function validDomain(domain) {
   return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/.test(domain);
 }
@@ -4331,6 +4885,7 @@ async function loadSetupStatus() {
   state.setup.required = !!data.required;
   state.setup.baseDomain = normalizeDomain(data.base_domain || "example.com");
   state.setup.defaultAdminEmail = String(data.default_admin_email || domainToDefaultEmail(state.setup.baseDomain)).toLowerCase();
+  state.setup.automaticUpdatesEnabled = data.automatic_updates_enabled !== false;
   state.setup.passkeyPrimaryEnabled = data.passkey_primary_sign_in_enabled !== false;
   state.setup.authMode = String(data.auth_mode || "sql").toLowerCase();
   state.setup.passwordMinLength = Number(data.password_min_length || 12);
@@ -4342,20 +4897,24 @@ async function loadSetupStatus() {
 async function completeSetup() {
   const domain = normalizeDomain(el.setupDomain.value);
   const email = String(el.setupAdminEmail.value || "").trim().toLowerCase();
+  const recoveryEmail = String(el.setupAdminRecoveryEmail?.value || "").trim().toLowerCase();
   const region = String(el.setupRegion.value || "us-east").trim();
   const password = el.setupPassword.value;
   const mailboxLogin = String(el.setupAdminMailboxLogin?.value || "").trim();
   const passkeyPrimaryEnabled = !!el.setupPasskeyPrimaryEnabled?.checked;
+  const automaticUpdatesEnabled = state.setup.automaticUpdatesEnabled !== false;
 
   const setupPayload = await api("/api/v1/setup/complete", {
     method: "POST",
     json: {
       base_domain: domain,
       admin_email: email,
+      admin_recovery_email: recoveryEmail,
       admin_mailbox_login: mailboxLogin,
       admin_password: password,
       region,
       passkey_primary_sign_in_enabled: passkeyPrimaryEnabled,
+      automatic_updates_enabled: automaticUpdatesEnabled,
     },
   });
 
@@ -4388,6 +4947,7 @@ const OOBEController = {
     const email = state.setup.defaultAdminEmail || domainToDefaultEmail(domain);
     el.setupDomain.value = domain;
     el.setupAdminEmail.value = email;
+    if (el.setupAdminRecoveryEmail) el.setupAdminRecoveryEmail.value = "";
     el.setupPassword.value = "";
     el.setupPasswordConfirm.value = "";
     if (el.setupAdminMailboxLogin) el.setupAdminMailboxLogin.value = "";
@@ -4409,10 +4969,43 @@ const OOBEController = {
       clearTimeout(state.setup.autoOpenTimer);
       state.setup.autoOpenTimer = 0;
     }
+    this.setThemeChoice(ThemeController.getTheme() || state.theme || "machine-dark", { applyTheme: false });
+    this.setAutomaticUpdatesChoice(state.setup.automaticUpdatesEnabled !== false);
     setSetupInlineStatus("");
     this.updatePasswordHint();
     this.setStep(0);
     this.updateSummary();
+  },
+
+  setThemeChoice(themeName, opts = {}) {
+    const next = themeName === "paper-light" ? "paper-light" : "machine-dark";
+    if (opts.applyTheme !== false) {
+      ThemeController.setTheme(next);
+    }
+    setSetupChoicePressed(el.setupThemeMachine, next === "machine-dark");
+    setSetupChoicePressed(el.setupThemePaper, next === "paper-light");
+    this.updateSummary();
+    this.refreshNavState();
+  },
+
+  setAutomaticUpdatesChoice(enabled) {
+    const next = enabled !== false;
+    state.setup.automaticUpdatesEnabled = next;
+    setSetupChoicePressed(el.setupUpdatesAuto, next);
+    setSetupChoicePressed(el.setupUpdatesManual, !next);
+    this.updateSummary();
+    this.refreshNavState();
+  },
+
+  updateProgress() {
+    if (!el.setupProgressLabel || !el.setupProgressTitle) return;
+    const stepIndex = Math.max(0, Math.min(state.setup.step, setupSteps.length - 1));
+    el.setupProgressTitle.textContent = setupStepTitles[stepIndex] || "Setup";
+    if (stepIndex === setupCompleteStep) {
+      el.setupProgressLabel.textContent = "Setup complete";
+      return;
+    }
+    el.setupProgressLabel.textContent = `Step ${stepIndex + 1} of ${setupSteps.length}`;
   },
 
   setStep(step) {
@@ -4436,44 +5029,50 @@ const OOBEController = {
         });
       }
     }
-    const isFirst = state.setup.step === 0;
-    const isReview = state.setup.step === 4;
-    const isComplete = state.setup.step === 5;
-    const showFooterBack = state.setup.step >= 1 && state.setup.step <= 4;
-    const showDiscard = state.setup.step >= 2 && state.setup.step <= 4;
-
-    el.setupBack.classList.toggle("hidden", !showFooterBack);
-    el.setupClose.classList.toggle("hidden", !showDiscard);
-    // Footer-only back navigation: keep top-left control hidden for DOM compatibility only.
-    el.setupBackIcon.classList.add("hidden");
-
-    el.setupBack.disabled = !showFooterBack || isComplete || state.setup.submitting;
-    el.setupBackIcon.disabled = true;
-    el.setupClose.disabled = !showDiscard || state.setup.submitting;
-    el.setupNext.disabled = isComplete || state.setup.submitting;
+    const isReview = state.setup.step === setupReviewStep;
+    const isComplete = state.setup.step === setupCompleteStep;
+    const showBack = state.setup.step > 0 && !isComplete;
+    const showDiscard = state.setup.step > 0 && !isComplete;
     const retryRemaining = setupRetrySecondsRemaining();
+
+    el.setupBackIcon.classList.toggle("hidden", !showBack);
+    el.setupClose.classList.toggle("hidden", !showDiscard);
+    el.setupBackIcon.disabled = !showBack || state.setup.submitting || retryRemaining > 0;
+    el.setupClose.disabled = !showDiscard || state.setup.submitting || retryRemaining > 0;
+    el.setupNext.classList.toggle("hidden", isComplete);
     if (retryRemaining > 0) {
       el.setupNext.textContent = `Retry in ${retryRemaining}s`;
     } else {
       el.setupNext.textContent = state.setup.submitting ? "Initializing..." : isReview ? "Initialize" : "Continue";
     }
     if (!isComplete) setSetupInlineStatus("");
+    this.updateProgress();
     this.refreshNavState();
   },
 
   updateSummary() {
     el.setupSummaryRegion.textContent = el.setupRegion.options[el.setupRegion.selectedIndex]?.text || "-";
+    if (el.setupSummaryTheme) {
+      el.setupSummaryTheme.textContent = setupThemeLabel(ThemeController.getTheme());
+    }
+    if (el.setupSummaryUpdates) {
+      el.setupSummaryUpdates.textContent = setupAutomaticUpdatesLabel(state.setup.automaticUpdatesEnabled !== false);
+    }
     el.setupSummaryDomain.textContent = normalizeDomain(el.setupDomain.value) || "-";
     el.setupSummaryEmail.textContent = String(el.setupAdminEmail.value || "-").trim().toLowerCase();
+    if (el.setupSummaryRecoveryEmail) {
+      el.setupSummaryRecoveryEmail.textContent = normalizeRecoveryEmailInput(el.setupAdminRecoveryEmail?.value) || "-";
+    }
     if (el.setupSummaryPasskey) {
       el.setupSummaryPasskey.textContent = el.setupPasskeyPrimaryEnabled?.checked ? "Enabled" : "Disabled";
     }
   },
 
   validateStep(stepId) {
-    if (stepId === 2) {
+    if (stepId === 4) {
       const domain = normalizeDomain(el.setupDomain.value);
       const email = String(el.setupAdminEmail.value || "").trim().toLowerCase();
+      const recoveryEmail = normalizeRecoveryEmailInput(el.setupAdminRecoveryEmail?.value);
       if (!validDomain(domain)) {
         throw new Error("Enter a valid domain (example: mail.example.com or example.com)");
       }
@@ -4483,9 +5082,15 @@ const OOBEController = {
       if (!email.endsWith(`@${domain}`)) {
         throw new Error(`Admin email must use @${domain}`);
       }
+      if (!validEmail(recoveryEmail)) {
+        throw new Error("Enter a valid recovery email");
+      }
+      if (recoveryEmail === email) {
+        throw new Error("Recovery email must be different from the admin email");
+      }
     }
 
-    if (stepId === 3) {
+    if (stepId === 5) {
       const p1 = el.setupPassword.value;
       const p2 = el.setupPasswordConfirm.value;
       if (p1.length === 0) {
@@ -4521,31 +5126,25 @@ const OOBEController = {
   },
 
   refreshNavState() {
-    const showFooterBack = state.setup.step >= 1 && state.setup.step <= 4;
-    const showDiscard = state.setup.step >= 2 && state.setup.step <= 4;
-    el.setupBack.classList.toggle("hidden", !showFooterBack);
+    const showBack = state.setup.step > 0 && state.setup.step < setupCompleteStep;
+    const showDiscard = state.setup.step > 0 && state.setup.step < setupCompleteStep;
+    el.setupBackIcon.classList.toggle("hidden", !showBack);
     el.setupClose.classList.toggle("hidden", !showDiscard);
-    el.setupBackIcon.classList.add("hidden");
+    el.setupNext.classList.toggle("hidden", state.setup.step === setupCompleteStep);
 
-    if (state.setup.step === 5) {
-      el.setupNext.disabled = true;
-      el.setupBack.disabled = true;
+    if (state.setup.step === setupCompleteStep) {
+      el.setupBackIcon.disabled = true;
       el.setupClose.disabled = true;
+      el.setupNext.disabled = true;
       return;
     }
-    if (setupRetrySecondsRemaining() > 0) {
-      el.setupNext.disabled = true;
-      el.setupBack.disabled = true;
+    if (setupRetrySecondsRemaining() > 0 || state.setup.submitting) {
+      el.setupBackIcon.disabled = true;
       el.setupClose.disabled = true;
+      el.setupNext.disabled = true;
       return;
     }
-    if (state.setup.submitting) {
-      el.setupNext.disabled = true;
-      el.setupBack.disabled = true;
-      el.setupClose.disabled = true;
-      return;
-    }
-    el.setupBack.disabled = !showFooterBack;
+    el.setupBackIcon.disabled = !showBack;
     el.setupClose.disabled = !showDiscard;
     el.setupNext.disabled = !this.isStepValid(state.setup.step);
   },
@@ -4554,19 +5153,19 @@ const OOBEController = {
     if (state.setup.submitting) return;
     if (setupRetrySecondsRemaining() > 0) return;
     this.validateStep(state.setup.step);
-    if (state.setup.step < 4) {
+    if (state.setup.step < setupReviewStep) {
       this.setStep(state.setup.step + 1);
       this.updateSummary();
       return;
     }
-    if (state.setup.step === 4) {
+    if (state.setup.step === setupReviewStep) {
       state.setup.submitting = true;
       this.refreshNavState();
       setSetupInlineStatus("Initializing setup...", "info");
       try {
         await completeSetup();
         state.setup.submitting = false;
-        this.setStep(5);
+        this.setStep(setupCompleteStep);
         this.scheduleAutoOpenMail();
         setSetupInlineStatus("");
       } catch (err) {
@@ -4582,14 +5181,13 @@ const OOBEController = {
         }
         throw err;
       }
-      return;
     }
   },
 
   updatePasswordHint() {
     if (!el.setupPasswordHint) return;
     if (state.setup.authMode === "pam") {
-      el.setupPasswordHint.textContent = "PAM mode: enter the current mailbox password. If login differs from email, provide Mailbox Login.";
+      el.setupPasswordHint.textContent = "PAM mode: use the mailbox password already managed on this server. Add Mailbox Login if sign-in uses a different local account name.";
       if (el.setupAdminMailboxLoginWrap) {
         el.setupAdminMailboxLoginWrap.classList.remove("hidden");
       }
@@ -4607,7 +5205,7 @@ const OOBEController = {
   },
 
   back() {
-    if (state.setup.step <= 0 || state.setup.step === 5) return;
+    if (state.setup.step <= 0 || state.setup.step === setupCompleteStep || state.setup.submitting) return;
     this.setStep(state.setup.step - 1);
     this.updateSummary();
   },
@@ -4662,13 +5260,13 @@ const OOBEController = {
   },
 
   openConfirm(type) {
-    if (type === "cancel" && (state.setup.step < 2 || state.setup.step >= 5)) {
+    if (type === "cancel" && (state.setup.step < 1 || state.setup.step >= setupCompleteStep)) {
       return;
     }
     state.setup.modalType = type;
     if (type === "cancel") {
       el.setupModalTitle.textContent = "Discard Setup Progress?";
-      el.setupModalBody.textContent = "If you close setup now, initialization stays incomplete and login remains blocked.";
+      el.setupModalBody.textContent = "This clears the values entered so far and returns to the welcome step.";
       el.setupModalConfirm.textContent = "Discard";
     } else {
       el.setupModalTitle.textContent = "Reset Entered Values?";
@@ -4683,21 +5281,25 @@ const OOBEController = {
   closeConfirm() {
     el.setupModalOverlay.classList.add("hidden");
     el.setupModalOverlay.setAttribute("aria-hidden", "true");
-    if (!el.setupBack.classList.contains("hidden") && !el.setupBack.disabled) {
-      el.setupBack.focus();
-    } else {
+    if (!el.setupBackIcon.classList.contains("hidden") && !el.setupBackIcon.disabled) {
+      el.setupBackIcon.focus();
+    } else if (!el.setupNext.classList.contains("hidden") && !el.setupNext.disabled) {
       el.setupNext.focus();
+    } else if (el.setupOpenMail && !el.setupOpenMail.classList.contains("hidden")) {
+      el.setupOpenMail.focus();
+    } else {
+      el.setupClose.focus();
     }
   },
 
   async confirm() {
     const type = state.setup.modalType || "cancel";
     this.closeConfirm();
+    this.init();
     if (type === "cancel") {
-      setStatus("SETUP CANCELLED. COMPLETE SETUP TO LOG IN.", "info");
+      setStatus("SETUP PROGRESS DISCARDED.", "info");
       return;
     }
-    this.init();
     setStatus("SETUP FORM RESET", "info");
   },
 };
@@ -4872,47 +5474,66 @@ async function promptRecoveryEmailIfNeeded() {
   }
 }
 
-async function loadMailboxes() {
-  if (!state.user) {
-    throw new Error("Sign in required");
-  }
-  const data = await api("/api/v1/mailboxes");
-  const items = Array.isArray(data) ? data : [];
-  const rank = {
-    inbox: 0,
-    drafts: 1,
-    "sent messages": 2,
-    sent: 2,
-    trash: 3,
-    "deleted messages": 3,
-    archive: 4,
-    junk: 5,
-    spam: 5,
-  };
-  const labelMap = {
-    inbox: "Inbox",
-    drafts: "Drafts",
-    "sent messages": "Sent",
-    sent: "Sent",
-    trash: "Trash",
-    "deleted messages": "Trash",
-    archive: "Archive",
-    junk: "Junk",
-    spam: "Junk",
-  };
+function normalizeMailboxRole(rawRole, mailboxName = "") {
+  const role = String(rawRole || "").trim().toLowerCase();
+  if (role) return role;
+  const key = String(mailboxName || "").trim().toLowerCase();
+  if (key === "inbox" || key.endsWith("/inbox")) return "inbox";
+  if (key === "drafts" || key.includes("draft")) return "drafts";
+  if (key === "sent" || key === "sent messages" || key.includes("sent")) return "sent";
+  if (key === "trash" || key === "deleted messages" || key.includes("trash") || key.includes("deleted")) return "trash";
+  if (key === "archive" || key.includes("archive") || key.includes("all mail")) return "archive";
+  if (key === "junk" || key === "spam" || key.includes("junk") || key.includes("spam")) return "junk";
+  return "";
+}
 
+function mailboxRoleRank(role) {
+  const ranks = { inbox: 0, drafts: 1, sent: 2, trash: 3, archive: 4, junk: 5 };
+  return Number(ranks[normalizeMailboxRole(role)] ?? 999);
+}
+
+function mailboxDisplayLabel(mailbox) {
+  const role = normalizeMailboxRole(mailbox?.role, mailbox?.name);
+  if (role === "inbox") return "Inbox";
+  if (role === "drafts") return "Drafts";
+  if (role === "sent") return "Sent";
+  if (role === "trash") return "Trash";
+  if (role === "archive") return "Archive";
+  if (role === "junk") return "Junk";
+  return String(mailbox?.name || "Mailbox");
+}
+
+function mailboxRecordByName(name) {
+  const target = String(name || "").trim();
+  if (!target) return null;
+  return state.mail.mailboxes.find((item) => String(item?.name || "") === target) || null;
+}
+
+function mailboxNameForRole(role) {
+  const target = normalizeMailboxRole(role);
+  if (!target) return "";
+  const match = state.mail.mailboxes.find((item) => normalizeMailboxRole(item?.role, item?.name) === target);
+  return String(match?.name || "");
+}
+
+function renderMailboxes() {
+  const items = Array.isArray(state.mail.mailboxes) ? state.mail.mailboxes : [];
   const system = [];
   const folders = [];
   for (const mb of items) {
-    const key = String(mb?.name || "").trim().toLowerCase();
-    if (Object.hasOwn(rank, key)) system.push(mb);
+    const role = normalizeMailboxRole(mb?.role, mb?.name);
+    if (role === "drafts") continue;
+    if (role) system.push(mb);
     else folders.push(mb);
   }
+  system.push({
+    name: APP_DRAFTS_MAILBOX,
+    role: "drafts",
+    count: Array.isArray(state.mail.drafts) ? state.mail.drafts.length : 0,
+  });
   system.sort((a, b) => {
-    const ka = String(a?.name || "").trim().toLowerCase();
-    const kb = String(b?.name || "").trim().toLowerCase();
-    const ra = Number(rank[ka] ?? 999);
-    const rb = Number(rank[kb] ?? 999);
+    const ra = mailboxRoleRank(a?.role || a?.name);
+    const rb = mailboxRoleRank(b?.role || b?.name);
     if (ra !== rb) return ra - rb;
     return String(a?.name || "").localeCompare(String(b?.name || ""));
   });
@@ -4928,25 +5549,28 @@ async function loadMailboxes() {
     el.mailboxes.appendChild(header);
 
     for (const mb of list) {
-      const key = String(mb?.name || "").trim().toLowerCase();
-      const label = String(labelMap[key] || mb.name || "Mailbox");
-      const unread = Math.max(0, Number(mb?.unread || 0));
+      const role = normalizeMailboxRole(mb?.role, mb?.name);
+      const unread = role === "drafts"
+        ? Math.max(0, Number(mb?.count || 0))
+        : Math.max(0, Number(mb?.unread || 0));
       const li = document.createElement("li");
       li.className = "mailbox-row";
       const btn = document.createElement("button");
-      btn.innerHTML = `<span class="mailbox-name">${escapeHtml(label)}</span><span class="mailbox-meta">${unread > 0 ? `(${unread})` : ""}</span>`;
-      btn.className = mb.name === state.mailbox ? "active" : "";
+      btn.innerHTML = `<span class="mailbox-name">${escapeHtml(mailboxDisplayLabel(mb))}</span><span class="mailbox-meta">${unread > 0 ? `(${unread})` : ""}</span>`;
+      btn.className = String(mb.name || "") === String(state.mailbox || "") ? "active" : "";
       btn.dataset.mailboxName = mb.name;
+      btn.dataset.mailboxRole = role;
       btn.id = safeDomID("mailbox-option-", mb.name, `${optionIndex}`);
       btn.type = "button";
       btn.setAttribute("role", "option");
-      btn.setAttribute("aria-selected", mb.name === state.mailbox ? "true" : "false");
+      btn.setAttribute("aria-selected", String(mb.name || "") === String(state.mailbox || "") ? "true" : "false");
       btn.tabIndex = -1;
       btn.onclick = async () => {
         state.mailbox = mb.name;
+        state.mail.selectedDraftID = "";
         clearReaderSelection();
         await loadMessages();
-        await loadMailboxes();
+        await loadMailboxes({ quiet: true });
         setActiveMailPane("messages");
       };
       optionIndex += 1;
@@ -4966,6 +5590,56 @@ async function loadMailboxes() {
   syncMailboxActiveDescendant();
 }
 
+async function loadMailboxes(opts = {}) {
+  if (!state.user) {
+    throw new Error("Sign in required");
+  }
+  const [mailboxes] = await Promise.all([
+    api("/api/v1/mailboxes", { logErrors: opts.logErrors }),
+    loadDrafts({ logErrors: false }).catch(() => state.mail.drafts),
+  ]);
+  state.mail.mailboxes = Array.isArray(mailboxes) ? mailboxes : [];
+  renderMailboxes();
+}
+
+function updateLocalMailboxUnread(mailboxName, delta) {
+  const target = String(mailboxName || state.mailbox || "").trim();
+  if (!target || !delta) return;
+  for (const mailbox of state.mail.mailboxes) {
+    if (String(mailbox?.name || "") !== target) continue;
+    const next = Math.max(0, Number(mailbox?.unread || 0) + Number(delta || 0));
+    mailbox.unread = next;
+    break;
+  }
+  renderMailboxes();
+}
+
+function applyLocalMessagePatch(messageID, patch) {
+  const id = String(messageID || "").trim();
+  if (!id || !patch || typeof patch !== "object") return;
+  const summary = state.messages.find((item) => String(item?.id || "") === id) || null;
+  const selectedSummary = state.selectedMessageSummary && String(state.selectedMessageSummary.id || "") === id ? state.selectedMessageSummary : null;
+  const selectedMessage = state.selectedMessage && String(state.selectedMessage.id || "") === id ? state.selectedMessage : null;
+  const threadItem = Array.isArray(state.thread?.items) ? state.thread.items.find((item) => String(item?.id || "") === id) : null;
+  const mailboxName = String(patch.mailbox || summary?.mailbox || selectedSummary?.mailbox || selectedMessage?.mailbox || state.mailbox || "").trim();
+  const prevSeen = summary?.seen ?? selectedSummary?.seen ?? selectedMessage?.seen;
+  const nextSeen = Object.prototype.hasOwnProperty.call(patch, "seen") ? !!patch.seen : prevSeen;
+  if (prevSeen !== undefined && nextSeen !== undefined && prevSeen !== nextSeen) {
+    updateLocalMailboxUnread(mailboxName, nextSeen ? -1 : 1);
+  }
+  [summary, selectedSummary, selectedMessage, threadItem].forEach((item) => {
+    if (!item) return;
+    Object.assign(item, patch);
+  });
+  renderMessages(state.messages);
+  if (selectedMessage) {
+    renderSelectedMessageChrome(selectedMessage);
+    renderReaderBody(selectedMessage);
+  } else {
+    applyMailActionAvailability();
+  }
+}
+
 function renderMessages(items) {
   el.messages.innerHTML = "";
   state.messages = Array.isArray(items) ? items : [];
@@ -4978,10 +5652,15 @@ function renderMessages(items) {
   }
   for (const m of state.messages) {
     const li = document.createElement("li");
-    const isActive = state.selectedMessage && state.selectedMessage.id === m.id;
+    const isActive = m.isDraft
+      ? String(state.mail.selectedDraftID || "") === String(m.id || "")
+      : !!(state.selectedMessage && state.selectedMessage.id === m.id);
     li.className = "message-row";
     if (isActive) li.classList.add("active");
     if (!m.seen) li.classList.add("is-unread");
+    if (m.flagged) li.classList.add("is-flagged");
+    if (m.answered) li.classList.add("is-answered");
+    if (m.isDraft) li.classList.add("is-draft");
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "message-row-btn";
@@ -4995,25 +5674,70 @@ function renderMessages(items) {
     const previewText = String(m.preview || "").trim();
     const previewMarkup = previewText ? escapeHtml(previewText) : "&nbsp;";
     const previewClass = previewText ? "message-preview" : "message-preview message-preview--empty";
+    const contextBadge = m.isDraft && String(m.context_badge || "").trim()
+      ? `<span class="message-context-badge">${escapeHtml(m.context_badge)}</span>`
+      : "";
     btn.innerHTML = `<span class="message-mark" aria-hidden="true"></span>
       <span class="message-from">${escapeHtml(sender)}</span>
-      <span class="message-subject">${escapeHtml(m.subject || "(no subject)")}</span>
+      <span class="message-subject">${escapeHtml(m.subject || "(no subject)")}${contextBadge}</span>
       <span class="${previewClass}">${previewMarkup}</span>
       <span class="message-date">${escapeHtml(formatListDate(m.date))}</span>`;
-    btn.onclick = () => openMessage(m.id, m);
+    btn.onclick = () => {
+      if (m.isDraft) {
+        clearReaderSelection();
+        state.mail.selectedDraftID = String(m.id || "");
+        renderMessages(state.messages);
+        void openComposeDraft(m.id, btn);
+        return;
+      }
+      state.mail.selectedDraftID = "";
+      void openMessage(m.id, m);
+    };
     li.appendChild(btn);
     el.messages.appendChild(li);
   }
   syncMessageActiveDescendant();
 }
 
-async function loadMessages() {
+async function loadMessages(opts = {}) {
   if (!state.user) {
     throw new Error("Sign in required");
   }
+  if (isDraftsMailboxSelected()) {
+    const query = String(opts.query || "").trim().toLowerCase();
+    if (!Array.isArray(state.mail.drafts) || state.mail.drafts.length === 0 || opts.refreshDrafts) {
+      await loadDrafts({ logErrors: false });
+    }
+    let drafts = Array.isArray(state.mail.drafts) ? [...state.mail.drafts] : [];
+    if (query) {
+      drafts = drafts.filter((item) => {
+        const haystack = [
+          item?.to,
+          item?.cc,
+          item?.bcc,
+          item?.subject,
+          item?.body_text,
+          item?.body_html,
+          composeDraftContextLabel(item?.compose_mode),
+        ].join("\n").toLowerCase();
+        return haystack.includes(query);
+      });
+    }
+    renderMessages(drafts.map((item) => buildDraftMessageSummary(item)));
+    if (!opts.quiet) {
+      setStatus(`Drafts loaded (${drafts.length}).`, "ok");
+    }
+    return;
+  }
   const data = await api(`/api/v1/messages?mailbox=${encodeURIComponent(state.mailbox)}&page=1&page_size=40`);
+  const selectedID = String(state.selectedMessage?.id || "");
   renderMessages(data.items || []);
-  setStatus(`Mailbox ${state.mailbox} loaded.`, "ok");
+  if (selectedID) {
+    state.selectedMessageSummary = state.messages.find((item) => String(item?.id || "") === selectedID) || state.selectedMessageSummary;
+  }
+  if (!opts.quiet) {
+    setStatus(`Mailbox ${state.mailbox} loaded.`, "ok");
+  }
 }
 
 function renderMessageMeta(rows) {
@@ -5034,6 +5758,37 @@ function renderMessageMeta(rows) {
     row.appendChild(valueNode);
     el.meta.appendChild(row);
   }
+}
+
+function readerStatusText(message) {
+  const states = [];
+  if (!message?.seen) states.push("Unread");
+  if (message?.flagged) states.push("Important");
+  if (message?.answered) states.push("Replied");
+  return states.join(" · ");
+}
+
+function renderSelectedMessageChrome(message = state.selectedMessage) {
+  if (!message) {
+    if (el.messageSubjectAnchor) el.messageSubjectAnchor.textContent = "(no subject)";
+    renderMessageMeta([]);
+    applyMailActionAvailability();
+    return;
+  }
+  if (el.messageSubjectAnchor) {
+    el.messageSubjectAnchor.textContent = message.subject || "(no subject)";
+  }
+  const metaRows = [
+    ["From", message.from || "-"],
+    ["To", (message.to || []).join(", ") || "-"],
+    ["Date", formatDate(message.date) || "-"],
+  ];
+  const status = readerStatusText(message);
+  if (status) {
+    metaRows.push(["Status", status]);
+  }
+  renderMessageMeta(metaRows);
+  applyMailActionAvailability();
 }
 
 function messageHasHTML(message) {
@@ -5112,15 +5867,22 @@ function renderReaderBody(message = state.selectedMessage) {
 
 function applyMailActionAvailability() {
   const hasSelection = !!state.selectedMessage;
-  [el.btnReply, el.btnForward, el.btnFlag, el.btnSeen, el.btnTrash].forEach((node) => {
+  [el.btnReply, el.btnForward, el.btnFlag, el.btnTrash].forEach((node) => {
     if (!node) return;
     node.disabled = !hasSelection;
   });
+  if (el.btnSeen) {
+    el.btnSeen.disabled = !hasSelection || !!state.selectedMessage?.seen;
+  }
+  if (el.btnFlag) {
+    el.btnFlag.textContent = state.selectedMessage?.flagged ? "Unflag" : "Flag";
+  }
 }
 
 function clearReaderSelection() {
   state.selectedMessage = null;
   state.selectedMessageSummary = null;
+  state.mail.selectedDraftID = "";
   state.thread = { id: "", items: [], index: -1, truncated: false };
   if (el.messageSubjectAnchor) el.messageSubjectAnchor.textContent = "(no subject)";
   renderMessageMeta([]);
@@ -5197,6 +5959,63 @@ async function openThreadNeighbor(delta) {
   const target = items[next];
   if (!target?.id) return;
   await openMessage(target.id, target);
+}
+
+async function refreshSelectedThreadContext(opts = {}) {
+  const message = state.selectedMessage;
+  const summary = state.selectedMessageSummary || message || null;
+  if (!message || !summary) {
+    renderThreadContext();
+    return;
+  }
+  const mailboxHint = String(summary?.mailbox || message?.mailbox || state.mailbox || "INBOX").trim() || "INBOX";
+  await loadThreadContext(summary, message.id, mailboxHint);
+  if (!opts.quiet) {
+    renderThreadContext();
+  }
+}
+
+async function refreshMailView(opts = {}) {
+  if (!state.user) return;
+  const preservePane = opts.preservePane !== false;
+  const activePane = state.ui.activeMailPane;
+  await Promise.all([
+    loadMailboxes({ quiet: true, logErrors: false }),
+    loadMessages({ quiet: true }),
+  ]);
+  await refreshSelectedThreadContext({ quiet: true });
+  if (preservePane) {
+    setActiveMailPane(activePane || (state.selectedMessage ? "reader" : "messages"), { focus: false });
+  }
+}
+
+function stopMailPolling() {
+  if (!state.mail.pollTimer) return;
+  clearInterval(state.mail.pollTimer);
+  state.mail.pollTimer = 0;
+}
+
+async function pollMailView() {
+  if (!state.user) return;
+  if (state.mail.refreshInFlight) return;
+  if (document.visibilityState !== "visible") return;
+  if (el.viewMail?.classList.contains("hidden")) return;
+  state.mail.refreshInFlight = true;
+  try {
+    await refreshMailView({ preservePane: true });
+  } catch {
+    // Polling failures should not disrupt current mail state.
+  } finally {
+    state.mail.refreshInFlight = false;
+  }
+}
+
+function startMailPolling() {
+  stopMailPolling();
+  if (!state.user) return;
+  state.mail.pollTimer = window.setInterval(() => {
+    void pollMailView();
+  }, 20000);
 }
 
 function extractPrimaryEmailAddress(raw) {
@@ -5348,20 +6167,12 @@ async function openMessage(id, summary = null) {
   if (!state.user) {
     throw new Error("Sign in required");
   }
+  state.mail.selectedDraftID = "";
   const knownSummary = summary || state.messages.find((item) => String(item?.id || "") === String(id || "")) || null;
   state.selectedMessageSummary = knownSummary;
   const m = await api(`/api/v1/messages/${encodeURIComponent(id)}`);
   state.selectedMessage = m;
-  applyMailActionAvailability();
-  if (el.messageSubjectAnchor) {
-    el.messageSubjectAnchor.textContent = m.subject || "(no subject)";
-  }
-  const metaRows = [
-    ["From", m.from || "-"],
-    ["To", (m.to || []).join(", ") || "-"],
-    ["Date", formatDate(m.date) || "-"],
-  ];
-  renderMessageMeta(metaRows);
+  renderSelectedMessageChrome(m);
   state.ui.readerViewMode = messageHasHTML(m) ? "html" : "plain";
   renderReaderBody(m);
 
@@ -5375,6 +6186,23 @@ async function openMessage(id, summary = null) {
   }
   const threadMailbox = String(knownSummary?.mailbox || m.mailbox || state.mailbox || "INBOX").trim() || "INBOX";
   await loadThreadContext(knownSummary, m.id, threadMailbox);
+  if (knownSummary && !knownSummary.seen) {
+    applyLocalMessagePatch(m.id, { seen: true });
+    void api(`/api/v1/messages/${encodeURIComponent(m.id)}/flags`, {
+      method: "POST",
+      json: { add: ["\\Seen"] },
+      logErrors: false,
+    }).then(async () => {
+      await Promise.all([
+        loadMailboxes({ quiet: true, logErrors: false }),
+        loadMessages({ quiet: true }),
+      ]);
+      await refreshSelectedThreadContext({ quiet: true });
+    }).catch(() => {
+      applyLocalMessagePatch(m.id, { seen: false });
+      setStatus("Failed to mark message as read.", "error");
+    });
+  }
   renderMessages(state.messages);
   syncMessageActiveDescendant();
   setActiveMailPane("reader");
@@ -5385,6 +6213,13 @@ async function searchMessages() {
     throw new Error("Sign in required");
   }
   const q = el.searchInput.value.trim();
+  if (isDraftsMailboxSelected()) {
+    clearReaderSelection();
+    await loadMessages({ quiet: true, query: q });
+    setStatus(`Draft search complete (${state.messages.length} results).`, "ok");
+    setActiveMailPane("messages");
+    return;
+  }
   const data = await api(`/api/v1/search?mailbox=${encodeURIComponent(state.mailbox)}&q=${encodeURIComponent(q)}&page=1&page_size=40`);
   clearReaderSelection();
   renderMessages(data.items || []);
@@ -5399,8 +6234,23 @@ async function sendCompose(form) {
   commitComposeAllRecipientInputs();
   cleanupComposeInlineReferences();
   syncComposeDraftFields();
-  saveComposeDraft(form);
+  await flushComposeDraft({ immediate: true });
   const bodySnapshot = composeEditorSnapshot("send");
+  const draftID = String(state.compose.draftID || "").trim();
+  const hasLiveMedia = composeHasLiveMedia();
+
+  if (!hasLiveMedia && draftID) {
+    const result = await api(`/api/v2/drafts/${encodeURIComponent(draftID)}/send`, {
+      method: "POST",
+      json: {},
+      logErrors: false,
+    });
+    clearComposeCrashBuffer(draftID);
+    removeLocalDraft(draftID);
+    clearComposeDraft();
+    setComposeSendContext("send", "");
+    return result;
+  }
 
   const mp = new FormData();
   mp.append("to", serializeComposeRecipients("to"));
@@ -5430,16 +6280,57 @@ async function sendCompose(form) {
     mp.append("inline_image_cids", item.cid);
   }
 
-  await api(composeEndpointForContext(), { method: "POST", body: mp });
+  const result = await api(composeEndpointForContext(), { method: "POST", body: mp });
+  if (draftID) {
+    try {
+      await api(`/api/v2/drafts/${encodeURIComponent(draftID)}`, {
+        method: "PATCH",
+        json: { status: "sent" },
+        logErrors: false,
+      });
+    } catch {
+      // Best effort only; message send already succeeded.
+    }
+    clearComposeCrashBuffer(draftID);
+    removeLocalDraft(draftID);
+    clearComposeDraft();
+  } else {
+    clearComposeCrashBuffer("");
+  }
   setComposeSendContext("send", "");
+  return result;
+}
+
+async function discardComposeDraft() {
+  const draftID = String(state.compose.draftID || "").trim();
+  const hadContent = !!draftID || composeHasLiveMedia() || composeDraftHasMeaningfulContent(composeCurrentDraftPayload());
+  clearComposeDraftSaveTimer();
+  if (draftID) {
+    await api(`/api/v2/drafts/${encodeURIComponent(draftID)}`, {
+      method: "DELETE",
+      logErrors: false,
+    });
+    clearComposeCrashBuffer(draftID);
+    removeLocalDraft(draftID);
+  } else {
+    clearComposeCrashBuffer("");
+  }
+  resetComposeDraftSession();
+  setComposeSendContext("send", "");
+  setComposeDraftNote("");
+  closeComposeOverlay({ restoreFocus: true, persistDraft: false });
+  if (hadContent) {
+    setStatus("Draft discarded.", "ok");
+  }
 }
 
 function setUpdateNote(text, type = "info") {
   if (!el.updateNote) return;
   el.updateNote.textContent = text || "";
-  if (type === "error") el.updateNote.style.color = "var(--sig-err)";
-  else if (type === "ok") el.updateNote.style.color = "var(--sig-ok)";
-  else el.updateNote.style.color = "var(--fg-muted)";
+  el.updateNote.classList.remove("update-note--ok", "update-note--error", "update-note--info");
+  if (type === "error") el.updateNote.classList.add("update-note--error");
+  else if (type === "ok") el.updateNote.classList.add("update-note--ok");
+  else el.updateNote.classList.add("update-note--info");
 }
 
 function updateConfigDiagnosticMessage(status) {
@@ -5475,15 +6366,26 @@ function updateConfigDiagnosticMessage(status) {
 }
 
 function applyUpdateControls(status) {
-  if (!el.btnUpdateCheck || !el.btnUpdateApply) return;
+  if (!el.btnUpdateCheck || !el.btnUpdateApply || !el.btnUpdateAuto) return;
   const st = status || state.update.lastStatus || {};
   const applyState = String(st.apply?.state || "idle");
-  const busy = applyState === "queued" || applyState === "in_progress";
+  const autoState = String(st.auto_update?.state || "idle");
+  const busy = applyState === "queued" || applyState === "in_progress" || autoState === "preparing" || autoState === "applying";
   const checkSupported = !st.legacy_backend;
   const assetMissing = String(st.last_check_error || "").toLowerCase().includes("release asset");
-  el.btnUpdateCheck.disabled = state.update.checking || !checkSupported;
+  const scheduled = autoState === "scheduled";
+  const prepared = autoState === "downloaded";
+  el.btnUpdateCheck.disabled = state.update.checking || state.update.autoSaving || state.update.cancelingScheduled || !checkSupported || busy;
   const canApply = !!st.enabled && !!st.configured && !!st.update_available && !busy && !state.update.applying && !assetMissing;
   el.btnUpdateApply.disabled = !canApply;
+  el.btnUpdateApply.textContent = scheduled || prepared ? "Install Now" : "Install Update";
+  el.btnUpdateApply.classList.toggle("hidden", !busy && !scheduled && !prepared && !st.update_available);
+  el.btnUpdateAuto.disabled = state.update.autoSaving || state.update.checking || busy || !st.enabled || st.legacy_backend;
+  el.btnUpdateAuto.textContent = st.auto_update?.enabled === false ? "Off" : "On";
+  if (el.btnUpdateCancelScheduled) {
+    el.btnUpdateCancelScheduled.disabled = state.update.cancelingScheduled || !scheduled;
+    el.btnUpdateCancelScheduled.classList.toggle("hidden", !scheduled);
+  }
 }
 
 function renderUpdateStatus(status) {
@@ -5492,52 +6394,150 @@ function renderUpdateStatus(status) {
     if (el.updateCurrentVersion) el.updateCurrentVersion.textContent = "-";
     if (el.updateCurrentCommit) el.updateCurrentCommit.textContent = "-";
     if (el.updateLatestVersion) el.updateLatestVersion.textContent = "-";
+    if (el.updateLatestPublished) el.updateLatestPublished.textContent = "-";
     if (el.updateAvailable) el.updateAvailable.textContent = "-";
     if (el.updateLastChecked) el.updateLastChecked.textContent = "-";
-    if (el.updateApplyState) el.updateApplyState.textContent = "idle";
+    if (el.updateApplyState) el.updateApplyState.textContent = "Idle";
+    if (el.updateScheduledFor) el.updateScheduledFor.textContent = "-";
+    if (el.updateAutoState) el.updateAutoState.textContent = "Automatic updates on";
+    if (el.updateHeroHeadline) el.updateHeroHeadline.textContent = "Software update status unavailable";
+    if (el.updateHeroSubline) el.updateHeroSubline.textContent = "Despatch could not load updater status from the backend.";
+    if (el.updateHeroIcon) el.updateHeroIcon.textContent = "!";
+    if (el.updateHeroCard) el.updateHeroCard.dataset.state = "attention";
+    if (el.adminSystemBadge) el.adminSystemBadge.classList.add("hidden");
     setUpdateNote("Update status unavailable.", "error");
     applyUpdateControls();
     return;
   }
   if (el.updateCurrentVersion) el.updateCurrentVersion.textContent = status.current?.version || "-";
-  if (el.updateCurrentCommit) el.updateCurrentCommit.textContent = status.current?.commit || "-";
+  if (el.updateCurrentCommit) el.updateCurrentCommit.textContent = status.current?.commit ? `commit ${status.current.commit}` : "-";
   if (el.updateLatestVersion) el.updateLatestVersion.textContent = status.latest?.tag_name || "-";
-  if (el.updateAvailable) el.updateAvailable.textContent = status.update_available ? "YES" : "NO";
+  if (el.updateLatestPublished) el.updateLatestPublished.textContent = formatDate(status.latest?.published_at) || "-";
+  if (el.updateAvailable) el.updateAvailable.textContent = status.update_available ? "Available" : "Up to date";
   if (el.updateLastChecked) el.updateLastChecked.textContent = formatDate(status.last_checked_at) || "-";
-  if (el.updateApplyState) el.updateApplyState.textContent = String(status.apply?.state || "idle");
+  if (el.updateApplyState) el.updateApplyState.textContent = String(status.apply?.state || "idle").replaceAll("_", " ");
+  if (el.updateScheduledFor) {
+    const autoState = String(status.auto_update?.state || "idle");
+    const scheduledFor = formatDate(status.auto_update?.scheduled_for);
+    el.updateScheduledFor.textContent = autoState === "scheduled" ? (scheduledFor || "Tonight at 02:00") : "-";
+  }
+  if (el.updateAutoState) {
+    const autoEnabled = status.auto_update?.enabled !== false;
+    const autoState = String(status.auto_update?.state || "idle");
+    let autoLabel = autoEnabled ? "Automatic updates on" : "Automatic updates off";
+    if (autoEnabled && autoState === "scheduled" && status.auto_update?.target_version) {
+      autoLabel = `Scheduled for ${status.auto_update.target_version}`;
+    } else if (autoEnabled && autoState === "preparing" && status.auto_update?.target_version) {
+      autoLabel = `Preparing ${status.auto_update.target_version}`;
+    } else if (autoEnabled && autoState === "downloaded" && status.auto_update?.target_version) {
+      autoLabel = `${status.auto_update.target_version} downloaded`;
+    } else if (autoState === "failed") {
+      autoLabel = "Automatic update needs attention";
+    }
+    el.updateAutoState.textContent = autoLabel;
+  }
+  if (el.updateSourceLink) {
+    el.updateSourceLink.href = status.latest?.html_url || "https://github.com/2high4schooltoday/despatch/releases";
+  }
 
   const applyState = String(status.apply?.state || "idle");
   const applyError = String(status.apply?.error || "").trim();
+  const autoState = String(status.auto_update?.state || "idle");
+  const autoError = String(status.auto_update?.error || "").trim();
+  let heroState = "ready";
+  let heroIcon = "OK";
+  let heroHeadline = "Your server is up to date";
+  let heroSubline = status.current?.version ? `Despatch ${status.current.version} is currently installed.` : "This server is already on the latest available release.";
 
   if (status.legacy_backend) {
+    heroState = "attention";
+    heroIcon = "!";
+    heroHeadline = "Backend update API is not available";
+    heroSubline = "This build does not expose the updater endpoints yet. Upgrade the backend manually once, then reopen Admin.";
     setUpdateNote("This server build does not expose updater API endpoints yet (HTTP 404). Upgrade backend binary manually to a newer release, then reopen Admin.", "error");
   } else if (!status.enabled) {
+    heroState = "attention";
+    heroIcon = "!";
+    heroHeadline = "Software update is disabled";
+    heroSubline = "UPDATE_ENABLED is off in configuration, so Despatch will not check, prepare, or install updates.";
     setUpdateNote("Software update feature is disabled in configuration (UPDATE_ENABLED=false).", "info");
   } else if (!status.configured) {
+    heroState = "attention";
+    heroIcon = "!";
+    heroHeadline = "One-click updates need attention";
+    heroSubline = "The updater runtime is not healthy enough to stage or install releases from Admin.";
     setUpdateNote(updateConfigDiagnosticMessage(status), "error");
+  } else if (autoState === "scheduled" && status.auto_update?.target_version) {
+    heroState = "scheduled";
+    heroIcon = "OK";
+    heroHeadline = "Update scheduled";
+    heroSubline = `${status.auto_update.target_version} is downloaded and will install at ${formatDate(status.auto_update?.scheduled_for) || "02:00 server time"}.`;
+    setUpdateNote("The next verified release is ready and scheduled for the nightly maintenance window.", "ok");
+  } else if (autoState === "preparing" && status.auto_update?.target_version) {
+    heroState = "busy";
+    heroIcon = "…";
+    heroHeadline = "Preparing update";
+    heroSubline = `${status.auto_update.target_version} is being downloaded, verified, and staged for automatic install.`;
+    setUpdateNote("Despatch is downloading and verifying the latest release.", "info");
+  } else if (applyState === "queued" || applyState === "in_progress" || autoState === "applying") {
+    heroState = "busy";
+    heroIcon = "…";
+    heroHeadline = "Installing update";
+    heroSubline = status.apply?.target_version
+      ? `${status.apply.target_version} is being applied on this server now.`
+      : "The updater is currently installing the staged release.";
+    setUpdateNote("The updater is actively applying the release.", "info");
   } else if ((applyState === "failed" || applyState === "rolled_back") && applyError) {
+    heroState = "failed";
+    heroIcon = "!";
+    heroHeadline = "Last update needs attention";
+    heroSubline = applyError;
     if (applyError.toLowerCase().includes("mailsec")) {
       setUpdateNote(`Last update failed due to mailsec dependency checks: ${applyError}`, "error");
     } else {
       setUpdateNote(`Last update failed: ${applyError}`, "error");
     }
+  } else if (autoState === "failed" && autoError) {
+    heroState = "failed";
+    heroIcon = "!";
+    heroHeadline = "Automatic update needs attention";
+    heroSubline = autoError;
+    setUpdateNote(`Automatic update preparation failed: ${autoError}`, "error");
   } else if (status.last_check_error) {
+    heroState = "attention";
+    heroIcon = "!";
+    heroHeadline = "Latest release check failed";
+    heroSubline = status.last_check_error;
     if (String(status.last_check_error).toLowerCase().includes("release asset")) {
       setUpdateNote(`Release packaging issue detected for this CPU architecture: ${status.last_check_error}`, "error");
     } else {
       setUpdateNote(`Latest check failed: ${status.last_check_error}`, "error");
     }
   } else if (status.update_available && status.latest?.tag_name) {
+    heroState = "ready";
+    heroIcon = "↑";
+    heroHeadline = "Update available";
+    heroSubline = `${status.latest.tag_name} is available to install now${status.auto_update?.enabled === false ? "." : " or let Despatch stage it for tonight."}`;
     setUpdateNote(`New release available: ${status.latest.tag_name}`, "ok");
   } else {
     setUpdateNote("No update currently available.", "info");
+  }
+  if (el.updateHeroCard) el.updateHeroCard.dataset.state = heroState;
+  if (el.updateHeroIcon) el.updateHeroIcon.textContent = heroIcon;
+  if (el.updateHeroHeadline) el.updateHeroHeadline.textContent = heroHeadline;
+  if (el.updateHeroSubline) el.updateHeroSubline.textContent = heroSubline;
+  if (el.adminSystemBadge) {
+    const needsBadge = !status.configured || autoState === "scheduled" || autoState === "failed" || applyState === "failed" || applyState === "rolled_back";
+    el.adminSystemBadge.classList.toggle("hidden", !needsBadge);
+    if (needsBadge) el.adminSystemBadge.textContent = autoState === "scheduled" ? "1" : "!";
   }
   applyUpdateControls(status);
 }
 
 function isUpdateStateBusy(status) {
   const stateName = String(status?.apply?.state || "");
-  return stateName === "queued" || stateName === "in_progress";
+  const autoState = String(status?.auto_update?.state || "");
+  return stateName === "queued" || stateName === "in_progress" || autoState === "preparing" || autoState === "applying";
 }
 
 function handleUpdaterStatusUnavailable(err) {
@@ -6693,10 +7693,9 @@ function escapeHtml(s) {
 }
 
 function bindSetupUI() {
-  el.setupBack.onclick = () => OOBEController.back();
   el.setupBackIcon.onclick = () => OOBEController.back();
   el.setupClose.onclick = async () => {
-    if (state.setup.step === 5 && !state.setup.required) {
+    if (state.setup.step === setupCompleteStep && !state.setup.required) {
       await OOBEController.openMail();
       return;
     }
@@ -6705,7 +7704,7 @@ function bindSetupUI() {
 
   el.setupForm.addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (state.setup.step >= 5) return;
+    if (state.setup.step >= setupCompleteStep) return;
     try {
       await OOBEController.next();
       setSetupInlineStatus("");
@@ -6733,6 +7732,12 @@ function bindSetupUI() {
         }
       } else if (err.code === "pam_verifier_unavailable") {
         err.message = "Cannot validate PAM credentials right now because IMAP connectivity failed. Check IMAP host/port/TLS and try again.";
+      } else if (err.code === "recovery_email_required") {
+        err.message = "A recovery email is required before setup can finish.";
+      } else if (err.code === "recovery_email_matches_login") {
+        err.message = "Recovery email must be different from the admin email.";
+      } else if (err.code === "invalid_recovery_email") {
+        err.message = "Enter a valid recovery email address.";
       } else if (isSessionErrorCode(err.code)) {
         err.message = "Setup was accepted, but browser session cookie was not established. Check HTTP/HTTPS cookie policy and then sign in from Login.";
       }
@@ -6791,11 +7796,29 @@ function bindSetupUI() {
     OOBEController.updateSummary();
     OOBEController.refreshNavState();
   });
+  if (el.setupAdminRecoveryEmail) {
+    el.setupAdminRecoveryEmail.addEventListener("input", () => {
+      OOBEController.updateSummary();
+      OOBEController.refreshNavState();
+    });
+  }
 
   el.setupRegion.addEventListener("change", () => {
     OOBEController.updateSummary();
     OOBEController.refreshNavState();
   });
+  if (el.setupThemeMachine) {
+    el.setupThemeMachine.addEventListener("click", () => OOBEController.setThemeChoice("machine-dark"));
+  }
+  if (el.setupThemePaper) {
+    el.setupThemePaper.addEventListener("click", () => OOBEController.setThemeChoice("paper-light"));
+  }
+  if (el.setupUpdatesAuto) {
+    el.setupUpdatesAuto.addEventListener("click", () => OOBEController.setAutomaticUpdatesChoice(true));
+  }
+  if (el.setupUpdatesManual) {
+    el.setupUpdatesManual.addEventListener("click", () => OOBEController.setAutomaticUpdatesChoice(false));
+  }
   if (el.setupPasskeyPrimaryEnabled) {
     el.setupPasskeyPrimaryEnabled.addEventListener("change", () => {
       OOBEController.updateSummary();
@@ -6826,7 +7849,7 @@ function bindSetupUI() {
       return;
     }
 
-    if (event.key === "Escape" && state.setup.step >= 2 && state.setup.step < 5) {
+    if (event.key === "Escape" && state.setup.step >= 1 && state.setup.step < setupCompleteStep) {
       event.preventDefault();
       OOBEController.openConfirm("cancel");
     }
@@ -7380,7 +8403,6 @@ function bindUI() {
       commitComposeAllRecipientInputs();
       cleanupComposeInlineReferences();
       syncComposeDraftFields();
-      saveComposeDraft(el.composeForm);
       if (!composeCanSubmit()) {
         if (composeHasInvalidRecipients()) {
           setStatus("Fix invalid recipient addresses before sending.", "error");
@@ -7393,18 +8415,17 @@ function bindUI() {
       updateComposeSubmitState();
       try {
         const sendMode = String(state.compose.sendContext?.mode || "send").toLowerCase();
-        await sendCompose(e.target);
-        if (sendMode === "reply") {
-          setStatus("Reply sent.", "ok");
-        } else if (sendMode === "forward") {
-          setStatus("Forward sent.", "ok");
+        const result = await sendCompose(e.target);
+        let sentMessage = "Message sent.";
+        if (sendMode === "reply") sentMessage = "Reply sent.";
+        else if (sendMode === "forward") sentMessage = "Forward sent.";
+        if (String(result?.warning || "").trim()) {
+          setStatus(`${sentMessage} ${String(result.warning).trim()}`, "info");
         } else {
-          setStatus("Message sent.", "ok");
+          setStatus(sentMessage, "ok");
         }
+        const sentDraftID = String(state.compose.draftID || "").trim();
         e.target.reset();
-        if (sendMode === "send") {
-          clearComposeDraft();
-        }
         state.compose.recipients.to = [];
         state.compose.recipients.cc = [];
         state.compose.recipients.bcc = [];
@@ -7417,10 +8438,18 @@ function bindUI() {
         setComposeBccVisible(false);
         setComposeFormatToolsVisible(false);
         setComposeFromNote("");
+        setComposeDraftNote("");
         setComposeDraftState("Draft", "muted");
         clearComposeAssets();
-        closeComposeOverlay(true);
-        await loadMessages();
+        if (sentDraftID) {
+          clearComposeCrashBuffer(sentDraftID);
+          removeLocalDraft(sentDraftID);
+        } else {
+          clearComposeCrashBuffer("");
+        }
+        resetComposeDraftSession();
+        closeComposeOverlay({ restoreFocus: true, persistDraft: false });
+        await refreshMailView({ preservePane: true });
       } catch (err) {
         if (err.code === "smtp_sender_rejected") {
           const requestRef = err.requestID ? ` (request ${err.requestID})` : "";
@@ -7488,15 +8517,64 @@ function bindUI() {
     };
   }
 
+  if (el.btnUpdateAuto) {
+    el.btnUpdateAuto.onclick = async () => {
+      if (!state.user || state.user.role !== "admin") return;
+      const enabled = state.update.lastStatus?.auto_update?.enabled !== false;
+      state.update.autoSaving = true;
+      applyUpdateControls();
+      try {
+        await api("/api/v1/admin/system/update/automatic", {
+          method: "POST",
+          json: { enabled: !enabled },
+        });
+        await loadUpdateStatus(false);
+        setStatus(`Automatic updates turned ${enabled ? "off" : "on"}.`, "ok");
+      } catch (err) {
+        setUpdateNote(`Automatic update setting failed: ${err.message}`, "error");
+        setStatus(err.message, "error");
+      } finally {
+        state.update.autoSaving = false;
+        applyUpdateControls();
+      }
+    };
+  }
+
+  if (el.btnUpdateCancelScheduled) {
+    el.btnUpdateCancelScheduled.onclick = async () => {
+      if (!state.user || state.user.role !== "admin") return;
+      state.update.cancelingScheduled = true;
+      applyUpdateControls();
+      try {
+        await api("/api/v1/admin/system/update/cancel-scheduled", {
+          method: "POST",
+          json: {},
+        });
+        await loadUpdateStatus(false);
+        setStatus("Scheduled update canceled for this release.", "ok");
+      } catch (err) {
+        setUpdateNote(`Cancel scheduled update failed: ${err.message}`, "error");
+        setStatus(err.message, "error");
+      } finally {
+        state.update.cancelingScheduled = false;
+        applyUpdateControls();
+      }
+    };
+  }
+
   if (el.composeForm) {
-    restoreComposeDraft(el.composeForm);
     const persistDraft = () => {
       syncComposeDraftFields();
-      saveComposeDraft(el.composeForm);
+      queueComposeDraftSave();
       updateComposeSubmitState();
     };
     el.composeForm.addEventListener("input", persistDraft);
     el.composeForm.addEventListener("change", persistDraft);
+    el.composeForm.addEventListener("focusout", (event) => {
+      const next = event.relatedTarget;
+      if (next instanceof Node && el.composeForm.contains(next)) return;
+      void flushComposeDraft({ immediate: true });
+    });
   }
 
   const popLastComposeRecipientToken = (field) => {
@@ -7506,7 +8584,7 @@ function bindUI() {
     state.compose.recipients[field] = rows;
     renderComposeRecipientTokens(field);
     syncComposeDraftFields();
-    saveComposeDraft(el.composeForm);
+    queueComposeDraftSave();
     updateComposeSubmitState();
     return true;
   };
@@ -7518,6 +8596,7 @@ function bindUI() {
       const chunks = splitComposeRecipients(value);
       const single = chunks.length === 1 ? chunks[0] : "";
       input.classList.toggle("compose-input-invalid", single !== "" && !validEmail(single));
+      queueComposeDraftSave();
       updateComposeSubmitState();
     });
     input.addEventListener("keydown", (event) => {
@@ -7526,7 +8605,7 @@ function bindUI() {
         commitComposeRecipientInput(field);
         input.classList.remove("compose-input-invalid");
         syncComposeDraftFields();
-        saveComposeDraft(el.composeForm);
+        queueComposeDraftSave();
         updateComposeSubmitState();
         return;
       }
@@ -7534,7 +8613,7 @@ function bindUI() {
         commitComposeRecipientInput(field);
         input.classList.remove("compose-input-invalid");
         syncComposeDraftFields();
-        saveComposeDraft(el.composeForm);
+        queueComposeDraftSave();
         updateComposeSubmitState();
         return;
       }
@@ -7546,7 +8625,7 @@ function bindUI() {
       commitComposeRecipientInput(field);
       input.classList.remove("compose-input-invalid");
       syncComposeDraftFields();
-      saveComposeDraft(el.composeForm);
+      void flushComposeDraft({ immediate: true });
       updateComposeSubmitState();
     });
     input.addEventListener("paste", (event) => {
@@ -7556,7 +8635,7 @@ function bindUI() {
       splitComposeRecipients(text).forEach((item) => addComposeRecipientToken(field, item));
       input.classList.remove("compose-input-invalid");
       syncComposeDraftFields();
-      saveComposeDraft(el.composeForm);
+      queueComposeDraftSave();
       updateComposeSubmitState();
     });
   };
@@ -7569,7 +8648,7 @@ function bindUI() {
     el.composeEditor.addEventListener("input", () => {
       cleanupComposeInlineReferences();
       syncComposeDraftFields();
-      saveComposeDraft(el.composeForm);
+      queueComposeDraftSave();
       updateComposeSubmitState();
     });
     el.composeEditor.addEventListener("click", (event) => {
@@ -7582,7 +8661,7 @@ function bindUI() {
       if (!attachmentID) return;
       removeComposeAttachmentByID(attachmentID);
       syncComposeDraftFields();
-      saveComposeDraft(el.composeForm);
+      queueComposeDraftSave();
       updateComposeSubmitState();
     });
     el.composeEditor.addEventListener("paste", (event) => {
@@ -7591,13 +8670,14 @@ function bindUI() {
       if (text) {
         insertComposeHTMLAtCaret(escapeHtml(text).replace(/\n/g, "<br>"));
       }
+      queueComposeDraftSave();
     });
   }
 
   if (el.composeToggleCc) {
     el.composeToggleCc.addEventListener("click", () => {
       setComposeCcVisible(!state.compose.ccVisible);
-      saveComposeDraft(el.composeForm);
+      queueComposeDraftSave();
       updateComposeSubmitState();
       if (state.compose.ccVisible && el.composeCcInput) el.composeCcInput.focus();
     });
@@ -7606,7 +8686,7 @@ function bindUI() {
   if (el.composeToggleBcc) {
     el.composeToggleBcc.addEventListener("click", () => {
       setComposeBccVisible(!state.compose.bccVisible);
-      saveComposeDraft(el.composeForm);
+      queueComposeDraftSave();
       updateComposeSubmitState();
       if (state.compose.bccVisible && el.composeBccInput) el.composeBccInput.focus();
     });
@@ -7615,7 +8695,7 @@ function bindUI() {
   if (el.composeToggleFormatting) {
     el.composeToggleFormatting.addEventListener("click", () => {
       setComposeFormatToolsVisible(!state.compose.formatToolsVisible);
-      saveComposeDraft(el.composeForm);
+      queueComposeDraftSave();
       updateComposeSubmitState();
       if (state.compose.formatToolsVisible && el.composeEditor) {
         el.composeEditor.focus();
@@ -7630,7 +8710,7 @@ function bindUI() {
       state.compose.selectedAccountID = String(selectedOption?.dataset.accountId || "");
       setComposeFromMode("identity");
       setComposeFromNote("");
-      saveComposeDraft(el.composeForm);
+      queueComposeDraftSave();
       updateComposeSubmitState();
     });
   }
@@ -7647,7 +8727,7 @@ function bindUI() {
       } else {
         setComposeFromNote("Sender must exactly match your authenticated email.", "error");
       }
-      saveComposeDraft(el.composeForm);
+      queueComposeDraftSave();
       updateComposeSubmitState();
     });
   }
@@ -7717,6 +8797,15 @@ function bindUI() {
   }
   if (el.btnComposeClose) {
     el.btnComposeClose.onclick = () => closeComposeOverlay(true);
+  }
+  if (el.btnComposeDiscard) {
+    el.btnComposeDiscard.onclick = async () => {
+      try {
+        await discardComposeDraft();
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    };
   }
   if (el.composeOverlay) {
     el.composeOverlay.addEventListener("click", (event) => {
@@ -7944,23 +9033,43 @@ function bindUI() {
   }
 
   el.btnFlag.onclick = async () => {
+    let prevFlagged = false;
     try {
       requireSelectedMessage();
-      await api(`/api/v1/messages/${encodeURIComponent(state.selectedMessage.id)}/flags`, { method: "POST", json: { flags: ["\\Flagged", "\\Seen"] } });
-      await loadMessages();
-      setStatus("Message flagged.", "ok");
+      prevFlagged = !!state.selectedMessage?.flagged;
+      const nextFlagged = !state.selectedMessage?.flagged;
+      applyLocalMessagePatch(state.selectedMessage.id, { flagged: nextFlagged });
+      await api(`/api/v1/messages/${encodeURIComponent(state.selectedMessage.id)}/flags`, {
+        method: "POST",
+        json: nextFlagged ? { add: ["\\Flagged"] } : { remove: ["\\Flagged"] },
+      });
+      await refreshMailView({ preservePane: true });
+      setStatus(nextFlagged ? "Message marked important." : "Message unflagged.", "ok");
     } catch (err) {
+      if (state.selectedMessage?.id) {
+        applyLocalMessagePatch(state.selectedMessage.id, { flagged: prevFlagged });
+      }
       setStatus(err.message, "error");
     }
   };
 
   el.btnSeen.onclick = async () => {
+    let changedID = "";
     try {
       requireSelectedMessage();
-      await api(`/api/v1/messages/${encodeURIComponent(state.selectedMessage.id)}/flags`, { method: "POST", json: { flags: ["\\Seen"] } });
-      await loadMessages();
+      if (state.selectedMessage?.seen) {
+        setStatus("Message is already marked read.", "info");
+        return;
+      }
+      changedID = String(state.selectedMessage.id || "");
+      applyLocalMessagePatch(state.selectedMessage.id, { seen: true });
+      await api(`/api/v1/messages/${encodeURIComponent(state.selectedMessage.id)}/flags`, { method: "POST", json: { add: ["\\Seen"] } });
+      await refreshMailView({ preservePane: true });
       setStatus("Message marked seen.", "ok");
     } catch (err) {
+      if (changedID) {
+        applyLocalMessagePatch(changedID, { seen: false });
+      }
       setStatus(err.message, "error");
     }
   };
@@ -7968,9 +9077,13 @@ function bindUI() {
   el.btnTrash.onclick = async () => {
     try {
       requireSelectedMessage();
-      await api(`/api/v1/messages/${encodeURIComponent(state.selectedMessage.id)}/move`, { method: "POST", json: { mailbox: "Trash" } });
+      const trashMailbox = mailboxNameForRole("trash") || "Trash";
+      await api(`/api/v1/messages/${encodeURIComponent(state.selectedMessage.id)}/move`, { method: "POST", json: { mailbox: trashMailbox } });
       clearReaderSelection();
-      await loadMessages();
+      await Promise.all([
+        loadMailboxes({ quiet: true }),
+        loadMessages({ quiet: true }),
+      ]);
       setStatus("Message moved to trash.", "ok");
       setActiveMailPane("messages");
     } catch (err) {
@@ -8006,6 +9119,22 @@ function bindUI() {
 async function bootstrap() {
   ThemeController.initTheme();
   bindUI();
+  window.addEventListener("beforeunload", () => {
+    if (!state.ui.composeOpen || !el.composeForm) return;
+    syncComposeDraftFields();
+    writeComposeCrashBuffer(state.compose.draftID || "");
+    void flushComposeDraft({ immediate: true });
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !el.viewMail?.classList.contains("hidden")) {
+      startMailPolling();
+      void pollMailView();
+      return;
+    }
+    if (document.visibilityState !== "visible") {
+      stopMailPolling();
+    }
+  });
   const resetLinkToken = captureResetTokenFromLocation();
   if (resetLinkToken) {
     applyResetLinkToken(resetLinkToken);

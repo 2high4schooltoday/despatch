@@ -26,6 +26,7 @@ const (
 	settingLastCheckError  = "update_last_check_error"
 	settingLastSuccessVer  = "update_last_success_version"
 	settingLastSuccessAt   = "update_last_success_at"
+	settingAutoUpdateOn    = "update_auto_enabled"
 )
 
 var targetVersionRx = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
@@ -49,11 +50,17 @@ func NewManager(cfg config.Config) *Manager {
 func (m *Manager) Status(ctx context.Context, st *store.Store, forceCheck bool) (StatusResponse, error) {
 	runtimeStatus := m.runtimeProbe(ctx, m.cfg)
 	configured, configDiagnostic := m.configurationStatus(runtimeStatus)
+	autoEnabled, _ := m.autoUpdateEnabled(ctx, st)
+	autoRecord, err := readAutoUpdateState(autoStatusPath(m.cfg))
+	if err != nil && !isUpdaterPermissionError(err) {
+		return StatusResponse{}, err
+	}
 	status := StatusResponse{
 		Enabled:          m.cfg.UpdateEnabled,
 		Configured:       configured,
 		Current:          version.Current(),
 		Apply:            ApplyStatus{State: ApplyStateIdle},
+		AutoUpdate:       autoStatusFromRecord(autoRecord, autoEnabled),
 		ConfigDiagnostic: configDiagnostic,
 	}
 	var checkErr error
@@ -93,21 +100,33 @@ func (m *Manager) Status(ctx context.Context, st *store.Store, forceCheck bool) 
 		status.Apply = recovered
 	}
 	if status.Apply.State == ApplyStateIdle && configured {
-		pendingPaths, err := pendingRequestPaths(m.cfg)
+		pending, err := pendingRequests(m.cfg)
 		if err != nil {
 			if isUpdaterPermissionError(err) {
 				return status, nil
 			}
 			return StatusResponse{}, err
 		}
-		if len(pendingPaths) > 0 {
-			status.Apply.State = ApplyStateQueued
+		for _, req := range pending {
+			if normalizeApplyMode(req.Request.Mode) == ApplyModeApply {
+				status.Apply.State = ApplyStateQueued
+				break
+			}
 		}
 	}
+	status.AutoUpdate = m.presentAutoUpdateStatus(status, autoRecord, autoEnabled)
 	return status, nil
 }
 
 func (m *Manager) QueueApply(ctx context.Context, st *store.Store, requestedBy, targetVersion, requestID string) (ApplyRequest, error) {
+	return m.queueRequest(ctx, st, requestedBy, targetVersion, requestID, ApplyModeApply)
+}
+
+func (m *Manager) QueuePrepare(ctx context.Context, st *store.Store, requestedBy, targetVersion, requestID string) (ApplyRequest, error) {
+	return m.queueRequest(ctx, st, requestedBy, targetVersion, requestID, ApplyModePrepare)
+}
+
+func (m *Manager) queueRequest(ctx context.Context, st *store.Store, requestedBy, targetVersion, requestID, mode string) (ApplyRequest, error) {
 	runtimeStatus := m.runtimeProbe(ctx, m.cfg)
 	current, err := readApplyStatusTolerant(statusPath(m.cfg))
 	if err != nil {
@@ -122,6 +141,7 @@ func (m *Manager) QueueApply(ctx context.Context, st *store.Store, requestedBy, 
 	if !m.cfg.UpdateEnabled || !configured {
 		return ApplyRequest{}, ErrUpdaterNotConfigured
 	}
+	mode = normalizeApplyMode(mode)
 	target := strings.TrimSpace(targetVersion)
 	if target != "" && !targetVersionRx.MatchString(target) {
 		return ApplyRequest{}, ErrInvalidTargetVersion
@@ -143,6 +163,7 @@ func (m *Manager) QueueApply(ctx context.Context, st *store.Store, requestedBy, 
 		RequestID:     requestID,
 		RequestedAt:   m.now(),
 		RequestedBy:   strings.TrimSpace(requestedBy),
+		Mode:          mode,
 		TargetVersion: target,
 	}
 	if err := ensureUpdaterRequestStatusDirectories(m.cfg); err != nil {
@@ -152,13 +173,15 @@ func (m *Manager) QueueApply(ctx context.Context, st *store.Store, requestedBy, 
 	if err := writeJSONAtomic(reqQueuePath, req, 0o640, updaterDirModeForPath(m.cfg, requestDir(m.cfg), 0o750)); err != nil {
 		return ApplyRequest{}, fmt.Errorf("%w: %v", ErrUpdateRequestFailed, err)
 	}
-	if err := writeJSONAtomic(statusPath(m.cfg), ApplyStatus{
-		State:         ApplyStateQueued,
-		RequestID:     req.RequestID,
-		RequestedAt:   req.RequestedAt,
-		TargetVersion: req.TargetVersion,
-	}, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750)); err != nil {
-		return ApplyRequest{}, fmt.Errorf("%w: %v", ErrUpdateRequestFailed, err)
+	if mode == ApplyModeApply {
+		if err := writeJSONAtomic(statusPath(m.cfg), ApplyStatus{
+			State:         ApplyStateQueued,
+			RequestID:     req.RequestID,
+			RequestedAt:   req.RequestedAt,
+			TargetVersion: req.TargetVersion,
+		}, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750)); err != nil {
+			return ApplyRequest{}, fmt.Errorf("%w: %v", ErrUpdateRequestFailed, err)
+		}
 	}
 	return req, nil
 }
@@ -332,6 +355,223 @@ func (m *Manager) getSetting(ctx context.Context, st *store.Store, key string) (
 		return "", false
 	}
 	return strings.TrimSpace(v), ok
+}
+
+func normalizeApplyMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", ApplyModeApply:
+		return ApplyModeApply
+	case ApplyModePrepare:
+		return ApplyModePrepare
+	default:
+		return ApplyModeApply
+	}
+}
+
+func autoStatusFromRecord(rec autoUpdateStateRecord, enabled bool) AutoUpdateStatus {
+	state := rec.State
+	if state == "" {
+		state = AutoUpdateStateIdle
+	}
+	return AutoUpdateStatus{
+		Enabled:       enabled,
+		State:         state,
+		TargetVersion: strings.TrimSpace(rec.TargetVersion),
+		DownloadedAt:  rec.DownloadedAt,
+		ScheduledFor:  rec.ScheduledFor,
+		Error:         strings.TrimSpace(rec.Error),
+	}
+}
+
+func (m *Manager) presentAutoUpdateStatus(status StatusResponse, rec autoUpdateStateRecord, enabled bool) AutoUpdateStatus {
+	auto := autoStatusFromRecord(rec, enabled)
+	if auto.State == "" {
+		auto.State = AutoUpdateStateIdle
+	}
+	if rec.State == AutoUpdateStateScheduled || rec.State == AutoUpdateStateDownloaded || rec.State == AutoUpdateStatePreparing {
+		if status.Apply.State == ApplyStateQueued || status.Apply.State == ApplyStateInProgress {
+			target := strings.TrimSpace(status.Apply.TargetVersion)
+			if target == "" && status.Latest != nil {
+				target = strings.TrimSpace(status.Latest.TagName)
+			}
+			if target != "" && target == strings.TrimSpace(rec.TargetVersion) {
+				auto.State = AutoUpdateStateApplying
+			}
+		}
+	}
+	if auto.State == AutoUpdateStateIdle && enabled && status.UpdateAvailable && status.Latest != nil {
+		auto.TargetVersion = strings.TrimSpace(status.Latest.TagName)
+	}
+	return auto
+}
+
+func (m *Manager) autoUpdateEnabled(ctx context.Context, st *store.Store) (bool, error) {
+	raw, ok, err := st.GetSetting(ctx, settingAutoUpdateOn)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return true, nil
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "0", "false", "off", "disabled", "no":
+		return false, nil
+	default:
+		return true, nil
+	}
+}
+
+func (m *Manager) AutomaticEnabled(ctx context.Context, st *store.Store) (bool, error) {
+	return m.autoUpdateEnabled(ctx, st)
+}
+
+func (m *Manager) PersistAutomaticPreference(ctx context.Context, st *store.Store, actorUserID string, enabled bool) error {
+	if err := st.UpsertSetting(ctx, settingAutoUpdateOn, boolToSetting(enabled)); err != nil {
+		return err
+	}
+	_ = st.InsertAudit(ctx, strings.TrimSpace(actorUserID), "update_auto", "automatic_updates", fmt.Sprintf(`{"enabled":%t}`, enabled))
+	return nil
+}
+
+func (m *Manager) SetAutomaticEnabled(ctx context.Context, st *store.Store, actorUserID string, enabled bool) (AutoUpdateStatus, error) {
+	if err := m.PersistAutomaticPreference(ctx, st, actorUserID, enabled); err != nil {
+		return AutoUpdateStatus{}, err
+	}
+	rec, err := readAutoUpdateState(autoStatusPath(m.cfg))
+	if err != nil && !isUpdaterPermissionError(err) {
+		return AutoUpdateStatus{}, err
+	}
+	if !enabled && rec.State == AutoUpdateStateScheduled {
+		rec.State = AutoUpdateStateDownloaded
+		rec.ScheduledFor = time.Time{}
+	}
+	if err := writeJSONAtomic(autoStatusPath(m.cfg), rec, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750)); err != nil && !isUpdaterPermissionError(err) {
+		return AutoUpdateStatus{}, err
+	}
+	return autoStatusFromRecord(rec, enabled), nil
+}
+
+func (m *Manager) CancelScheduledUpdate(ctx context.Context, st *store.Store, actorUserID string) (AutoUpdateStatus, error) {
+	enabled, err := m.autoUpdateEnabled(ctx, st)
+	if err != nil {
+		return AutoUpdateStatus{}, err
+	}
+	rec, err := readAutoUpdateState(autoStatusPath(m.cfg))
+	if err != nil {
+		return AutoUpdateStatus{}, err
+	}
+	rec.DeferredVersion = strings.TrimSpace(rec.TargetVersion)
+	rec.State = AutoUpdateStateDownloaded
+	rec.ScheduledFor = time.Time{}
+	rec.Error = ""
+	if err := writeJSONAtomic(autoStatusPath(m.cfg), rec, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750)); err != nil {
+		return AutoUpdateStatus{}, err
+	}
+	_ = st.InsertAudit(ctx, strings.TrimSpace(actorUserID), "update_auto", "cancel_scheduled_update", fmt.Sprintf(`{"target_version":%q}`, rec.TargetVersion))
+	return autoStatusFromRecord(rec, enabled), nil
+}
+
+func boolToSetting(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
+}
+
+func nextNightlyWindow(now time.Time) time.Time {
+	local := now.In(time.Local)
+	scheduled := time.Date(local.Year(), local.Month(), local.Day(), 2, 0, 0, 0, local.Location())
+	if !local.Before(scheduled) {
+		scheduled = scheduled.Add(24 * time.Hour)
+	}
+	return scheduled
+}
+
+func (m *Manager) AutomaticTick(ctx context.Context, st *store.Store) error {
+	if !m.cfg.UpdateEnabled {
+		return nil
+	}
+	status, err := m.Status(ctx, st, false)
+	if err != nil {
+		return err
+	}
+	enabled := status.AutoUpdate.Enabled
+	rec, err := readAutoUpdateState(autoStatusPath(m.cfg))
+	if err != nil && !isUpdaterPermissionError(err) {
+		return err
+	}
+	if rec.State == "" {
+		rec.State = AutoUpdateStateIdle
+	}
+	latestTag := ""
+	if status.Latest != nil {
+		latestTag = strings.TrimSpace(status.Latest.TagName)
+	}
+	if latestTag == "" || !status.UpdateAvailable {
+		if rec.State != AutoUpdateStateIdle || rec.TargetVersion != "" || rec.Error != "" || rec.DeferredVersion != "" {
+			rec = autoUpdateStateRecord{State: AutoUpdateStateIdle}
+			_ = writeJSONAtomic(autoStatusPath(m.cfg), rec, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750))
+		}
+		return nil
+	}
+	if !enabled {
+		if rec.State == AutoUpdateStateScheduled {
+			rec.State = AutoUpdateStateDownloaded
+			rec.ScheduledFor = time.Time{}
+			rec.Error = ""
+			_ = writeJSONAtomic(autoStatusPath(m.cfg), rec, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750))
+		}
+		return nil
+	}
+	if rec.TargetVersion != "" && rec.TargetVersion != latestTag {
+		rec = autoUpdateStateRecord{State: AutoUpdateStateIdle}
+		_ = writeJSONAtomic(autoStatusPath(m.cfg), rec, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750))
+	}
+	if rec.DeferredVersion == latestTag {
+		return nil
+	}
+	switch rec.State {
+	case AutoUpdateStatePreparing, AutoUpdateStateScheduled, AutoUpdateStateApplying:
+		if rec.State == AutoUpdateStateScheduled && !rec.ScheduledFor.IsZero() && !m.now().Before(rec.ScheduledFor) && status.Apply.State == ApplyStateIdle {
+			_, err := m.queueRequest(ctx, st, "system:auto-update", latestTag, "auto-apply-"+sanitizePathToken(latestTag), ApplyModeApply)
+			if err == nil || errors.Is(err, ErrUpdateInProgress) {
+				return nil
+			}
+			rec.State = AutoUpdateStateFailed
+			rec.Error = err.Error()
+			_ = writeJSONAtomic(autoStatusPath(m.cfg), rec, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750))
+			return nil
+		}
+		return nil
+	case AutoUpdateStateDownloaded:
+		if rec.DeferredVersion == latestTag {
+			return nil
+		}
+		rec.State = AutoUpdateStateScheduled
+		rec.ScheduledFor = nextNightlyWindow(m.now())
+		rec.Error = ""
+		_ = writeJSONAtomic(autoStatusPath(m.cfg), rec, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750))
+		return nil
+	case AutoUpdateStateFailed:
+		if strings.TrimSpace(rec.TargetVersion) == latestTag {
+			return nil
+		}
+	}
+	rec = autoUpdateStateRecord{
+		State:         AutoUpdateStatePreparing,
+		TargetVersion: latestTag,
+		Error:         "",
+	}
+	if err := writeJSONAtomic(autoStatusPath(m.cfg), rec, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750)); err != nil {
+		return err
+	}
+	_, err = m.queueRequest(ctx, st, "system:auto-update", latestTag, "auto-prepare-"+sanitizePathToken(latestTag), ApplyModePrepare)
+	if err != nil && !errors.Is(err, ErrUpdateInProgress) {
+		rec.State = AutoUpdateStateFailed
+		rec.Error = err.Error()
+		_ = writeJSONAtomic(autoStatusPath(m.cfg), rec, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750))
+	}
+	return nil
 }
 
 func compareVersions(current, latest string) bool {

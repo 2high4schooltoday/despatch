@@ -267,7 +267,7 @@ func (w *MailWorkers) processScheduledSendItem(ctx context.Context, item models.
 		Body:    draft.BodyText,
 	}
 	cli := mail.NewIMAPSMTPClient(w.accountMailConfig(account))
-	if err := cli.Send(ctx, account.Login, pass, sendReq); err != nil {
+	if _, err := cli.Send(ctx, account.Login, pass, sendReq); err != nil {
 		retryCount := item.RetryCount + 1
 		if retryCount >= 3 {
 			_ = w.st.MarkScheduledSendFailed(ctx, item.ID, err.Error())

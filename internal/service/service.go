@@ -72,11 +72,13 @@ type SetupStatus struct {
 	PasswordMaxLength           int    `json:"password_max_length"`
 	PasswordClassMin            int    `json:"password_class_min"`
 	PasskeyPrimarySignInEnabled bool   `json:"passkey_primary_sign_in_enabled"`
+	AutomaticUpdatesEnabled     bool   `json:"automatic_updates_enabled"`
 }
 
 type SetupCompleteRequest struct {
 	BaseDomain                  string
 	AdminEmail                  string
+	AdminRecoveryEmail          string
 	AdminMailboxLogin           string
 	AdminPassword               string
 	Region                      string
@@ -1146,6 +1148,10 @@ func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, i
 	if !strings.HasSuffix(adminEmail, "@"+baseDomain) {
 		return "", models.User{}, fmt.Errorf("admin email must use @%s", baseDomain)
 	}
+	recoveryEmail, err := normalizeDistinctRecoveryEmail(adminEmail, req.AdminRecoveryEmail)
+	if err != nil {
+		return "", models.User{}, err
+	}
 
 	pamAcceptedLogin := ""
 	if s.usesPAMAuth() {
@@ -1175,6 +1181,9 @@ func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, i
 	}
 	adminUser, err := s.st.GetUserByEmail(ctx, adminEmail)
 	if err != nil {
+		return "", models.User{}, err
+	}
+	if err := s.st.UpdateUserRecoveryEmail(ctx, adminUser.ID, recoveryEmail); err != nil {
 		return "", models.User{}, err
 	}
 	if s.usesPAMAuth() && strings.TrimSpace(pamAcceptedLogin) != "" {

@@ -40,11 +40,15 @@ func (m *mailHTMLRouterTestClient) Search(ctx context.Context, user, pass, mailb
 	return []mail.MessageSummary{}, nil
 }
 
-func (m *mailHTMLRouterTestClient) Send(ctx context.Context, user, pass string, req mail.SendRequest) error {
-	return nil
+func (m *mailHTMLRouterTestClient) Send(ctx context.Context, user, pass string, req mail.SendRequest) (mail.SendResult, error) {
+	return mail.SendResult{SavedCopy: true, SavedCopyMailbox: "Sent"}, nil
 }
 
 func (m *mailHTMLRouterTestClient) SetFlags(ctx context.Context, user, pass, id string, flags []string) error {
+	return nil
+}
+
+func (m *mailHTMLRouterTestClient) UpdateFlags(ctx context.Context, user, pass, id string, patch mail.FlagPatch) error {
 	return nil
 }
 

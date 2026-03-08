@@ -97,6 +97,8 @@ pub mod updater {
     pub const APPLY_STATE_COMPLETED: &str = "completed";
     pub const APPLY_STATE_FAILED: &str = "failed";
     pub const APPLY_STATE_ROLLED_BACK: &str = "rolled_back";
+    pub const APPLY_MODE_APPLY: &str = "apply";
+    pub const APPLY_MODE_PREPARE: &str = "prepare";
 
     #[derive(Debug, Serialize, Deserialize, Clone, Default)]
     #[serde(deny_unknown_fields)]
@@ -107,6 +109,8 @@ pub mod updater {
         pub requested_at: String,
         #[serde(default)]
         pub requested_by: String,
+        #[serde(default)]
+        pub mode: String,
         #[serde(default)]
         pub target_version: String,
     }

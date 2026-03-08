@@ -47,6 +47,8 @@ func newSetupRouterWithConfigAndStore(t *testing.T, mutate func(*config.Config))
 		filepath.Join("..", "..", "migrations", "019_users_mail_secret.sql"),
 		filepath.Join("..", "..", "migrations", "020_mail_index_scoped_ids.sql"),
 		filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql"),
+		filepath.Join("..", "..", "migrations", "022_draft_compose_context.sql"),
+		filepath.Join("..", "..", "migrations", "023_drafts_nullable_account.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -77,7 +79,7 @@ func newSetupRouterWithConfigAndStore(t *testing.T, mutate func(*config.Config))
 	return NewRouter(cfg, svc), st
 }
 
-func TestSetupStatusIncludesPasskeyPrimarySignInEnabled(t *testing.T) {
+func TestSetupStatusIncludesPasskeyPrimarySignInEnabledAndAutomaticUpdates(t *testing.T) {
 	router, _ := newSetupRouterWithConfigAndStore(t, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "http://localhost/api/v1/setup/status", nil)
@@ -94,6 +96,9 @@ func TestSetupStatusIncludesPasskeyPrimarySignInEnabled(t *testing.T) {
 	if enabled, _ := payload["passkey_primary_sign_in_enabled"].(bool); !enabled {
 		t.Fatalf("expected passkey_primary_sign_in_enabled=true, payload=%v", payload)
 	}
+	if enabled, ok := payload["automatic_updates_enabled"].(bool); !ok || !enabled {
+		t.Fatalf("expected automatic_updates_enabled=true, payload=%v", payload)
+	}
 }
 
 func TestSetupCompletePersistsPasskeyPrimarySignInChoice(t *testing.T) {
@@ -102,9 +107,11 @@ func TestSetupCompletePersistsPasskeyPrimarySignInChoice(t *testing.T) {
 	body := []byte(`{
 		"base_domain":"example.com",
 		"admin_email":"webmaster@example.com",
+		"admin_recovery_email":"recovery@example.net",
 		"admin_password":"SecretPass123!",
 		"region":"us-east",
-		"passkey_primary_sign_in_enabled":false
+		"passkey_primary_sign_in_enabled":false,
+		"automatic_updates_enabled":false
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/setup/complete", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -120,6 +127,20 @@ func TestSetupCompletePersistsPasskeyPrimarySignInChoice(t *testing.T) {
 	}
 	if !ok || raw != "0" {
 		t.Fatalf("expected feature_flag.passkey_sign_in=0, got ok=%v raw=%q", ok, raw)
+	}
+	autoRaw, autoOK, err := st.GetSetting(context.Background(), "update_auto_enabled")
+	if err != nil {
+		t.Fatalf("load auto update setting: %v", err)
+	}
+	if !autoOK || autoRaw != "0" {
+		t.Fatalf("expected update_auto_enabled=0, got ok=%v raw=%q", autoOK, autoRaw)
+	}
+	user, err := st.GetUserByEmail(context.Background(), "webmaster@example.com")
+	if err != nil {
+		t.Fatalf("load admin user: %v", err)
+	}
+	if user.RecoveryEmail == nil || *user.RecoveryEmail != "recovery@example.net" {
+		t.Fatalf("expected recovery email to persist, got %#v", user.RecoveryEmail)
 	}
 
 	capsReq := httptest.NewRequest(http.MethodGet, "http://localhost/api/v1/public/auth/capabilities", nil)
@@ -143,6 +164,7 @@ func TestSetupCompleteWithoutPasskeyChoicePreservesDefault(t *testing.T) {
 	body := []byte(`{
 		"base_domain":"example.com",
 		"admin_email":"webmaster@example.com",
+		"admin_recovery_email":"recovery@example.net",
 		"admin_password":"SecretPass123!",
 		"region":"us-east"
 	}`)
@@ -161,6 +183,13 @@ func TestSetupCompleteWithoutPasskeyChoicePreservesDefault(t *testing.T) {
 	if !ok || raw != "1" {
 		t.Fatalf("expected feature_flag.passkey_sign_in=1 when field omitted, got ok=%v raw=%q", ok, raw)
 	}
+	autoRaw, autoOK, err := st.GetSetting(context.Background(), "update_auto_enabled")
+	if err != nil {
+		t.Fatalf("load auto update setting: %v", err)
+	}
+	if !autoOK || autoRaw != "1" {
+		t.Fatalf("expected update_auto_enabled=1 when field omitted, got ok=%v raw=%q", autoOK, autoRaw)
+	}
 
 	capsReq := httptest.NewRequest(http.MethodGet, "http://localhost/api/v1/public/auth/capabilities", nil)
 	capsRec := httptest.NewRecorder()
@@ -174,5 +203,32 @@ func TestSetupCompleteWithoutPasskeyChoicePreservesDefault(t *testing.T) {
 	}
 	if available, _ := caps["passkey_passwordless_available"].(bool); !available {
 		t.Fatalf("expected passkey_passwordless_available=true when setup field is omitted, payload=%v", caps)
+	}
+}
+
+func TestSetupCompleteRejectsRecoveryEmailMatchingLogin(t *testing.T) {
+	router, _ := newSetupRouterWithConfigAndStore(t, nil)
+
+	body := []byte(`{
+		"base_domain":"example.com",
+		"admin_email":"webmaster@example.com",
+		"admin_recovery_email":"webmaster@example.com",
+		"admin_password":"SecretPass123!",
+		"region":"us-east"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/setup/complete", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
+	}
+	if code, _ := payload["code"].(string); code != "recovery_email_matches_login" {
+		t.Fatalf("expected recovery_email_matches_login, got %v", payload)
 	}
 }

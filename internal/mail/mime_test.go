@@ -65,6 +65,32 @@ func TestBuildRFC822HTMLIncludesAlternativeAndInlineCID(t *testing.T) {
 	}
 }
 
+func TestBuildRFC822IncludesMessageIDReplyHeadersAndReferences(t *testing.T) {
+	raw, err := buildRFC822(SendRequest{
+		From:        "sender@example.com",
+		To:          []string{"to@example.com"},
+		Subject:     "Reply",
+		Body:        "Body",
+		MessageID:   "new-message@example.com",
+		InReplyToID: "orig-message@example.com",
+		References:  []string{"older@example.com", "orig-message@example.com"},
+	})
+	if err != nil {
+		t.Fatalf("buildRFC822: %v", err)
+	}
+	msg := string(raw)
+	want := []string{
+		"Message-ID: <new-message@example.com>",
+		"In-Reply-To: <orig-message@example.com>",
+		"References: <older@example.com> <orig-message@example.com>",
+	}
+	for _, token := range want {
+		if !strings.Contains(msg, token) {
+			t.Fatalf("expected token %q in message: %q", token, msg)
+		}
+	}
+}
+
 func TestSendWithSenderFallbackUsesToCcBccRecipients(t *testing.T) {
 	c := &IMAPSMTPClient{}
 	var captured []string

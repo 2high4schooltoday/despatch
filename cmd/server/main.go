@@ -80,6 +80,8 @@ func main() {
 		"migrations/019_users_mail_secret.sql",
 		"migrations/020_mail_index_scoped_ids.sql",
 		"migrations/021_password_reset_token_reservations.sql",
+		"migrations/022_draft_compose_context.sql",
+		"migrations/023_drafts_nullable_account.sql",
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			log.Fatalf("migration %s: %v", migration, err)
@@ -114,6 +116,7 @@ func main() {
 		log.Printf("password_reset_sender_status status=%s reason=%s address=%s", senderState.Status, senderState.Reason, senderState.Address)
 	}
 	workers.StartMailWorkers(context.Background(), cfg, st)
+	workers.StartUpdateWorkers(context.Background(), cfg, st)
 	r := api.NewRouter(cfg, svc)
 
 	hsrv := &http.Server{

@@ -73,6 +73,9 @@ func newV2RouterWithConfigAndStoreDB(t *testing.T, mutate func(*config.Config)) 
 		filepath.Join("..", "..", "migrations", "018_mfa_usability_trusted_devices.sql"),
 		filepath.Join("..", "..", "migrations", "019_users_mail_secret.sql"),
 		filepath.Join("..", "..", "migrations", "020_mail_index_scoped_ids.sql"),
+		filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql"),
+		filepath.Join("..", "..", "migrations", "022_draft_compose_context.sql"),
+		filepath.Join("..", "..", "migrations", "023_drafts_nullable_account.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -1441,6 +1444,106 @@ func TestV2SendDraftSchedulesFutureDraft(t *testing.T) {
 	send := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts/"+draft.ID+"/send", nil, sess, csrf)
 	if send.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 for scheduled send, got %d body=%s", send.Code, send.Body.String())
+	}
+}
+
+func TestV2DraftCRUDPersistsComposeContext(t *testing.T) {
+	router := newV2Router(t)
+	sess, csrf := loginV2(t, router)
+
+	create := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts", map[string]any{
+		"account_id":         "",
+		"compose_mode":       "reply",
+		"context_message_id": "msg-123",
+		"from_mode":          "manual",
+		"from_manual":        "admin@example.com",
+		"client_state_json":  `{"cc_visible":true,"to_pending":"alice@example.com"}`,
+		"to":                 "alice@example.com",
+		"subject":            "Draft subject",
+		"body_text":          "Draft body",
+	}, sess, csrf)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected draft create 201, got %d body=%s", create.Code, create.Body.String())
+	}
+	var draft models.Draft
+	if err := json.Unmarshal(create.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft response: %v", err)
+	}
+	if draft.AccountID != "" || draft.ComposeMode != "reply" || draft.ContextMessageID != "msg-123" {
+		t.Fatalf("unexpected created draft: %+v", draft)
+	}
+
+	get := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/drafts/"+draft.ID, nil, sess, csrf)
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected draft get 200, got %d body=%s", get.Code, get.Body.String())
+	}
+	var fetched models.Draft
+	if err := json.Unmarshal(get.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("decode fetched draft: %v", err)
+	}
+	if fetched.ClientStateJSON == "" || fetched.FromMode != "manual" || fetched.FromManual != "admin@example.com" {
+		t.Fatalf("expected compose context to round-trip, got %+v", fetched)
+	}
+
+	update := doV2AuthedJSON(t, router, http.MethodPatch, "/api/v2/drafts/"+draft.ID, map[string]any{
+		"compose_mode":       "forward",
+		"context_message_id": "msg-456",
+		"subject":            "Updated subject",
+	}, sess, csrf)
+	if update.Code != http.StatusOK {
+		t.Fatalf("expected draft update 200, got %d body=%s", update.Code, update.Body.String())
+	}
+
+	del := doV2AuthedJSON(t, router, http.MethodDelete, "/api/v2/drafts/"+draft.ID, nil, sess, csrf)
+	if del.Code != http.StatusOK {
+		t.Fatalf("expected draft delete 200, got %d body=%s", del.Code, del.Body.String())
+	}
+	missing := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/drafts/"+draft.ID, nil, sess, csrf)
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("expected deleted draft to return 404, got %d body=%s", missing.Code, missing.Body.String())
+	}
+}
+
+func TestV2SendDraftWithoutAccountMarksDraftSent(t *testing.T) {
+	router := newV2Router(t)
+	sess, csrf := loginV2(t, router)
+
+	create := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts", map[string]any{
+		"account_id":   "",
+		"to":           "someone@example.com",
+		"subject":      "Send me",
+		"body_text":    "Hello",
+		"compose_mode": "send",
+		"from_mode":    "manual",
+		"from_manual":  "admin@example.com",
+	}, sess, csrf)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected draft create 201, got %d body=%s", create.Code, create.Body.String())
+	}
+	var draft models.Draft
+	if err := json.Unmarshal(create.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft response: %v", err)
+	}
+
+	send := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts/"+draft.ID+"/send", nil, sess, csrf)
+	if send.Code != http.StatusOK {
+		t.Fatalf("expected draft send 200, got %d body=%s", send.Code, send.Body.String())
+	}
+
+	list := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/drafts?page=1&page_size=20", nil, sess, csrf)
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected draft list 200, got %d body=%s", list.Code, list.Body.String())
+	}
+	var payload struct {
+		Items []models.Draft `json:"items"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode draft list: %v body=%s", err, list.Body.String())
+	}
+	for _, item := range payload.Items {
+		if item.ID == draft.ID {
+			t.Fatalf("expected sent draft %q to be excluded from active list", draft.ID)
+		}
 	}
 }
 

@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
+
+	"despatch/internal/config"
 )
 
 func readJSONFile(path string, out any) error {
@@ -67,4 +71,43 @@ func readApplyStatus(cfgPath string) (ApplyStatus, error) {
 		st.State = ApplyStateIdle
 	}
 	return st, nil
+}
+
+type autoUpdateStateRecord struct {
+	State           AutoUpdateState `json:"state"`
+	TargetVersion   string          `json:"target_version,omitempty"`
+	DownloadedAt    time.Time       `json:"downloaded_at,omitempty"`
+	ScheduledFor    time.Time       `json:"scheduled_for,omitempty"`
+	Error           string          `json:"error,omitempty"`
+	DeferredVersion string          `json:"deferred_version,omitempty"`
+}
+
+func readAutoUpdateState(path string) (autoUpdateStateRecord, error) {
+	var st autoUpdateStateRecord
+	if err := readJSONFile(path, &st); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return autoUpdateStateRecord{State: AutoUpdateStateIdle}, nil
+		}
+		return autoUpdateStateRecord{}, err
+	}
+	if st.State == "" {
+		st.State = AutoUpdateStateIdle
+	}
+	st.TargetVersion = strings.TrimSpace(st.TargetVersion)
+	st.Error = strings.TrimSpace(st.Error)
+	st.DeferredVersion = strings.TrimSpace(st.DeferredVersion)
+	return st, nil
+}
+
+func writeAutoUpdateState(cfg config.Config, rec autoUpdateStateRecord) error {
+	if rec.State == "" {
+		rec.State = AutoUpdateStateIdle
+	}
+	if err := writeJSONAtomic(autoStatusPath(cfg), rec, 0o640, updaterDirModeForPath(cfg, statusDir(cfg), 0o750)); err != nil {
+		return err
+	}
+	if err := ensureDespatchReadable(autoStatusPath(cfg)); err != nil && !isUpdaterPermissionError(err) {
+		return err
+	}
+	return nil
 }

@@ -94,6 +94,45 @@ func (m *Manager) runWorker(ctx context.Context) error {
 	if req.RequestedAt.IsZero() {
 		req.RequestedAt = m.now()
 	}
+	req.Mode = normalizeApplyMode(req.Mode)
+
+	if req.Mode == ApplyModePrepare {
+		matchTarget := strings.TrimSpace(req.TargetVersion)
+		if rec, err := readAutoUpdateState(autoStatusPath(m.cfg)); err == nil {
+			if strings.TrimSpace(rec.TargetVersion) == matchTarget || strings.TrimSpace(rec.TargetVersion) == "" {
+				rec.State = AutoUpdateStatePreparing
+				rec.TargetVersion = matchTarget
+				rec.Error = ""
+				_ = writeAutoUpdateState(m.cfg, rec)
+			}
+		}
+		release, _, err := m.prepareReleasePayload(ctx, strings.TrimSpace(req.TargetVersion))
+		if err != nil {
+			rec, readErr := readAutoUpdateState(autoStatusPath(m.cfg))
+			if readErr == nil {
+				rec.State = AutoUpdateStateFailed
+				rec.TargetVersion = strings.TrimSpace(req.TargetVersion)
+				rec.Error = err.Error()
+				_ = writeAutoUpdateState(m.cfg, rec)
+			}
+			_ = os.Remove(reqPath)
+			return err
+		}
+		rec := autoUpdateStateRecord{
+			State:         AutoUpdateStateScheduled,
+			TargetVersion: strings.TrimSpace(release.TagName),
+			DownloadedAt:  m.now(),
+			ScheduledFor:  nextNightlyWindow(m.now()),
+		}
+		if err := writeAutoUpdateState(m.cfg, rec); err != nil {
+			_ = os.Remove(reqPath)
+			return err
+		}
+		if err := os.Remove(reqPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
 
 	started := m.now()
 	_ = writeJSONAtomic(statusPath(m.cfg), ApplyStatus{
@@ -105,6 +144,14 @@ func (m *Manager) runWorker(ctx context.Context) error {
 		FromVersion:   version.Current().Version,
 	}, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750))
 	_ = ensureDespatchReadable(statusPath(m.cfg))
+	if rec, err := readAutoUpdateState(autoStatusPath(m.cfg)); err == nil {
+		target := strings.TrimSpace(req.TargetVersion)
+		if target != "" && strings.TrimSpace(rec.TargetVersion) == target {
+			rec.State = AutoUpdateStateApplying
+			rec.Error = ""
+			_ = writeAutoUpdateState(m.cfg, rec)
+		}
+	}
 	if err := os.Remove(reqPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -138,10 +185,26 @@ func (m *Manager) runWorker(ctx context.Context) error {
 		if rollback {
 			finalStatus.State = ApplyStateRolledBack
 		}
+		if rec, readErr := readAutoUpdateState(autoStatusPath(m.cfg)); readErr == nil {
+			target := strings.TrimSpace(req.TargetVersion)
+			if target != "" && strings.TrimSpace(rec.TargetVersion) == target {
+				rec.State = AutoUpdateStateFailed
+				rec.Error = err.Error()
+				_ = writeAutoUpdateState(m.cfg, rec)
+			}
+		}
 		return err
 	}
 	finalStatus.State = ApplyStateCompleted
 	finalStatus.ToVersion = toVersion
+	if rec, err := readAutoUpdateState(autoStatusPath(m.cfg)); err == nil {
+		target := strings.TrimSpace(rec.TargetVersion)
+		if target != "" && target == strings.TrimSpace(toVersion) {
+			rec = autoUpdateStateRecord{State: AutoUpdateStateIdle}
+			_ = writeAutoUpdateState(m.cfg, rec)
+			_ = os.RemoveAll(preparedPayloadDir(m.cfg, target))
+		}
+	}
 
 	if sqdb, err := db.OpenSQLite(m.cfg.DBPath, 1, 1, time.Minute); err == nil {
 		st := store.New(sqdb)
@@ -161,78 +224,17 @@ func isInvalidApplyRequestPayloadError(err error) bool {
 }
 
 func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, bool, error) {
-	release, err := m.resolveRelease(ctx, strings.TrimSpace(req.TargetVersion))
+	target := strings.TrimSpace(req.TargetVersion)
+	if target != "" && !targetVersionRx.MatchString(target) {
+		return "", false, ErrInvalidTargetVersion
+	}
+	release, payloadRoot, err := m.prepareReleasePayload(ctx, target)
 	if err != nil {
 		return "", false, err
 	}
-	arch := runtime.GOARCH
-	archiveName, archiveURL, ok := resolveArchiveAsset(release, arch)
-	if !ok {
-		candidates := strings.Join(archiveAssetCandidates(arch), ", ")
-		return "", false, fmt.Errorf(
-			"release archive for GOARCH=%s not found (expected one of: %s); available assets: %s",
-			arch,
-			candidates,
-			strings.Join(releaseAssetNames(release), ", "),
-		)
-	}
-	checksumName := "checksums.txt"
-	checksumURL, ok := findAssetURL(release, checksumName)
-	if !ok {
-		return "", false, fmt.Errorf("release asset %s not found", checksumName)
-	}
-	signatureName := strings.TrimSpace(m.cfg.UpdateSignatureAsset)
-	signatureURL := ""
-	if m.cfg.UpdateRequireSignature {
-		if signatureName == "" {
-			return "", false, fmt.Errorf("UPDATE_SIGNATURE_ASSET is required when UPDATE_REQUIRE_SIGNATURE=true")
-		}
-		var found bool
-		signatureURL, found = findAssetURL(release, signatureName)
-		if !found {
-			return "", false, fmt.Errorf("release asset %s not found", signatureName)
-		}
-	}
-
-	runID := req.RequestID
-	if strings.TrimSpace(runID) == "" {
+	runID := strings.TrimSpace(req.RequestID)
+	if runID == "" {
 		runID = fmt.Sprintf("run-%d", m.now().Unix())
-	}
-	runWork := filepath.Join(workDir(m.cfg), sanitizePathToken(runID))
-	_ = os.RemoveAll(runWork)
-	if err := os.MkdirAll(runWork, 0o750); err != nil {
-		return "", false, err
-	}
-	defer os.RemoveAll(runWork)
-
-	archivePath := filepath.Join(runWork, archiveName)
-	checksumPath := filepath.Join(runWork, checksumName)
-	if err := m.downloadAsset(ctx, archiveURL, archivePath); err != nil {
-		return "", false, err
-	}
-	if err := m.downloadAsset(ctx, checksumURL, checksumPath); err != nil {
-		return "", false, err
-	}
-	if m.cfg.UpdateRequireSignature {
-		signaturePath := filepath.Join(runWork, signatureName)
-		if err := m.downloadAsset(ctx, signatureURL, signaturePath); err != nil {
-			return "", false, err
-		}
-		if err := verifyChecksumSignature(checksumPath, signaturePath, m.cfg.UpdateSigningPublicKeys); err != nil {
-			return "", false, err
-		}
-	}
-	if err := verifyChecksumFile(checksumPath, archivePath, archiveName); err != nil {
-		return "", false, err
-	}
-
-	extracted := filepath.Join(runWork, "extract")
-	if err := extractTarGz(archivePath, extracted); err != nil {
-		return "", false, err
-	}
-	payloadRoot, err := findPayloadRoot(extracted)
-	if err != nil {
-		return "", false, err
 	}
 
 	stageDir := filepath.Join(m.cfg.UpdateInstallDir, ".update-stage-"+sanitizePathToken(runID))
@@ -564,6 +566,163 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 	trimBackups(backupsDir(m.cfg), m.cfg.UpdateBackupKeep)
 
 	return release.TagName, false, nil
+}
+
+func (m *Manager) prepareReleasePayload(ctx context.Context, targetVersion string) (githubRelease, string, error) {
+	release, err := m.resolveRelease(ctx, strings.TrimSpace(targetVersion))
+	if err != nil {
+		return githubRelease{}, "", err
+	}
+	preparedDir := preparedPayloadDir(m.cfg, release.TagName)
+	if preparedPayloadReady(preparedDir) {
+		trimPreparedPayloads(workDir(m.cfg), preparedDir)
+		return release, preparedDir, nil
+	}
+
+	arch := runtime.GOARCH
+	archiveName, archiveURL, ok := resolveArchiveAsset(release, arch)
+	if !ok {
+		candidates := strings.Join(archiveAssetCandidates(arch), ", ")
+		return githubRelease{}, "", fmt.Errorf(
+			"release archive for GOARCH=%s not found (expected one of: %s); available assets: %s",
+			arch,
+			candidates,
+			strings.Join(releaseAssetNames(release), ", "),
+		)
+	}
+	checksumName := "checksums.txt"
+	checksumURL, ok := findAssetURL(release, checksumName)
+	if !ok {
+		return githubRelease{}, "", fmt.Errorf("release asset %s not found", checksumName)
+	}
+	signatureName := strings.TrimSpace(m.cfg.UpdateSignatureAsset)
+	signatureURL := ""
+	if m.cfg.UpdateRequireSignature {
+		if signatureName == "" {
+			return githubRelease{}, "", fmt.Errorf("UPDATE_SIGNATURE_ASSET is required when UPDATE_REQUIRE_SIGNATURE=true")
+		}
+		var found bool
+		signatureURL, found = findAssetURL(release, signatureName)
+		if !found {
+			return githubRelease{}, "", fmt.Errorf("release asset %s not found", signatureName)
+		}
+	}
+
+	runWork := filepath.Join(workDir(m.cfg), ".prepare-"+sanitizePathToken(release.TagName)+"-"+sanitizePathToken(fmt.Sprintf("%d", m.now().UnixNano())))
+	_ = os.RemoveAll(runWork)
+	if err := os.MkdirAll(runWork, 0o750); err != nil {
+		return githubRelease{}, "", err
+	}
+	defer os.RemoveAll(runWork)
+
+	archivePath := filepath.Join(runWork, archiveName)
+	checksumPath := filepath.Join(runWork, checksumName)
+	if err := m.downloadAsset(ctx, archiveURL, archivePath); err != nil {
+		return githubRelease{}, "", err
+	}
+	if err := m.downloadAsset(ctx, checksumURL, checksumPath); err != nil {
+		return githubRelease{}, "", err
+	}
+	if m.cfg.UpdateRequireSignature {
+		signaturePath := filepath.Join(runWork, signatureName)
+		if err := m.downloadAsset(ctx, signatureURL, signaturePath); err != nil {
+			return githubRelease{}, "", err
+		}
+		if err := verifyChecksumSignature(checksumPath, signaturePath, m.cfg.UpdateSigningPublicKeys); err != nil {
+			return githubRelease{}, "", err
+		}
+	}
+	if err := verifyChecksumFile(checksumPath, archivePath, archiveName); err != nil {
+		return githubRelease{}, "", err
+	}
+
+	extracted := filepath.Join(runWork, "extract")
+	if err := extractTarGz(archivePath, extracted); err != nil {
+		return githubRelease{}, "", err
+	}
+	payloadRoot, err := findPayloadRoot(extracted)
+	if err != nil {
+		return githubRelease{}, "", err
+	}
+
+	tmpPrepared := preparedDir + ".tmp"
+	_ = os.RemoveAll(tmpPrepared)
+	defer os.RemoveAll(tmpPrepared)
+	if err := os.MkdirAll(tmpPrepared, 0o750); err != nil {
+		return githubRelease{}, "", err
+	}
+	if err := copyFile(filepath.Join(payloadRoot, "despatch"), filepath.Join(tmpPrepared, "despatch"), 0o755); err != nil {
+		return githubRelease{}, "", err
+	}
+	if err := copyFile(filepath.Join(payloadRoot, "despatch-pam-reset-helper"), filepath.Join(tmpPrepared, "despatch-pam-reset-helper"), 0o755); err != nil {
+		return githubRelease{}, "", err
+	}
+	if err := copyFile(filepath.Join(payloadRoot, "despatch-update-worker"), filepath.Join(tmpPrepared, "despatch-update-worker"), 0o755); err != nil {
+		return githubRelease{}, "", err
+	}
+	if err := copyDir(filepath.Join(payloadRoot, "web"), filepath.Join(tmpPrepared, "web")); err != nil {
+		return githubRelease{}, "", err
+	}
+	if err := copyDir(filepath.Join(payloadRoot, "migrations"), filepath.Join(tmpPrepared, "migrations")); err != nil {
+		return githubRelease{}, "", err
+	}
+	if err := copyDir(filepath.Join(payloadRoot, "deploy"), filepath.Join(tmpPrepared, "deploy")); err != nil {
+		return githubRelease{}, "", err
+	}
+	mailSecPayloadPath := filepath.Join(payloadRoot, "despatch-mailsec-service")
+	if _, err := os.Stat(mailSecPayloadPath); err == nil {
+		if err := copyFile(mailSecPayloadPath, filepath.Join(tmpPrepared, "despatch-mailsec-service"), 0o755); err != nil {
+			return githubRelease{}, "", err
+		}
+	} else if !os.IsNotExist(err) {
+		return githubRelease{}, "", err
+	}
+
+	_ = os.RemoveAll(preparedDir)
+	if err := os.Rename(tmpPrepared, preparedDir); err != nil {
+		return githubRelease{}, "", err
+	}
+	trimPreparedPayloads(workDir(m.cfg), preparedDir)
+	return release, preparedDir, nil
+}
+
+func preparedPayloadReady(path string) bool {
+	required := []string{
+		filepath.Join(path, "despatch"),
+		filepath.Join(path, "despatch-pam-reset-helper"),
+		filepath.Join(path, "despatch-update-worker"),
+		filepath.Join(path, "web"),
+		filepath.Join(path, "migrations"),
+		filepath.Join(path, "deploy"),
+	}
+	for _, candidate := range required {
+		if _, err := os.Stat(candidate); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func trimPreparedPayloads(baseDir, keepPath string) {
+	entries, err := os.ReadDir(baseDir)
+	if err != nil {
+		return
+	}
+	keepPath = filepath.Clean(keepPath)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name())
+		if !strings.HasPrefix(name, "prepared-") {
+			continue
+		}
+		path := filepath.Join(baseDir, name)
+		if filepath.Clean(path) == keepPath {
+			continue
+		}
+		_ = os.RemoveAll(path)
+	}
 }
 
 func resolveArchiveAsset(rel githubRelease, arch string) (string, string, bool) {

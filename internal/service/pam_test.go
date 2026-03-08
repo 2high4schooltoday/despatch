@@ -28,12 +28,22 @@ type fakePAMResetter struct {
 	usernames []string
 }
 
+type probeFailResetSender struct {
+	captureResetSender
+	probeErr error
+}
+
 func (f *fakePAMResetter) ResetPassword(ctx context.Context, username, newPassword string) error {
 	_ = ctx
 	_ = newPassword
 	f.calls++
 	f.usernames = append(f.usernames, username)
 	return f.err
+}
+
+func (s *probeFailResetSender) ProbePasswordReset(ctx context.Context) error {
+	_ = ctx
+	return s.probeErr
 }
 
 func (m pamTestDespatch) ListMailboxes(ctx context.Context, user, pass string) ([]mail.Mailbox, error) {
@@ -57,10 +67,13 @@ func (m pamTestDespatch) GetMessage(ctx context.Context, user, pass, id string) 
 func (m pamTestDespatch) Search(ctx context.Context, user, pass, mailbox, query string, page, pageSize int) ([]mail.MessageSummary, error) {
 	return nil, nil
 }
-func (m pamTestDespatch) Send(ctx context.Context, user, pass string, req mail.SendRequest) error {
-	return nil
+func (m pamTestDespatch) Send(ctx context.Context, user, pass string, req mail.SendRequest) (mail.SendResult, error) {
+	return mail.SendResult{SavedCopy: true, SavedCopyMailbox: "Sent"}, nil
 }
 func (m pamTestDespatch) SetFlags(ctx context.Context, user, pass, id string, flags []string) error {
+	return nil
+}
+func (m pamTestDespatch) UpdateFlags(ctx context.Context, user, pass, id string, patch mail.FlagPatch) error {
 	return nil
 }
 func (m pamTestDespatch) Move(ctx context.Context, user, pass, id, mailbox string) error {
@@ -289,6 +302,38 @@ func TestPAMPublicResetAllowsConfirmedExternalSender(t *testing.T) {
 	}
 }
 
+func TestPAMPublicResetRequiresHealthySMTPProbe(t *testing.T) {
+	ctx := context.Background()
+	svc, st := newPAMTestService(t, "PamPass123!")
+	svc.cfg.PAMResetHelperEnabled = true
+	svc.cfg.PasswordResetExternalSenderReady = true
+	sender := &probeFailResetSender{probeErr: errors.New("dial tcp 127.0.0.1:587: connect: connection refused")}
+	svc.sender = sender
+
+	pwHash, err := auth.HashPassword("PamResetUser124!")
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	user, err := st.CreateUser(ctx, "pam-probe@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(ctx, user.ID, "pam-probe-recovery@example.net"); err != nil {
+		t.Fatalf("set recovery email: %v", err)
+	}
+
+	if err := svc.RequestPasswordReset(ctx, "pam-probe@example.com"); !errors.Is(err, ErrPasswordResetUnavailable) {
+		t.Fatalf("expected public reset unavailable with broken smtp probe, got %v", err)
+	}
+	if sender.calls != 0 {
+		t.Fatalf("expected no reset delivery attempt when smtp probe fails, got %d", sender.calls)
+	}
+	caps := svc.PasswordResetCapabilities(ctx)
+	if caps.SelfServiceEnabled || caps.SenderStatus != passwordResetSenderStatusDegraded || caps.SenderReason != passwordResetSenderReasonSMTPUnreachable {
+		t.Fatalf("unexpected capabilities for failed smtp probe: %+v", caps)
+	}
+}
+
 func TestPAMConfirmPasswordResetKeepsTokenWhenHelperUnavailable(t *testing.T) {
 	ctx := context.Background()
 	svc, st := newPAMTestService(t, "PamPass123!")
@@ -409,10 +454,11 @@ func TestPAMSetupDetectsConnectivityErrors(t *testing.T) {
 	svc := New(cfg, st, pamTestDespatch{failWith: errors.New("dial tcp 127.0.0.1:993: connect: connection refused")}, mail.NoopProvisioner{}, nil)
 
 	_, _, err = svc.CompleteSetup(ctx, SetupCompleteRequest{
-		BaseDomain:    "example.com",
-		AdminEmail:    "webmaster@example.com",
-		AdminPassword: "AnyPassword123!",
-		Region:        "us-east",
+		BaseDomain:         "example.com",
+		AdminEmail:         "webmaster@example.com",
+		AdminRecoveryEmail: "recovery@example.net",
+		AdminPassword:      "AnyPassword123!",
+		Region:             "us-east",
 	}, "127.0.0.1", "agent")
 	if !errors.Is(err, ErrPAMVerifierDown) {
 		t.Fatalf("expected ErrPAMVerifierDown, got: %v", err)
@@ -424,10 +470,11 @@ func TestPAMSetupFallsBackToLocalPartAndPersistsLogin(t *testing.T) {
 	svc, st := newPAMTestService(t, "PamPass123!", "webmaster")
 
 	_, user, err := svc.CompleteSetup(ctx, SetupCompleteRequest{
-		BaseDomain:    "example.com",
-		AdminEmail:    "webmaster@example.com",
-		AdminPassword: "PamPass123!",
-		Region:        "us-east",
+		BaseDomain:         "example.com",
+		AdminEmail:         "webmaster@example.com",
+		AdminRecoveryEmail: "recovery@example.net",
+		AdminPassword:      "PamPass123!",
+		Region:             "us-east",
 	}, "127.0.0.1", "agent")
 	if err != nil {
 		t.Fatalf("expected setup success with localpart fallback, got: %v", err)
@@ -450,11 +497,12 @@ func TestPAMSetupAcceptsExplicitMailboxLoginOverride(t *testing.T) {
 	svc, st := newPAMTestService(t, "PamPass123!", "custom_login")
 
 	_, user, err := svc.CompleteSetup(ctx, SetupCompleteRequest{
-		BaseDomain:        "example.com",
-		AdminEmail:        "webmaster@example.com",
-		AdminMailboxLogin: "custom_login",
-		AdminPassword:     "PamPass123!",
-		Region:            "us-east",
+		BaseDomain:         "example.com",
+		AdminEmail:         "webmaster@example.com",
+		AdminRecoveryEmail: "recovery@example.net",
+		AdminMailboxLogin:  "custom_login",
+		AdminPassword:      "PamPass123!",
+		Region:             "us-east",
 	}, "127.0.0.1", "agent")
 	if err != nil {
 		t.Fatalf("expected setup success with explicit login override, got: %v", err)
@@ -477,10 +525,11 @@ func TestPAMSetupReturnsIdentityErrorWhenNoCandidateAuthenticates(t *testing.T) 
 	svc, _ := newPAMTestService(t, "PamPass123!", "other_login")
 
 	_, _, err := svc.CompleteSetup(ctx, SetupCompleteRequest{
-		BaseDomain:    "example.com",
-		AdminEmail:    "webmaster@example.com",
-		AdminPassword: "PamPass123!",
-		Region:        "us-east",
+		BaseDomain:         "example.com",
+		AdminEmail:         "webmaster@example.com",
+		AdminRecoveryEmail: "recovery@example.net",
+		AdminPassword:      "PamPass123!",
+		Region:             "us-east",
 	}, "127.0.0.1", "agent")
 	if err == nil {
 		t.Fatalf("expected PAM identity error, got nil")
