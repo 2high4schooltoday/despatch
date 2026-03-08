@@ -83,6 +83,10 @@ func makeLockDirUnreadable(t *testing.T, cfg config.Config) {
 }
 
 func installFakeSystemctl(t *testing.T, pathLoad, pathActive, serviceLoad, serviceActive string) {
+	installFakeSystemctlWithDetails(t, pathLoad, pathActive, "", "", serviceLoad, serviceActive, "", "")
+}
+
+func installFakeSystemctlWithDetails(t *testing.T, pathLoad, pathActive, pathSubState, pathResult, serviceLoad, serviceActive, serviceSubState, serviceResult string) {
 	t.Helper()
 	dir := t.TempDir()
 	script := filepath.Join(dir, "systemctl")
@@ -99,11 +103,15 @@ done
 case "${unit}:${prop}" in
   despatch-updater.path:LoadState) printf '%%s\n' %q ;;
   despatch-updater.path:ActiveState) printf '%%s\n' %q ;;
+  despatch-updater.path:SubState) printf '%%s\n' %q ;;
+  despatch-updater.path:Result) printf '%%s\n' %q ;;
   despatch-updater.service:LoadState) printf '%%s\n' %q ;;
   despatch-updater.service:ActiveState) printf '%%s\n' %q ;;
-  *) printf 'unsupported systemctl args: %%s\n' "$*" >&2; exit 1 ;;
+  despatch-updater.service:SubState) printf '%%s\n' %q ;;
+  despatch-updater.service:Result) printf '%%s\n' %q ;;
+  *) printf '%%s\n' "" ;;
 esac
-`, pathLoad, pathActive, serviceLoad, serviceActive)
+`, pathLoad, pathActive, pathSubState, pathResult, serviceLoad, serviceActive, serviceSubState, serviceResult)
 	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
 		t.Fatalf("write fake systemctl: %v", err)
 	}
@@ -633,6 +641,43 @@ func TestStatusReportsUpdaterPathInactiveDiagnostic(t *testing.T) {
 	}
 	if status.ConfigDiagnostic == nil || status.ConfigDiagnostic.Reason != "updater_path_inactive" {
 		t.Fatalf("expected updater_path_inactive diagnostic, got %#v", status.ConfigDiagnostic)
+	}
+}
+
+func TestStatusReportsUpdaterPathTriggerLimitDiagnostic(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctlWithDetails(t, "loaded", "failed", "failed", "trigger-limit-hit", "loaded", "failed", "failed", "start-limit-hit")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("set last check timestamp: %v", err)
+	}
+	mgr := NewManager(cfg)
+	status, err := mgr.Status(context.Background(), st, false)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.Configured {
+		t.Fatalf("expected configured=false when updater path unit hit trigger limit")
+	}
+	if status.ConfigDiagnostic == nil || status.ConfigDiagnostic.Reason != "updater_path_trigger_limited" {
+		t.Fatalf("expected updater_path_trigger_limited diagnostic, got %#v", status.ConfigDiagnostic)
+	}
+	if !strings.Contains(status.ConfigDiagnostic.RepairHint, "reset-failed") {
+		t.Fatalf("expected trigger-limit repair hint to include reset-failed, got %q", status.ConfigDiagnostic.RepairHint)
 	}
 }
 

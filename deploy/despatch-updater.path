@@ -2,8 +2,7 @@
 Description=Watch for Despatch update requests
 
 [Path]
-PathExists=/var/lib/despatch/update/request/update-request.json
-PathExistsGlob=/var/lib/despatch/update/request/update-request-*.json
+PathChanged=/var/lib/despatch/update/request
 Unit=despatch-updater.service
 
 [Install]

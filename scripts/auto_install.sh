@@ -2408,7 +2408,7 @@ finish_stage_ok
 
 begin_stage "service_install_start" "Service Install and Start" "10"
 "${PREFIX[@]}" systemctl daemon-reload
-"${PREFIX[@]}" rm -f /var/lib/despatch/update/request/update-request.json /var/lib/despatch/update/lock/update.lock || true
+"${PREFIX[@]}" rm -f /var/lib/despatch/update/request/update-request*.json /var/lib/despatch/update/lock/update.lock || true
 "${PREFIX[@]}" systemctl reset-failed despatch-updater.service despatch-updater.path || true
 "${PREFIX[@]}" systemctl enable --now despatch
 "${PREFIX[@]}" systemctl enable --now despatch-mailsec
@@ -2473,6 +2473,7 @@ fi
 step "Updater runtime readiness verification"
 if ! wait_for_condition "despatch updater path state" 20 1 "${PREFIX[@]}" systemctl is-active --quiet despatch-updater.path; then
   warn "despatch-updater.path is not active after initial start; attempting one-time recovery."
+  "${PREFIX[@]}" rm -f /var/lib/despatch/update/request/update-request*.json /var/lib/despatch/update/lock/update.lock || true
   "${PREFIX[@]}" systemctl reset-failed despatch-updater.service despatch-updater.path || true
   "${PREFIX[@]}" systemctl restart despatch-updater.path || true
   if ! wait_for_condition "despatch updater path state" 20 1 "${PREFIX[@]}" systemctl is-active --quiet despatch-updater.path; then

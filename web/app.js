@@ -5455,6 +5455,8 @@ function updateConfigDiagnosticMessage(status) {
     headline = "Updater units are missing on this host.";
   } else if (reason === "updater_service_missing") {
     headline = "Updater service unit is missing or not loaded by systemd.";
+  } else if (reason === "updater_path_trigger_limited") {
+    headline = "Updater request watcher hit a systemd trigger limit and stopped watching for requests.";
   } else if (reason === "updater_path_inactive") {
     headline = "Updater path unit is installed but not active.";
   } else if (reason === "updater_worker_missing") {

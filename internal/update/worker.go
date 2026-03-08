@@ -105,6 +105,9 @@ func (m *Manager) runWorker(ctx context.Context) error {
 		FromVersion:   version.Current().Version,
 	}, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750))
 	_ = ensureDespatchReadable(statusPath(m.cfg))
+	if err := os.Remove(reqPath); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 
 	finalStatus := ApplyStatus{
 		State:         ApplyStateFailed,
@@ -475,6 +478,7 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 			return "", true, err
 		}
 	}
+	_ = runCmd(ctx, "systemctl", "reset-failed", "despatch-updater.service", "despatch-updater.path")
 	mailSecUnitNowPresent := false
 	if _, err := os.Stat(mailSecUnitDst); err == nil {
 		mailSecUnitNowPresent = true

@@ -198,6 +198,11 @@ fn run() -> Result<(), WorkerError> {
             error: String::new(),
         },
     )?;
+    match fs::remove_file(&req_path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(err) => return Err(WorkerError::Io(err)),
+    }
 
     let apply_result = apply_release(&cfg, &req);
     match apply_result {
@@ -837,6 +842,15 @@ fn apply_release(cfg: &Config, req: &ApplyRequest) -> Result<ApplyResult, Worker
             "systemd daemon-reload failed: {err}"
         )));
     }
+    let _ = run_cmd(
+        "systemctl",
+        &[
+            "reset-failed",
+            "despatch-updater.service",
+            "despatch-updater.path",
+        ],
+        Duration::from_secs(60),
+    );
     if let Err(err) = run_cmd(
         "systemctl",
         &["enable", "--now", "despatch-updater.path"],

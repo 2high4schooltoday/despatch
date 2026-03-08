@@ -27,6 +27,8 @@ type systemdUnitState struct {
 	Name        string
 	LoadState   string
 	ActiveState string
+	SubState    string
+	Result      string
 	ProbeErr    error
 }
 
@@ -62,13 +64,16 @@ func (s updaterRuntimeStatus) ConfigDiagnostic(cfg config.Config) *ConfigDiagnos
 		}
 	}
 	if !s.PathUnit.Known() || !s.PathUnit.Active() {
+		if s.PathUnit.TriggerLimited() || s.ServiceUnit.StartLimited() {
+			return &ConfigDiagnostic{
+				Reason:     "updater_path_trigger_limited",
+				Detail:     updaterPathFailureDetail(s),
+				RepairHint: updaterPathResetRepairHint(),
+			}
+		}
 		return &ConfigDiagnostic{
-			Reason: "updater_path_inactive",
-			Detail: fmt.Sprintf(
-				"despatch-updater.path is not active (load_state=%s active_state=%s)",
-				stateOrUnknown(s.PathUnit.LoadState),
-				stateOrUnknown(s.PathUnit.ActiveState),
-			),
+			Reason:     "updater_path_inactive",
+			Detail:     updaterPathFailureDetail(s),
 			RepairHint: updaterPathActivationRepairHint(),
 		}
 	}
@@ -97,11 +102,13 @@ func (s updaterRuntimeStatus) StaleQueueError() string {
 		return "queued request was not picked up because despatch-updater.service is not installed or not known to systemd"
 	}
 	if !s.PathUnit.Known() || !s.PathUnit.Active() {
-		return fmt.Sprintf(
-			"queued request was not picked up because despatch-updater.path is not active (load_state=%s active_state=%s)",
-			stateOrUnknown(s.PathUnit.LoadState),
-			stateOrUnknown(s.PathUnit.ActiveState),
-		)
+		if s.PathUnit.TriggerLimited() || s.ServiceUnit.StartLimited() {
+			return fmt.Sprintf(
+				"queued request was not picked up because despatch-updater.path hit a systemd trigger/start limit (%s)",
+				updaterPathFailureSummary(s),
+			)
+		}
+		return fmt.Sprintf("queued request was not picked up because %s", updaterPathFailureDetail(s))
 	}
 	if strings.TrimSpace(s.ServiceExecPath) == "" || !s.ServiceExecExists {
 		return "queued request was not picked up because despatch-updater.service does not resolve to a working updater executable"
@@ -115,6 +122,14 @@ func (s systemdUnitState) Known() bool {
 
 func (s systemdUnitState) Active() bool {
 	return strings.EqualFold(strings.TrimSpace(s.ActiveState), "active")
+}
+
+func (s systemdUnitState) TriggerLimited() bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(s.Result)), "trigger-limit")
+}
+
+func (s systemdUnitState) StartLimited() bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(s.Result)), "start-limit")
 }
 
 func defaultUpdaterRuntimeProbe(ctx context.Context, cfg config.Config) updaterRuntimeStatus {
@@ -160,6 +175,14 @@ func inspectSystemdUnit(ctx context.Context, unitName string) systemdUnitState {
 		return state
 	}
 	state.ActiveState = activeState
+	subState, err := systemctlShowValue(ctx, unitName, "SubState")
+	if err == nil {
+		state.SubState = subState
+	}
+	result, err := systemctlShowValue(ctx, unitName, "Result")
+	if err == nil {
+		state.Result = result
+	}
 	return state
 }
 
@@ -244,17 +267,21 @@ func updaterRuntimeRepairHint() string {
 
 func updaterUnitInstallRepairHint(cfg config.Config) string {
 	return fmt.Sprintf(
-		"install despatch-updater.path and despatch-updater.service into %s, run systemctl daemon-reload, then enable --now despatch-updater.path",
+		"install despatch-updater.path and despatch-updater.service into %s, run systemctl daemon-reload, then reset-failed and enable --now despatch-updater.path",
 		shQuote(cfg.UpdateSystemdUnitDir),
 	)
 }
 
 func updaterPathActivationRepairHint() string {
-	return "run systemctl daemon-reload && systemctl enable --now despatch-updater.path"
+	return "run systemctl daemon-reload && systemctl reset-failed despatch-updater.service despatch-updater.path && systemctl enable --now despatch-updater.path"
+}
+
+func updaterPathResetRepairHint() string {
+	return "run systemctl reset-failed despatch-updater.service despatch-updater.path && systemctl restart despatch-updater.path"
 }
 
 func updaterServiceExecRepairHint() string {
-	return "reinstall the current release so /opt/despatch/despatch-update-worker or /opt/despatch/despatch matches despatch-updater.service, then run systemctl daemon-reload && systemctl restart despatch-updater.path"
+	return "reinstall the current release so /opt/despatch/despatch-update-worker or /opt/despatch/despatch matches despatch-updater.service, then run systemctl daemon-reload && systemctl reset-failed despatch-updater.service despatch-updater.path && systemctl restart despatch-updater.path"
 }
 
 func stateOrUnknown(v string) string {
@@ -275,4 +302,31 @@ func firstNonNil(errs ...error) error {
 		}
 	}
 	return nil
+}
+
+func updaterPathFailureDetail(s updaterRuntimeStatus) string {
+	return fmt.Sprintf("despatch-updater.path is not active (%s)", updaterPathFailureSummary(s))
+}
+
+func updaterPathFailureSummary(s updaterRuntimeStatus) string {
+	parts := []string{
+		fmt.Sprintf("path_load_state=%s", stateOrUnknown(s.PathUnit.LoadState)),
+		fmt.Sprintf("path_active_state=%s", stateOrUnknown(s.PathUnit.ActiveState)),
+	}
+	if strings.TrimSpace(s.PathUnit.SubState) != "" {
+		parts = append(parts, fmt.Sprintf("path_sub_state=%s", stateOrUnknown(s.PathUnit.SubState)))
+	}
+	if strings.TrimSpace(s.PathUnit.Result) != "" {
+		parts = append(parts, fmt.Sprintf("path_result=%s", stateOrUnknown(s.PathUnit.Result)))
+	}
+	if strings.TrimSpace(s.ServiceUnit.ActiveState) != "" {
+		parts = append(parts, fmt.Sprintf("service_active_state=%s", stateOrUnknown(s.ServiceUnit.ActiveState)))
+	}
+	if strings.TrimSpace(s.ServiceUnit.SubState) != "" {
+		parts = append(parts, fmt.Sprintf("service_sub_state=%s", stateOrUnknown(s.ServiceUnit.SubState)))
+	}
+	if strings.TrimSpace(s.ServiceUnit.Result) != "" {
+		parts = append(parts, fmt.Sprintf("service_result=%s", stateOrUnknown(s.ServiceUnit.Result)))
+	}
+	return strings.Join(parts, " ")
 }

@@ -267,7 +267,9 @@ sudo systemctl restart despatch-updater.path
 
 Updater runtime behavior:
 - Admin apply queues a request file and relies on `despatch-updater.path` to hand it to the privileged worker.
+- Current updater units watch request-directory changes instead of persistent file-exists matches, so a failed worker cannot drive the path unit into a self-trigger loop from one stale queue file.
 - `despatch-updater.path` must stay `active`; if it is inactive, Admin now reports the runtime as not configured instead of leaving updates stuck in `queued`.
+- If `despatch-updater.path` enters `failed`, clear the failed state before restarting it: `sudo systemctl reset-failed despatch-updater.service despatch-updater.path && sudo systemctl restart despatch-updater.path`.
 - Current releases refresh updater unit templates from `deploy/` during apply so updater fixes self-propagate after one repaired/manual rollout.
 
 ## CAPTCHA with CAP standalone (Ubuntu)
