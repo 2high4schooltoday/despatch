@@ -1139,6 +1139,143 @@ func TestStatusFailsStaleQueuedRequestWhenLockDirUnreadable(t *testing.T) {
 	}
 }
 
+func TestStatusRecoversStalePreparingAutoUpdate(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "active", "loaded", "inactive")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	now := time.Now().UTC()
+	mgr := NewManager(cfg)
+	mgr.now = func() time.Time { return now }
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	if err := writeAutoUpdateState(cfg, autoUpdateStateRecord{
+		State:         AutoUpdateStatePreparing,
+		TargetVersion: "v1.2.3",
+	}); err != nil {
+		t.Fatalf("write auto state: %v", err)
+	}
+	req := ApplyRequest{
+		RequestID:     "auto-prepare-stale",
+		RequestedAt:   now.Add(-2 * updateQueuePickupGrace),
+		RequestedBy:   "system:auto-update",
+		Mode:          ApplyModePrepare,
+		TargetVersion: "v1.2.3",
+	}
+	if err := writeJSONAtomic(requestQueuePath(req, cfg), req, 0o640, updaterDirModeForPath(cfg, requestDir(cfg), 0o750)); err != nil {
+		t.Fatalf("write prepare request: %v", err)
+	}
+	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, now.Format(time.RFC3339)); err != nil {
+		t.Fatalf("set last check timestamp: %v", err)
+	}
+
+	status, err := mgr.Status(context.Background(), st, false)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if status.AutoUpdate.State != AutoUpdateStateFailed {
+		t.Fatalf("expected stale preparing state to become failed, got %#v", status.AutoUpdate)
+	}
+	if !strings.Contains(status.AutoUpdate.Error, "queued request was not picked up") {
+		t.Fatalf("unexpected stale prepare error: %q", status.AutoUpdate.Error)
+	}
+	pending, err := pendingRequestPaths(cfg)
+	if err != nil {
+		t.Fatalf("pending request paths: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected stale prepare request to be cleared, got %v", pending)
+	}
+	stored, err := readAutoUpdateState(autoStatusPath(cfg))
+	if err != nil {
+		t.Fatalf("read stored auto state: %v", err)
+	}
+	if stored.State != AutoUpdateStateFailed {
+		t.Fatalf("expected stored auto state to become failed, got %#v", stored)
+	}
+}
+
+func TestQueueApplyRecoversStalePreparingAutoUpdate(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "active", "loaded", "inactive")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	now := time.Now().UTC()
+	mgr := NewManager(cfg)
+	mgr.now = func() time.Time { return now }
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	if err := writeAutoUpdateState(cfg, autoUpdateStateRecord{
+		State:         AutoUpdateStatePreparing,
+		TargetVersion: "v1.2.3",
+	}); err != nil {
+		t.Fatalf("write auto state: %v", err)
+	}
+	req := ApplyRequest{
+		RequestID:     "auto-prepare-stale",
+		RequestedAt:   now.Add(-2 * updateQueuePickupGrace),
+		RequestedBy:   "system:auto-update",
+		Mode:          ApplyModePrepare,
+		TargetVersion: "v1.2.3",
+	}
+	if err := writeJSONAtomic(requestQueuePath(req, cfg), req, 0o640, updaterDirModeForPath(cfg, requestDir(cfg), 0o750)); err != nil {
+		t.Fatalf("write prepare request: %v", err)
+	}
+
+	applyReq, err := mgr.QueueApply(context.Background(), st, "admin@example.com", "v1.2.3", "manual-apply")
+	if err != nil {
+		t.Fatalf("queue manual apply: %v", err)
+	}
+	if applyReq.RequestID != "manual-apply" {
+		t.Fatalf("unexpected apply request id: %q", applyReq.RequestID)
+	}
+	pending, err := pendingRequests(cfg)
+	if err != nil {
+		t.Fatalf("pending requests: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected only queued manual apply request to remain, got %#v", pending)
+	}
+	if pending[0].Request.Mode != ApplyModeApply {
+		t.Fatalf("expected manual apply request mode, got %q", pending[0].Request.Mode)
+	}
+	stored, err := readAutoUpdateState(autoStatusPath(cfg))
+	if err != nil {
+		t.Fatalf("read stored auto state: %v", err)
+	}
+	if stored.State != AutoUpdateStateFailed {
+		t.Fatalf("expected stale auto prepare to be cleared before manual apply, got %#v", stored)
+	}
+}
+
 func TestMigrateLegacyPasswordResetEnvRewritesBrokenLoopbackResetSettings(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".env")
 	raw := strings.Join([]string{

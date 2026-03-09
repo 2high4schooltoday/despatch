@@ -155,6 +155,9 @@ func (m *Manager) runWorker(ctx context.Context) error {
 				_ = writeAutoUpdateState(m.cfg, rec)
 			}
 		}
+		if err := os.Remove(reqPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 		release, _, err := m.prepareReleasePayload(ctx, strings.TrimSpace(req.TargetVersion))
 		if err != nil {
 			rec, readErr := readAutoUpdateState(autoStatusPath(m.cfg))
@@ -164,7 +167,6 @@ func (m *Manager) runWorker(ctx context.Context) error {
 				rec.Error = err.Error()
 				_ = writeAutoUpdateState(m.cfg, rec)
 			}
-			_ = os.Remove(reqPath)
 			return err
 		}
 		rec := autoUpdateStateRecord{
@@ -174,10 +176,6 @@ func (m *Manager) runWorker(ctx context.Context) error {
 			ScheduledFor:  nextNightlyWindow(m.now()),
 		}
 		if err := writeAutoUpdateState(m.cfg, rec); err != nil {
-			_ = os.Remove(reqPath)
-			return err
-		}
-		if err := os.Remove(reqPath); err != nil && !os.IsNotExist(err) {
 			return err
 		}
 		return nil
@@ -1486,6 +1484,9 @@ func sanitizePathToken(v string) string {
 }
 
 func ensureDespatchReadable(path string) error {
+	if os.Geteuid() != 0 {
+		return os.Chmod(path, 0o640)
+	}
 	u, err := user.Lookup("despatch")
 	if err != nil {
 		return err

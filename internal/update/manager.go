@@ -51,6 +51,9 @@ func NewManager(cfg config.Config) *Manager {
 func (m *Manager) Status(ctx context.Context, st *store.Store, forceCheck bool) (StatusResponse, error) {
 	runtimeStatus := m.runtimeProbe(ctx, m.cfg)
 	configured, configDiagnostic := m.configurationStatus(runtimeStatus)
+	if err := m.recoverStaleAutoPrepare(runtimeStatus); err != nil {
+		return StatusResponse{}, err
+	}
 	autoEnabled, _ := m.autoUpdateEnabled(ctx, st)
 	autoRecord, err := readAutoUpdateState(autoStatusPath(m.cfg))
 	if err != nil && !isUpdaterPermissionError(err) {
@@ -125,6 +128,9 @@ func (m *Manager) QueuePrepare(ctx context.Context, st *store.Store, requestedBy
 
 func (m *Manager) queueRequest(ctx context.Context, st *store.Store, requestedBy, targetVersion, requestID, mode string) (ApplyRequest, error) {
 	runtimeStatus := m.runtimeProbe(ctx, m.cfg)
+	if err := m.recoverStaleAutoPrepare(runtimeStatus); err != nil {
+		return ApplyRequest{}, fmt.Errorf("%w: %v", ErrUpdateRequestFailed, err)
+	}
 	current, err := readApplyStatusTolerant(statusPath(m.cfg))
 	if err != nil {
 		return ApplyRequest{}, fmt.Errorf("%w: %v", ErrUpdateRequestFailed, err)
@@ -656,6 +662,61 @@ func (m *Manager) staleQueuedApplyStatus(runtimeStatus updaterRuntimeStatus, cur
 	current.FinishedAt = m.now()
 	current.Error = runtimeStatus.StaleQueueError()
 	return current
+}
+
+func (m *Manager) recoverStaleAutoPrepare(runtimeStatus updaterRuntimeStatus) error {
+	rec, err := readAutoUpdateState(autoStatusPath(m.cfg))
+	if err != nil {
+		if isUpdaterPermissionError(err) {
+			return nil
+		}
+		return err
+	}
+	if rec.State != AutoUpdateStatePreparing {
+		return nil
+	}
+	pending, err := pendingRequests(m.cfg)
+	if err != nil {
+		if isUpdaterPermissionError(err) {
+			return nil
+		}
+		return err
+	}
+	stalePaths := make([]string, 0, 1)
+	for _, item := range pending {
+		if normalizeApplyMode(item.Request.Mode) != ApplyModePrepare {
+			continue
+		}
+		if rec.TargetVersion != "" {
+			reqTarget := strings.TrimSpace(item.Request.TargetVersion)
+			if reqTarget != "" && reqTarget != rec.TargetVersion {
+				continue
+			}
+		}
+		requestedAt := item.Request.RequestedAt
+		if requestedAt.IsZero() {
+			if info, statErr := os.Stat(item.Path); statErr == nil {
+				requestedAt = info.ModTime().UTC()
+			}
+		}
+		if requestedAt.IsZero() || m.now().Before(requestedAt.Add(updateQueuePickupGrace)) {
+			return nil
+		}
+		stalePaths = append(stalePaths, item.Path)
+	}
+	if len(stalePaths) == 0 {
+		return nil
+	}
+	for _, path := range stalePaths {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	rec.State = AutoUpdateStateFailed
+	rec.DownloadedAt = time.Time{}
+	rec.ScheduledFor = time.Time{}
+	rec.Error = runtimeStatus.StaleQueueError()
+	return writeAutoUpdateState(m.cfg, rec)
 }
 
 func ApplyErrorCode(err error) string {
