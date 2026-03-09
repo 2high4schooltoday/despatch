@@ -1,3 +1,15 @@
+function createThreadState(overrides = {}) {
+  return {
+    id: "",
+    items: [],
+    index: -1,
+    truncated: false,
+    mailbox: "",
+    expanded: true,
+    ...overrides,
+  };
+}
+
 const state = {
   user: null,
   mailbox: "INBOX",
@@ -6,17 +18,13 @@ const state = {
     mailboxes: [],
     drafts: [],
     selectedDraftID: "",
+    selectedMessageIDs: new Set(),
     pollTimer: 0,
     refreshInFlight: false,
   },
   selectedMessage: null,
   selectedMessageSummary: null,
-  thread: {
-    id: "",
-    items: [],
-    index: -1,
-    truncated: false,
-  },
+  thread: createThreadState(),
   theme: "machine-dark",
   auth: {
     lastUnauthorizedAtMs: 0,
@@ -84,14 +92,15 @@ const state = {
       mode: "send",
       messageID: "",
     },
-    attachments: [],
-    inlineImages: [],
+    assets: [],
     submitInFlight: false,
     draftID: "",
     draftLoaded: false,
     draftDirty: false,
     draftSaving: false,
     draftError: "",
+    draftStatus: "draft",
+    lastSendError: "",
     draftLastSavedAt: "",
     draftSaveTimer: 0,
     draftBaselineJSON: "",
@@ -214,7 +223,13 @@ const el = {
   messages: document.getElementById("messages"),
   meta: document.getElementById("message-meta"),
   messageSubjectAnchor: document.getElementById("message-subject-anchor"),
+  threadStrip: document.getElementById("thread-strip"),
   threadPosition: document.getElementById("thread-position"),
+  threadSelectionStatus: document.getElementById("thread-selection-status"),
+  threadTruncated: document.getElementById("thread-truncated"),
+  threadListWrap: document.getElementById("thread-list-wrap"),
+  threadList: document.getElementById("thread-list"),
+  btnThreadCollapse: document.getElementById("btn-thread-collapse"),
   btnThreadPrev: document.getElementById("btn-thread-prev"),
   btnThreadNext: document.getElementById("btn-thread-next"),
   btnReaderViewHTML: document.getElementById("btn-reader-view-html"),
@@ -229,7 +244,15 @@ const el = {
   btnForward: document.getElementById("btn-forward"),
   btnFlag: document.getElementById("btn-flag"),
   btnSeen: document.getElementById("btn-mark-seen"),
+  btnArchive: document.getElementById("btn-archive"),
+  btnMove: document.getElementById("btn-move"),
   btnTrash: document.getElementById("btn-trash"),
+  mailMoveTarget: document.getElementById("mail-move-target"),
+  mailBulkBar: document.getElementById("mail-bulk-bar"),
+  mailCheckAll: document.getElementById("mail-check-all"),
+  mailSelectionCount: document.getElementById("mail-selection-count"),
+  btnMailSelectVisible: document.getElementById("btn-mail-select-visible"),
+  btnMailClear: document.getElementById("btn-mail-clear"),
   btnComposeOpen: document.getElementById("btn-compose-open"),
   btnComposeClose: document.getElementById("btn-compose-close"),
   btnComposeDiscard: document.getElementById("btn-compose-discard"),
@@ -265,6 +288,8 @@ const el = {
   composeBodyHTMLInput: document.getElementById("compose-body-html"),
   composeDraftState: document.getElementById("compose-draft-state"),
   composeDraftNote: document.getElementById("compose-draft-note"),
+  composeAssets: document.getElementById("compose-assets"),
+  composeAssetsList: document.getElementById("compose-assets-list"),
   composeToggleFormatting: document.getElementById("compose-toggle-formatting"),
   composeEditorTools: document.getElementById("compose-editor-tools"),
   composeEditor: document.getElementById("compose-editor"),
@@ -764,6 +789,7 @@ function routeToAuthWithMessage(message, code = "") {
   state.auth.legacyMFAOfferShownForSession = false;
   state.auth.mfaFlowPromise = null;
   state.user = null;
+  clearMailMessageSelection({ render: false });
   clearReaderSelection();
   renderPasskeyCredentials([]);
   renderTrustedDevices([]);
@@ -836,6 +862,8 @@ function composeComparableDraftPayload(raw = {}) {
     subject: String(raw.subject ?? "").trim(),
     body_text: String(raw.body_text ?? raw.bodyText ?? "").trim(),
     body_html: String(raw.body_html ?? raw.bodyHTML ?? "").trim(),
+    status: String(raw.status ?? "active").trim().toLowerCase() || "active",
+    last_send_error: String(raw.last_send_error ?? raw.lastSendError ?? "").trim(),
   };
 }
 
@@ -859,6 +887,8 @@ function composeCurrentDraftPayload() {
     subject: String(el.composeSubjectInput?.value || ""),
     body_text: composeEditorText(),
     body_html: composeEditorHTML(),
+    status: composePersistedDraftStatus(),
+    last_send_error: composePersistedDraftStatus() === "failed" ? state.compose.lastSendError : "",
   });
 }
 
@@ -875,15 +905,101 @@ function composeDraftHasMeaningfulContent(raw = {}) {
 }
 
 function composeHasLiveMedia() {
-  return state.compose.attachments.length > 0 || state.compose.inlineImages.length > 0;
+  return composeAssets().length > 0;
 }
 
-function writeComposeCrashBuffer(draftID = state.compose.draftID || "") {
+function composeAssets() {
+  return Array.isArray(state.compose.assets) ? state.compose.assets : [];
+}
+
+function composeAssetByID(id) {
+  const key = String(id || "").trim();
+  if (!key) return null;
+  return composeAssets().find((item) => String(item?.id || "") === key) || null;
+}
+
+function composeReadyAssets() {
+  return composeAssets().filter((item) => String(item?.status || "") === "ready");
+}
+
+function composeInlineAssets() {
+  return composeAssets().filter((item) => !!item?.inline);
+}
+
+function composeAssetUploadInProgress() {
+  return composeAssets().some((item) => String(item?.status || "") === "uploading");
+}
+
+function composeAssetHasFailed() {
+  return composeAssets().some((item) => String(item?.status || "") === "failed");
+}
+
+function composePersistedDraftStatus() {
+  const current = String(state.compose.draftStatus || "active").trim().toLowerCase();
+  if (current === "failed") {
+    return state.compose.draftDirty ? "active" : "failed";
+  }
+  if (current === "scheduled" || current === "retrying" || current === "sent") {
+    return current;
+  }
+  return "active";
+}
+
+function composeDraftAttachmentURL(draftID, attachmentID) {
+  const resolvedDraftID = String(draftID || state.compose.draftID || "").trim();
+  const resolvedAttachmentID = String(attachmentID || "").trim();
+  if (!resolvedDraftID || !resolvedAttachmentID) return "";
+  return `/api/v2/drafts/${encodeURIComponent(resolvedDraftID)}/attachments/${encodeURIComponent(resolvedAttachmentID)}`;
+}
+
+function parseComposeAttachmentRefs(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item) => item && typeof item === "object")
+      .map((item, index) => ({
+        id: String(item.id || "").trim(),
+        name: String(item.filename || item.name || "").trim() || "attachment.bin",
+        contentType: String(item.content_type || item.contentType || "application/octet-stream").trim() || "application/octet-stream",
+        size: Number(item.size_bytes ?? item.size ?? 0) || 0,
+        inline: Boolean(item.inline_part ?? item.inline),
+        contentID: String(item.content_id || item.contentID || "").trim(),
+        sortOrder: Number(item.sort_order ?? item.sortOrder ?? index) || index,
+      }))
+      .filter((item) => item.id !== "");
+  } catch {
+    return [];
+  }
+}
+
+function composeAssetLabel(asset) {
+  const name = String(asset?.name || "attachment.bin");
+  const size = Number(asset?.size || 0);
+  if (size <= 0) return name;
+  const sizeKB = Math.max(1, Math.round(size / 1024));
+  return `${name} (${sizeKB} KB)`;
+}
+
+function composeAssetStatusLabel(asset) {
+  const status = String(asset?.status || "ready");
+  if (status === "uploading") return "Uploading";
+  if (status === "failed") return "Failed";
+  return "Ready";
+}
+
+function writeComposeCrashBuffer(draftID = state.compose.draftID || "", options = {}) {
+  const overrideUpdatedAtMs = Number(options.updatedAtMs || 0);
+  const updatedAtMs = Number.isFinite(overrideUpdatedAtMs) && overrideUpdatedAtMs > 0
+    ? overrideUpdatedAtMs
+    : Date.now();
   try {
     const payload = {
       ...composeCurrentDraftPayload(),
       draft_id: String(draftID || "").trim(),
-      updated_at_ms: Date.now(),
+      updated_at_ms: updatedAtMs,
     };
     localStorage.setItem(composeCrashBufferKey(draftID), JSON.stringify(payload));
   } catch {
@@ -963,7 +1079,7 @@ function composeEditorSnapshot(mode = "live") {
   const root = document.createElement("div");
   root.innerHTML = String(el.composeEditor?.innerHTML || "");
   const inlineByID = new Map(
-    (Array.isArray(state.compose.inlineImages) ? state.compose.inlineImages : []).map((item) => [String(item.id || ""), item]),
+    composeInlineAssets().map((item) => [String(item.id || ""), item]),
   );
 
   const chips = Array.from(root.querySelectorAll("[data-compose-attachment-id]"));
@@ -980,27 +1096,50 @@ function composeEditorSnapshot(mode = "live") {
     const inlineID = String(img.getAttribute("data-compose-inline-image-id") || "");
     const src = String(img.getAttribute("src") || "");
     const isInlineNode = inlineID !== "";
+    const inline = isInlineNode ? (inlineByID.get(inlineID) || null) : null;
     if (isInlineNode) {
-      const inline = inlineByID.get(inlineID) || null;
       if (mode === "send") {
-        if (inline && inline.cid) {
-          img.setAttribute("src", `cid:${inline.cid}`);
+        if (inline && inline.status === "ready" && inline.contentID) {
+          img.setAttribute("src", `cid:${inline.contentID}`);
         } else {
           img.replaceWith(composeCreateMissingMediaNode(root.ownerDocument, "image"));
           continue;
         }
       } else if (mode === "draft") {
-        img.replaceWith(composeCreateMissingMediaNode(root.ownerDocument, "image"));
-        continue;
+        if (inline && inline.status === "ready") {
+          const remoteURL = composeDraftAttachmentURL(state.compose.draftID, inline.id);
+          if (remoteURL) {
+            img.setAttribute("src", remoteURL);
+          }
+        } else {
+          img.replaceWith(composeCreateMissingMediaNode(root.ownerDocument, "image"));
+          continue;
+        }
       }
     } else if (mode === "draft" && (/^blob:/i.test(src) || /^cid:/i.test(src))) {
       img.replaceWith(composeCreateMissingMediaNode(root.ownerDocument, "image"));
       continue;
     }
-    img.removeAttribute("data-compose-inline-image-id");
-    img.removeAttribute("data-compose-inline-image-cid");
-    img.removeAttribute("contenteditable");
-    img.classList.remove("compose-inline-image");
+    if (mode === "draft") {
+      if (isInlineNode) {
+        img.setAttribute("data-compose-inline-image-id", inlineID);
+        if (inline?.contentID) {
+          img.setAttribute("data-compose-inline-image-cid", inline.contentID);
+        }
+        img.setAttribute("contenteditable", "false");
+        img.classList.add("compose-inline-image");
+      } else {
+        img.removeAttribute("data-compose-inline-image-id");
+        img.removeAttribute("data-compose-inline-image-cid");
+        img.removeAttribute("contenteditable");
+        img.classList.remove("compose-inline-image");
+      }
+    } else {
+      img.removeAttribute("data-compose-inline-image-id");
+      img.removeAttribute("data-compose-inline-image-cid");
+      img.removeAttribute("contenteditable");
+      img.classList.remove("compose-inline-image");
+    }
   }
 
   if (mode === "send") {
@@ -1078,6 +1217,50 @@ function setComposeDraftNote(text = "", tone = "muted") {
     el.composeDraftNote.classList.add("compose-inline-note--warn");
   } else if (tone === "error") {
     el.composeDraftNote.classList.add("compose-inline-note--error");
+  }
+}
+
+function syncComposeServerDraftState(draft, options = {}) {
+  const record = draft && typeof draft === "object" ? draft : {};
+  const oldDraftID = String(state.compose.draftID || "");
+  const nextDraftID = String(record.id || oldDraftID);
+  if (nextDraftID) {
+    state.compose.draftID = nextDraftID;
+    state.compose.draftLoaded = true;
+  }
+  state.compose.draftSaving = false;
+  if (options.keepDirty !== true) {
+    state.compose.draftDirty = false;
+  }
+  state.compose.draftError = "";
+  state.compose.draftStatus = String(record.status || state.compose.draftStatus || "active").trim().toLowerCase() || "active";
+  state.compose.lastSendError = String(record.last_send_error || "").trim();
+  state.compose.draftLastSavedAt = String(record.updated_at || state.compose.draftLastSavedAt || new Date().toISOString());
+  if (options.skipBaseline !== true) {
+    state.compose.draftBaselineJSON = composeDraftPayloadJSON(record);
+  }
+  if (state.compose.draftID) {
+    const serverUpdatedAtMs = Date.parse(String(record.updated_at || state.compose.draftLastSavedAt || ""));
+    writeComposeCrashBuffer(state.compose.draftID, {
+      updatedAtMs: Number.isFinite(serverUpdatedAtMs) && serverUpdatedAtMs > 0 ? serverUpdatedAtMs : Date.now(),
+    });
+  }
+  if (!oldDraftID && state.compose.draftID) {
+    clearComposeCrashBuffer("");
+  }
+  if (nextDraftID) {
+    upsertLocalDraft(record);
+  }
+  applyComposeSendFailurePresentation();
+}
+
+function applyComposeSendFailurePresentation() {
+  if (String(state.compose.draftStatus || "").toLowerCase() === "failed" && state.compose.lastSendError) {
+    setComposeDraftNote(`Send failed. ${state.compose.lastSendError}`, "error");
+    return;
+  }
+  if (String(el.composeDraftNote?.textContent || "").trim().toLowerCase().startsWith("send failed.")) {
+    setComposeDraftNote("");
   }
 }
 
@@ -1253,6 +1436,7 @@ function composeCanSubmit() {
   const subjectOk = String(el.composeSubjectInput?.value || "").trim() !== "";
   const hasBody = composeEditorHasContent();
   if (toCount === 0 || !subjectOk || !hasBody || composeHasInvalidRecipients()) return false;
+  if (composeAssetUploadInProgress() || composeAssetHasFailed()) return false;
   if (state.compose.fromMode === "manual") {
     const authEmail = composeAuthEmailValue().toLowerCase();
     const manual = composeResolvedManualSender().toLowerCase();
@@ -1265,7 +1449,8 @@ function updateComposeSubmitState() {
   const disabled = state.compose.submitInFlight || !composeCanSubmit();
   if (el.btnComposeSend) {
     el.btnComposeSend.disabled = disabled;
-    el.btnComposeSend.textContent = state.compose.submitInFlight ? "Sending..." : "Send";
+    const retryLabel = String(state.compose.draftStatus || "").toLowerCase() === "failed" ? "Retry send" : "Send";
+    el.btnComposeSend.textContent = state.compose.submitInFlight ? "Sending..." : retryLabel;
   }
   const [draftText, draftTone] = composeDraftStatusText();
   if (draftText !== "Draft") {
@@ -1317,6 +1502,8 @@ function clearComposeDraft() {
   state.compose.draftDirty = false;
   state.compose.draftSaving = false;
   state.compose.draftError = "";
+  state.compose.draftStatus = "draft";
+  state.compose.lastSendError = "";
   state.compose.draftLastSavedAt = "";
   state.compose.draftBaselineJSON = "";
   clearComposeCrashBuffer();
@@ -1359,6 +1546,8 @@ function applyComposeDraftPayload(payload, opts = {}) {
   if (el.composeFromManualInput) {
     el.composeFromManualInput.value = draft.from_manual;
   }
+  state.compose.draftStatus = draft.status || "active";
+  state.compose.lastSendError = draft.last_send_error || "";
   state.compose.fromMode = draft.from_mode || "default";
   state.compose.selectedIdentityID = draft.identity_id || "";
   state.compose.selectedAccountID = draft.account_id || "";
@@ -1382,13 +1571,24 @@ function applyComposeDraftPayload(payload, opts = {}) {
   syncComposeDraftFields();
 }
 
+function hydrateComposeDraftAssets(draft) {
+  const refs = parseComposeAttachmentRefs(draft?.attachments_json || draft?.attachmentsJSON || "");
+  mergeComposeAssetRefs(refs);
+  const rawHTML = String(draft?.body_html || draft?.bodyHTML || "");
+  const hasLegacyMarkers = /data-compose-attachment-id|data-compose-inline-image-id|Attachment unavailable after draft restore|Inline image unavailable after draft restore/i.test(rawHTML);
+  return {
+    hasAssets: refs.length > 0,
+    legacyMissingMedia: refs.length === 0 && hasLegacyMarkers,
+  };
+}
+
 function restoreComposeDraft(form) {
   if (!form) return false;
   migrateLegacyComposeDraftToCrashBuffer();
   const draft = readComposeCrashBuffer("");
   if (!draft || !composeDraftHasMeaningfulContent(draft)) return false;
   applyComposeDraftPayload(draft, { normalizeDraftMedia: true });
-  setComposeDraftNote("Recovered unsynced text from this browser. Attachments and inline images must be re-added.", "warn");
+  setComposeDraftNote("Recovered unsynced text from this browser.", "warn");
   state.compose.draftDirty = true;
   syncComposeDraftFields();
   updateComposeSubmitState();
@@ -1439,7 +1639,8 @@ async function createServerDraft(payload) {
       subject: payload.subject,
       body_text: payload.body_text,
       body_html: payload.body_html,
-      status: "active",
+      status: payload.status || "active",
+      last_send_error: payload.last_send_error || "",
     },
     logErrors: false,
   });
@@ -1462,7 +1663,8 @@ async function updateServerDraft(draftID, payload) {
       subject: payload.subject,
       body_text: payload.body_text,
       body_html: payload.body_html,
-      status: "active",
+      status: payload.status || "active",
+      last_send_error: payload.last_send_error || "",
     },
     logErrors: false,
   });
@@ -1474,7 +1676,10 @@ async function loadComposeDraftByID(draftID) {
 
 function composeDraftStatusText() {
   if (state.compose.submitInFlight) return ["Sending", "muted"];
+  if (composeAssetUploadInProgress()) return ["Uploading", "muted"];
+  if (composeAssetHasFailed()) return ["Attachment failed", "error"];
   if (state.compose.draftSaving) return ["Saving", "muted"];
+  if (String(state.compose.draftStatus || "").toLowerCase() === "failed") return ["Send failed", "error"];
   if (state.compose.draftError) return ["Save failed", "error"];
   if (state.compose.draftDirty) return ["Unsaved", "warn"];
   if (state.compose.draftLastSavedAt) return ["Saved", "ok"];
@@ -1487,10 +1692,11 @@ async function flushComposeDraft(options = {}) {
   syncComposeDraftFields();
   const payload = composeCurrentDraftPayload();
   const payloadJSON = composeDraftPayloadJSON(payload);
+  const forceCreate = options.forceCreate === true;
   writeComposeCrashBuffer(state.compose.draftID || "");
 
   if (!state.compose.draftID) {
-    if (!composeDraftHasMeaningfulContent(payload) || payloadJSON === state.compose.draftBaselineJSON) {
+    if (!forceCreate && (!composeDraftHasMeaningfulContent(payload) || payloadJSON === state.compose.draftBaselineJSON)) {
       return null;
     }
   } else if (payloadJSON === state.compose.draftBaselineJSON) {
@@ -1507,21 +1713,9 @@ async function flushComposeDraft(options = {}) {
     const saved = state.compose.draftID
       ? await updateServerDraft(state.compose.draftID, payload)
       : await createServerDraft(payload);
-    const oldDraftID = String(state.compose.draftID || "");
-    state.compose.draftID = String(saved?.id || oldDraftID);
-    state.compose.draftLoaded = true;
-    state.compose.draftDirty = false;
-    state.compose.draftSaving = false;
-    state.compose.draftError = "";
-    state.compose.draftLastSavedAt = String(saved?.updated_at || new Date().toISOString());
-    state.compose.draftBaselineJSON = composeDraftPayloadJSON(saved || payload);
-    writeComposeCrashBuffer(state.compose.draftID);
-    if (!oldDraftID && state.compose.draftID) {
-      clearComposeCrashBuffer("");
-    }
-    upsertLocalDraft(saved);
+    syncComposeServerDraftState(saved || payload);
     updateComposeSubmitState();
-    return saved;
+    return saved || payload;
   } catch (err) {
     state.compose.draftSaving = false;
     state.compose.draftDirty = true;
@@ -1584,6 +1778,142 @@ function buildDraftMessageSummary(draft) {
   };
 }
 
+function isActionableMailSummary(item) {
+  return !!item && !item.isDraft;
+}
+
+function visibleActionableMessages() {
+  return (Array.isArray(state.messages) ? state.messages : []).filter((item) => isActionableMailSummary(item));
+}
+
+function selectedMailMessageIDs() {
+  return state.mail.selectedMessageIDs instanceof Set ? state.mail.selectedMessageIDs : new Set();
+}
+
+function hasBulkMailSelection() {
+  return selectedMailMessageIDs().size > 0;
+}
+
+function pruneMailSelectionToVisible() {
+  const visible = new Set(visibleActionableMessages().map((item) => String(item?.id || "")).filter(Boolean));
+  const next = new Set();
+  for (const id of selectedMailMessageIDs()) {
+    const key = String(id || "").trim();
+    if (visible.has(key)) next.add(key);
+  }
+  state.mail.selectedMessageIDs = next;
+}
+
+function clearMailMessageSelection(options = {}) {
+  state.mail.selectedMessageIDs = new Set();
+  if (options.render !== false) {
+    renderMessages(state.messages);
+    return;
+  }
+  syncMailBulkControls();
+  applyMailActionAvailability();
+}
+
+function toggleMailMessageSelection(id, selected) {
+  const key = String(id || "").trim();
+  if (!key) return;
+  const next = new Set(selectedMailMessageIDs());
+  if (selected) next.add(key);
+  else next.delete(key);
+  state.mail.selectedMessageIDs = next;
+  renderMessages(state.messages);
+}
+
+function selectedMailActionIDs() {
+  pruneMailSelectionToVisible();
+  const bulkIDs = Array.from(selectedMailMessageIDs());
+  if (bulkIDs.length > 0) return bulkIDs;
+  const currentID = String(state.selectedMessage?.id || "").trim();
+  if (currentID && !isDraftsMailboxSelected()) return [currentID];
+  return [];
+}
+
+function mailActionItemByID(id) {
+  const key = String(id || "").trim();
+  if (!key) return null;
+  return state.messages.find((item) => String(item?.id || "") === key)
+    || (state.selectedMessageSummary && String(state.selectedMessageSummary?.id || "") === key ? state.selectedMessageSummary : null)
+    || (state.selectedMessage && String(state.selectedMessage?.id || "") === key ? state.selectedMessage : null)
+    || null;
+}
+
+function selectedMailActionItems() {
+  return selectedMailActionIDs()
+    .map((id) => mailActionItemByID(id))
+    .filter((item) => !!item);
+}
+
+function selectedMailActionCount() {
+  return selectedMailActionIDs().length;
+}
+
+function selectedMailActionReadMode() {
+  const items = selectedMailActionItems();
+  if (items.length > 0 && items.every((item) => !!item?.seen)) return "unread";
+  return "read";
+}
+
+function selectedMailActionFlagMode() {
+  const items = selectedMailActionItems();
+  if (items.length > 0 && items.every((item) => !!item?.flagged)) return "unflag";
+  return "flag";
+}
+
+function selectableMoveMailboxes() {
+  return (Array.isArray(state.mail.mailboxes) ? [...state.mail.mailboxes] : [])
+    .filter((item) => normalizeMailboxRole(item?.role, item?.name) !== "drafts")
+    .sort((a, b) => {
+      const rankDiff = mailboxRoleRank(a?.role || a?.name) - mailboxRoleRank(b?.role || b?.name);
+      if (rankDiff !== 0) return rankDiff;
+      return String(a?.name || "").localeCompare(String(b?.name || ""));
+    });
+}
+
+function renderMailMoveTargets() {
+  if (!el.mailMoveTarget) return;
+  const previous = String(el.mailMoveTarget.value || "");
+  const choices = selectableMoveMailboxes()
+    .filter((item) => String(item?.name || "").trim() !== String(state.mailbox || "").trim());
+  el.mailMoveTarget.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = "Move to…";
+  el.mailMoveTarget.appendChild(placeholder);
+  for (const mailbox of choices) {
+    const option = document.createElement("option");
+    option.value = String(mailbox?.name || "");
+    option.textContent = mailboxDisplayLabel(mailbox);
+    el.mailMoveTarget.appendChild(option);
+  }
+  if (choices.some((item) => String(item?.name || "") === previous)) {
+    el.mailMoveTarget.value = previous;
+  } else {
+    el.mailMoveTarget.value = "";
+  }
+  applyMailActionAvailability();
+}
+
+function syncMailBulkControls() {
+  if (!el.mailBulkBar || !el.mailSelectionCount || !el.mailCheckAll) return;
+  pruneMailSelectionToVisible();
+  const visible = visibleActionableMessages();
+  const count = selectedMailMessageIDs().size;
+  const hasVisible = visible.length > 0;
+  const bulkEnabled = !isDraftsMailboxSelected() && hasVisible;
+  el.mailBulkBar.classList.toggle("hidden", !bulkEnabled);
+  el.mailSelectionCount.textContent = count === 1 ? "1 selected" : `${count} selected`;
+  el.mailCheckAll.disabled = !bulkEnabled;
+  el.mailCheckAll.checked = bulkEnabled && count > 0 && count === visible.length;
+  el.mailCheckAll.indeterminate = bulkEnabled && count > 0 && count < visible.length;
+  if (el.btnMailSelectVisible) el.btnMailSelectVisible.disabled = !bulkEnabled || count === visible.length;
+  if (el.btnMailClear) el.btnMailClear.disabled = count === 0;
+}
+
 function isDraftsMailboxSelected() {
   return String(state.mailbox || "").trim() === APP_DRAFTS_MAILBOX;
 }
@@ -1611,13 +1941,188 @@ function composeFileLooksInlineImage(file) {
   return /\.(png|jpe?g|gif|webp|bmp|svg|avif|heic|heif)$/i.test(name);
 }
 
-function revokeComposeInlineImageBlobURL(item) {
-  const blobURL = String(item?.blobURL || "").trim();
+function revokeComposeAssetObjectURL(item) {
+  const blobURL = String(item?.objectURL || "").trim();
   if (!blobURL) return;
   try {
     URL.revokeObjectURL(blobURL);
   } catch {
     // Best effort cleanup only.
+  }
+}
+
+function rebindComposeEditorAssetID(oldID, nextAsset) {
+  if (!el.composeEditor) return;
+  const previousID = String(oldID || "").trim();
+  const nextID = String(nextAsset?.id || "").trim();
+  if (!previousID || !nextID || previousID === nextID) return;
+  const nextCID = String(nextAsset?.contentID || "").trim();
+  const nodes = Array.from(el.composeEditor.querySelectorAll("[data-compose-inline-placeholder], [data-compose-inline-image-id], [data-compose-attachment-id]"));
+  for (const node of nodes) {
+    let matched = false;
+    if (String(node.getAttribute("data-compose-inline-placeholder") || "") === previousID) {
+      node.setAttribute("data-compose-inline-placeholder", nextID);
+      matched = true;
+    }
+    if (String(node.getAttribute("data-compose-inline-image-id") || "") === previousID) {
+      node.setAttribute("data-compose-inline-image-id", nextID);
+      matched = true;
+    }
+    if (String(node.getAttribute("data-compose-attachment-id") || "") === previousID) {
+      node.setAttribute("data-compose-attachment-id", nextID);
+      matched = true;
+    }
+    if (matched && nextCID) {
+      node.setAttribute("data-compose-inline-image-cid", nextCID);
+    }
+  }
+}
+
+function composeAssetFromDraftRef(ref, draftID = state.compose.draftID || "") {
+  return {
+    id: String(ref?.id || "").trim(),
+    draftID: String(draftID || "").trim(),
+    name: String(ref?.name || ref?.filename || "attachment.bin").trim() || "attachment.bin",
+    size: Number(ref?.size ?? ref?.size_bytes ?? 0) || 0,
+    contentType: String(ref?.contentType || ref?.content_type || "application/octet-stream").trim() || "application/octet-stream",
+    inline: Boolean(ref?.inline ?? ref?.inline_part),
+    contentID: String(ref?.contentID || ref?.content_id || "").trim(),
+    sortOrder: Number(ref?.sortOrder ?? ref?.sort_order ?? 0) || 0,
+    status: "ready",
+    file: null,
+    objectURL: "",
+    url: composeDraftAttachmentURL(draftID, ref?.id),
+    error: "",
+    createdAtMs: Date.now(),
+  };
+}
+
+function mergeComposeAssetRefs(refs, removedIDs = []) {
+  const removed = new Set(removedIDs.map((item) => String(item || "").trim()).filter(Boolean));
+  const existing = new Map(composeAssets().map((item) => [String(item?.id || ""), item]));
+  const ready = refs
+    .map((ref) => composeAssetFromDraftRef(ref))
+    .filter((item) => item.id !== "")
+    .map((item) => {
+      const prev = existing.get(item.id) || null;
+      return {
+        ...item,
+        file: prev?.file || null,
+        objectURL: prev?.objectURL || "",
+        createdAtMs: Number(prev?.createdAtMs || Date.now()),
+      };
+    });
+  const transient = composeAssets()
+    .filter((item) => String(item?.status || "") !== "ready")
+    .filter((item) => !removed.has(String(item?.id || "")));
+  state.compose.assets = [...ready, ...transient].sort((a, b) => {
+    const statusA = String(a?.status || "ready");
+    const statusB = String(b?.status || "ready");
+    if (statusA === "ready" && statusB === "ready") {
+      return Number(a?.sortOrder || 0) - Number(b?.sortOrder || 0);
+    }
+    if (statusA === "ready") return -1;
+    if (statusB === "ready") return 1;
+    return Number(a?.createdAtMs || 0) - Number(b?.createdAtMs || 0);
+  });
+  renderComposeAssets();
+  syncComposeInlineAssetNodes();
+}
+
+function renderComposeAssets() {
+  if (!el.composeAssets || !el.composeAssetsList) return;
+  const items = composeAssets();
+  el.composeAssets.classList.toggle("hidden", items.length === 0);
+  el.composeAssetsList.replaceChildren();
+  for (const asset of items) {
+    const row = document.createElement("li");
+    row.className = "compose-asset-row";
+    if (asset.inline) row.classList.add("compose-asset-row--inline");
+    if (asset.status === "uploading") row.classList.add("is-uploading");
+    if (asset.status === "failed") row.classList.add("is-failed");
+
+    const main = document.createElement("div");
+    main.className = "compose-asset-main";
+
+    const name = document.createElement("span");
+    name.className = "compose-asset-name";
+    name.textContent = composeAssetLabel(asset);
+    main.appendChild(name);
+
+    const meta = document.createElement("span");
+    meta.className = "compose-asset-meta";
+    meta.innerHTML = `<span class="compose-asset-badge">${asset.inline ? "Inline" : "File"}</span><span class="compose-asset-state">${escapeHtml(composeAssetStatusLabel(asset))}</span>`;
+    if (asset.status === "failed" && asset.error) {
+      const err = document.createElement("span");
+      err.className = "compose-asset-error";
+      err.textContent = asset.error;
+      meta.appendChild(err);
+    }
+    main.appendChild(meta);
+    row.appendChild(main);
+
+    const actions = document.createElement("div");
+    actions.className = "compose-asset-actions";
+    if (asset.status === "failed" && asset.file) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "cmd-btn cmd-btn--dense";
+      retry.textContent = "Retry";
+      retry.dataset.composeAssetRetry = asset.id;
+      actions.appendChild(retry);
+    }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "cmd-btn cmd-btn--dense";
+    remove.textContent = "Remove";
+    remove.dataset.composeAssetRemove = asset.id;
+    actions.appendChild(remove);
+    row.appendChild(actions);
+
+    el.composeAssetsList.appendChild(row);
+  }
+}
+
+function insertComposeInlinePlaceholder(asset) {
+  const html = `<span class="compose-inline-placeholder is-uploading" contenteditable="false" data-compose-inline-placeholder="${escapeHtml(asset.id)}" data-compose-inline-image-id="${escapeHtml(asset.id)}">Uploading inline image...</span>&nbsp;`;
+  insertComposeHTMLAtCaret(html);
+}
+
+function syncComposeInlineAssetNodes() {
+  if (!el.composeEditor) return;
+  const inlineAssets = new Map(composeInlineAssets().map((item) => [String(item?.id || ""), item]));
+  const images = Array.from(el.composeEditor.querySelectorAll("img"));
+  for (const img of images) {
+    const inlineID = String(img.getAttribute("data-compose-inline-image-id") || "");
+    const asset = inlineAssets.get(inlineID) || null;
+    if (!asset || asset.status !== "ready") {
+      continue;
+    }
+    const remoteURL = composeDraftAttachmentURL(state.compose.draftID, asset.id);
+    if (remoteURL) img.setAttribute("src", remoteURL);
+    if (asset.contentID) img.setAttribute("data-compose-inline-image-cid", asset.contentID);
+    img.classList.add("compose-inline-image");
+    img.setAttribute("contenteditable", "false");
+  }
+  const placeholders = Array.from(el.composeEditor.querySelectorAll("[data-compose-inline-placeholder]"));
+  for (const placeholder of placeholders) {
+    const inlineID = String(placeholder.getAttribute("data-compose-inline-image-id") || "");
+    const asset = inlineAssets.get(inlineID) || null;
+    if (!asset) continue;
+    placeholder.classList.toggle("is-uploading", asset.status === "uploading");
+    placeholder.classList.toggle("is-failed", asset.status === "failed");
+    if (asset.status === "ready") {
+      const img = document.createElement("img");
+      img.className = "compose-inline-image";
+      img.setAttribute("src", composeDraftAttachmentURL(state.compose.draftID, asset.id));
+      img.setAttribute("alt", asset.name || "inline image");
+      img.setAttribute("data-compose-inline-image-id", asset.id);
+      img.setAttribute("contenteditable", "false");
+      if (asset.contentID) img.setAttribute("data-compose-inline-image-cid", asset.contentID);
+      placeholder.replaceWith(img);
+      continue;
+    }
+    placeholder.textContent = asset.status === "failed" ? "Inline image upload failed" : "Uploading inline image...";
   }
 }
 
@@ -1627,127 +2132,212 @@ function normalizeComposeEditorDraftMedia() {
   for (const chip of chips) {
     chip.replaceWith(composeCreateMissingMediaNode(document, "attachment"));
   }
-  const images = Array.from(el.composeEditor.querySelectorAll("img"));
-  for (const img of images) {
-    const src = String(img.getAttribute("src") || "");
-    const isDraftInlineImage = img.hasAttribute("data-compose-inline-image-id") || /^blob:/i.test(src) || /^cid:/i.test(src);
-    if (isDraftInlineImage) {
+  syncComposeInlineAssetNodes();
+  const placeholders = Array.from(el.composeEditor.querySelectorAll("[data-compose-inline-placeholder]"));
+  for (const placeholder of placeholders) {
+    const assetID = String(placeholder.getAttribute("data-compose-inline-image-id") || "");
+    const asset = composeAssetByID(assetID);
+    if (!asset || asset.status !== "ready") {
+      placeholder.replaceWith(composeCreateMissingMediaNode(document, "image"));
+    }
+  }
+  for (const img of Array.from(el.composeEditor.querySelectorAll("img[data-compose-inline-image-id]"))) {
+    const inlineID = String(img.getAttribute("data-compose-inline-image-id") || "");
+    const asset = composeAssetByID(inlineID);
+    if (!asset || asset.status !== "ready") {
       img.replaceWith(composeCreateMissingMediaNode(document, "image"));
+      continue;
+    }
+    const remoteURL = composeDraftAttachmentURL(state.compose.draftID, asset.id);
+    if (remoteURL) {
+      img.setAttribute("src", remoteURL);
     }
   }
 }
 
 function clearComposeAssets(options = {}) {
   const removeEditorNodes = options.removeEditorNodes !== false;
-  for (const item of state.compose.inlineImages) {
-    revokeComposeInlineImageBlobURL(item);
+  for (const item of composeAssets()) {
+    revokeComposeAssetObjectURL(item);
   }
-  state.compose.attachments = [];
-  state.compose.inlineImages = [];
+  state.compose.assets = [];
+  renderComposeAssets();
   if (el.composeAttachmentsInput) el.composeAttachmentsInput.value = "";
   if (removeEditorNodes && el.composeEditor) {
-    for (const node of el.composeEditor.querySelectorAll("[data-compose-attachment-id], img[data-compose-inline-image-id]")) {
+    for (const node of el.composeEditor.querySelectorAll("[data-compose-attachment-id], img[data-compose-inline-image-id], [data-compose-inline-placeholder]")) {
       node.remove();
     }
   }
 }
 
-function removeComposeAttachmentByID(id, options = {}) {
-  const removeEditorNode = options.removeEditorNode !== false;
-  state.compose.attachments = state.compose.attachments.filter((item) => item.id !== id);
-  if (removeEditorNode && el.composeEditor) {
-    for (const node of el.composeEditor.querySelectorAll(`[data-compose-attachment-id="${id}"]`)) {
-      node.remove();
-    }
+async function ensureComposeServerDraft() {
+  if (String(state.compose.draftID || "").trim()) return state.compose.draftID;
+  state.compose.draftSaving = true;
+  state.compose.draftError = "";
+  updateComposeSubmitState();
+  try {
+    const saved = await createServerDraft(composeCurrentDraftPayload());
+    syncComposeServerDraftState(saved);
+    updateComposeSubmitState();
+    return state.compose.draftID;
+  } catch (err) {
+    state.compose.draftSaving = false;
+    state.compose.draftError = formatAPIError(err, "Draft save failed.");
+    updateComposeSubmitState();
+    throw err;
   }
 }
 
-function removeComposeInlineImageByID(id, options = {}) {
-  const removeEditorNode = options.removeEditorNode !== false;
-  const keep = [];
-  for (const item of state.compose.inlineImages) {
-    if (item.id === id) {
-      revokeComposeInlineImageBlobURL(item);
-      continue;
-    }
-    keep.push(item);
+async function uploadComposeAsset(assetID) {
+  const current = composeAssetByID(assetID);
+  if (!current || !current.file) return;
+  let draftID = String(state.compose.draftID || "").trim();
+  try {
+    draftID = draftID || await ensureComposeServerDraft();
+  } catch (err) {
+    const message = formatAPIError(err, "Draft save failed.");
+    state.compose.assets = composeAssets().map((item) => (item.id === assetID ? { ...item, status: "failed", error: message } : item));
+    renderComposeAssets();
+    syncComposeInlineAssetNodes();
+    updateComposeSubmitState();
+    return;
   }
-  state.compose.inlineImages = keep;
+  const asset = composeAssetByID(assetID);
+  if (!asset || !asset.file) return;
+  const mp = new FormData();
+  if (asset.inline) {
+    mp.append("inline_images", asset.file, asset.name);
+    mp.append("inline_image_cids", asset.contentID || composeID("cid"));
+  } else {
+    mp.append("attachments", asset.file, asset.name);
+  }
+  try {
+    const res = await api(`/api/v2/drafts/${encodeURIComponent(draftID)}/attachments`, {
+      method: "POST",
+      body: mp,
+      logErrors: false,
+    });
+    const uploaded = Array.isArray(res?.uploaded) ? res.uploaded : [];
+    const match = uploaded[0] || null;
+    if (!match || !match.id) {
+      throw new Error("Draft attachment upload failed.");
+    }
+    const readyAsset = composeAssetFromDraftRef(match, draftID);
+    readyAsset.createdAtMs = Number(asset.createdAtMs || Date.now());
+    rebindComposeEditorAssetID(assetID, readyAsset);
+    state.compose.assets = composeAssets().map((item) => (item.id === assetID ? readyAsset : item));
+    mergeComposeAssetRefs(Array.isArray(res?.items) ? res.items : [], [assetID]);
+    syncComposeServerDraftState(res?.draft || {}, { keepDirty: true });
+    setComposeDraftNote("");
+    syncComposeDraftFields();
+    queueComposeDraftSave();
+    updateComposeSubmitState();
+  } catch (err) {
+    const message = formatAPIError(err, "Attachment upload failed.");
+    state.compose.assets = composeAssets().map((item) => (
+      item.id === assetID
+        ? { ...item, status: "failed", error: message }
+        : item
+    ));
+    renderComposeAssets();
+    syncComposeInlineAssetNodes();
+    setComposeDraftNote(message, "error");
+    updateComposeSubmitState();
+  }
+}
+
+async function removeComposeAssetByID(id, options = {}) {
+  const asset = composeAssetByID(id);
+  if (!asset) return;
+  const removeEditorNode = options.removeEditorNode !== false;
+  const removeLocal = () => {
+    revokeComposeAssetObjectURL(asset);
+    state.compose.assets = composeAssets().filter((item) => item.id !== id);
+    renderComposeAssets();
+    if (removeEditorNode && el.composeEditor) {
+      for (const node of el.composeEditor.querySelectorAll(`[data-compose-attachment-id="${id}"], img[data-compose-inline-image-id="${id}"], [data-compose-inline-placeholder="${id}"]`)) {
+        node.remove();
+      }
+    }
+    syncComposeDraftFields();
+    queueComposeDraftSave();
+    updateComposeSubmitState();
+  };
+  if (asset.status !== "ready" || !state.compose.draftID) {
+    removeLocal();
+    return;
+  }
+  const res = await api(`/api/v2/drafts/${encodeURIComponent(state.compose.draftID)}/attachments/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+    json: {},
+    logErrors: false,
+  });
+  revokeComposeAssetObjectURL(asset);
   if (removeEditorNode && el.composeEditor) {
-    for (const node of el.composeEditor.querySelectorAll(`img[data-compose-inline-image-id="${id}"]`)) {
+    for (const node of el.composeEditor.querySelectorAll(`[data-compose-attachment-id="${id}"], img[data-compose-inline-image-id="${id}"], [data-compose-inline-placeholder="${id}"]`)) {
       node.remove();
     }
   }
+  mergeComposeAssetRefs(Array.isArray(res?.items) ? res.items : [], [id]);
+  syncComposeServerDraftState(res?.draft || {}, { keepDirty: true });
+  syncComposeDraftFields();
+  queueComposeDraftSave();
+  updateComposeSubmitState();
+}
+
+function retryComposeAssetByID(id) {
+  const asset = composeAssetByID(id);
+  if (!asset || !asset.file) return;
+  state.compose.assets = composeAssets().map((item) => (
+    item.id === id
+      ? { ...item, status: "uploading", error: "" }
+      : item
+  ));
+  renderComposeAssets();
+  syncComposeInlineAssetNodes();
+  updateComposeSubmitState();
+  void uploadComposeAsset(id);
 }
 
 function cleanupComposeInlineReferences() {
   if (!el.composeEditor) return false;
   let changed = false;
-  const attachmentIDs = new Set(
-    Array.from(el.composeEditor.querySelectorAll("[data-compose-attachment-id]"))
-      .map((node) => String(node.getAttribute("data-compose-attachment-id") || "")),
-  );
   const inlineIDs = new Set(
-    Array.from(el.composeEditor.querySelectorAll("img[data-compose-inline-image-id]"))
+    Array.from(el.composeEditor.querySelectorAll("img[data-compose-inline-image-id], [data-compose-inline-placeholder]"))
       .map((node) => String(node.getAttribute("data-compose-inline-image-id") || "")),
   );
-
-  if (state.compose.attachments.some((item) => !attachmentIDs.has(item.id))) {
-    state.compose.attachments = state.compose.attachments.filter((item) => attachmentIDs.has(item.id));
+  for (const item of composeInlineAssets()) {
+    if (inlineIDs.has(item.id)) continue;
     changed = true;
-  }
-
-  if (state.compose.inlineImages.some((item) => !inlineIDs.has(item.id))) {
-    const keep = [];
-    for (const item of state.compose.inlineImages) {
-      if (!inlineIDs.has(item.id)) {
-        revokeComposeInlineImageBlobURL(item);
-        changed = true;
-        continue;
-      }
-      keep.push(item);
-    }
-    state.compose.inlineImages = keep;
+    void removeComposeAssetByID(item.id, { removeEditorNode: false });
   }
   return changed;
-}
-
-function addComposeAttachmentChipToEditor(item) {
-  const sizeKB = Math.max(1, Math.round((item.size || 0) / 1024));
-  const label = `${item.name} (${sizeKB} KB)`;
-  const html = `<span class="compose-inline-chip" contenteditable="false" data-compose-attachment-id="${escapeHtml(item.id)}"><span class="compose-inline-chip-label">${escapeHtml(label)}</span><button type="button" class="compose-inline-chip-remove" data-compose-attachment-remove="${escapeHtml(item.id)}" aria-label="Remove ${escapeHtml(item.name)}">x</button></span>&nbsp;`;
-  insertComposeHTMLAtCaret(html);
-}
-
-function addComposeInlineImageToEditor(item) {
-  const html = `<img class="compose-inline-image" src="${escapeHtml(item.blobURL)}" alt="${escapeHtml(item.name || "inline image")}" data-compose-inline-image-id="${escapeHtml(item.id)}" data-compose-inline-image-cid="${escapeHtml(item.cid)}" contenteditable="false">&nbsp;`;
-  insertComposeHTMLAtCaret(html);
 }
 
 function addComposeFiles(files) {
   if (!files || files.length === 0) return;
   for (const file of Array.from(files)) {
-    if (composeFileLooksInlineImage(file)) {
-      const item = {
-        id: composeID("compose-inline"),
-        cid: composeID("cid"),
-        file,
-        name: file.name,
-        size: file.size,
-        blobURL: URL.createObjectURL(file),
-      };
-      state.compose.inlineImages.push(item);
-      addComposeInlineImageToEditor(item);
-      continue;
-    }
     const item = {
-      id: composeID("compose-attachment"),
+      id: composeID("compose-asset"),
       file,
-      name: file.name,
-      size: file.size,
+      name: String(file?.name || "attachment.bin"),
+      size: Number(file?.size || 0),
+      contentType: String(file?.type || "application/octet-stream"),
+      inline: composeFileLooksInlineImage(file),
+      contentID: composeID("cid"),
+      sortOrder: composeAssets().length,
+      status: "uploading",
+      objectURL: composeFileLooksInlineImage(file) ? URL.createObjectURL(file) : "",
+      error: "",
+      createdAtMs: Date.now(),
     };
-    state.compose.attachments.push(item);
-    addComposeAttachmentChipToEditor(item);
+    state.compose.assets = [...composeAssets(), item];
+    if (item.inline) {
+      insertComposeInlinePlaceholder(item);
+    }
+    renderComposeAssets();
+    syncComposeInlineAssetNodes();
+    void uploadComposeAsset(item.id);
   }
   syncComposeDraftFields();
   queueComposeDraftSave();
@@ -1860,11 +2450,14 @@ function resetComposeDraftSession(options = {}) {
   state.compose.draftDirty = false;
   state.compose.draftSaving = false;
   state.compose.draftError = "";
+  state.compose.draftStatus = "draft";
+  state.compose.lastSendError = "";
   state.compose.draftLastSavedAt = "";
   state.compose.draftBaselineJSON = "";
   state.compose.fromMode = "default";
   state.compose.selectedIdentityID = "";
   state.compose.selectedAccountID = "";
+  clearComposeAssets({ removeEditorNodes: false });
   state.mail.selectedDraftID = "";
   if (!keepCrash) {
     clearComposeCrashBuffer("");
@@ -1881,7 +2474,7 @@ function mergeCrashBufferIntoCompose(draftID, serverUpdatedAt) {
   }
   applyComposeDraftPayload(crash, { normalizeDraftMedia: true });
   state.compose.draftDirty = true;
-  setComposeDraftNote("Recovered newer unsynced text from this browser. Attachments and inline images must be re-added.", "warn");
+  setComposeDraftNote("Recovered newer unsynced text from this browser.", "warn");
   return true;
 }
 
@@ -2053,15 +2646,14 @@ async function openComposeOverlay(trigger = null, opts = {}) {
   await loadComposeIdentities();
   if (draftID) {
     const draft = await loadComposeDraftByID(draftID);
-    state.compose.draftID = String(draft?.id || draftID);
-    state.compose.draftLoaded = true;
-    state.compose.draftLastSavedAt = String(draft?.updated_at || "");
-    applyComposeDraftPayload(draft, { normalizeDraftMedia: true });
-    state.compose.draftBaselineJSON = composeDraftPayloadJSON(draft);
+    applyComposeDraftPayload(draft, { normalizeDraftMedia: false });
+    syncComposeServerDraftState(draft, { keepDirty: false });
+    const assetInfo = hydrateComposeDraftAssets(draft);
+    normalizeComposeEditorDraftMedia();
     state.mail.selectedDraftID = state.compose.draftID;
     const merged = mergeCrashBufferIntoCompose(state.compose.draftID, draft?.updated_at);
-    if (!merged) {
-      setComposeDraftNote("Attachments and inline images are not saved yet. Re-add them before sending.", "warn");
+    if (!merged && assetInfo.legacyMissingMedia) {
+      setComposeDraftNote("This older draft is missing stored attachments or inline images. Re-add them before sending.", "warn");
     }
     if (String(draft?.compose_mode || "").trim()) {
       el.composeTitle.textContent = composeDraftContextLabel(draft.compose_mode);
@@ -2078,6 +2670,7 @@ async function openComposeOverlay(trigger = null, opts = {}) {
   if (!draftID) {
     setComposeSendContext(sendContext.mode, sendContext.messageID);
   }
+  applyComposeSendFailurePresentation();
   syncComposeDraftFields();
   updateComposeSubmitState();
   focusComposeEditorAtEnd();
@@ -2104,12 +2697,13 @@ function closeComposeOverlay(options = true) {
   el.composeOverlay.setAttribute("aria-hidden", "true");
   document.body.style.overflow = state.ui.modalOpen || state.ui.mfaModalOpen ? "hidden" : "";
   state.compose.submitInFlight = false;
-  setComposeSendContext("send", "");
-  if (el.composeTitle) {
-    el.composeTitle.textContent = "New Message";
+  if (!persistDraft) {
+    if (el.composeTitle) {
+      el.composeTitle.textContent = "New Message";
+    }
+    clearComposeAssets();
+    setComposeDraftNote("");
   }
-  clearComposeAssets();
-  setComposeDraftNote("");
   if (restoreFocus && state.ui.composeLastTrigger && typeof state.ui.composeLastTrigger.focus === "function") {
     state.ui.composeLastTrigger.focus();
   }
@@ -5568,6 +6162,7 @@ function renderMailboxes() {
       btn.onclick = async () => {
         state.mailbox = mb.name;
         state.mail.selectedDraftID = "";
+        clearMailMessageSelection({ render: false });
         clearReaderSelection();
         await loadMessages();
         await loadMailboxes({ quiet: true });
@@ -5600,6 +6195,7 @@ async function loadMailboxes(opts = {}) {
   ]);
   state.mail.mailboxes = Array.isArray(mailboxes) ? mailboxes : [];
   renderMailboxes();
+  renderMailMoveTargets();
 }
 
 function updateLocalMailboxUnread(mailboxName, delta) {
@@ -5635,7 +6231,9 @@ function applyLocalMessagePatch(messageID, patch) {
   if (selectedMessage) {
     renderSelectedMessageChrome(selectedMessage);
     renderReaderBody(selectedMessage);
-  } else {
+  }
+  renderThreadContext();
+  if (!selectedMessage) {
     applyMailActionAvailability();
   }
 }
@@ -5643,24 +6241,50 @@ function applyLocalMessagePatch(messageID, patch) {
 function renderMessages(items) {
   el.messages.innerHTML = "";
   state.messages = Array.isArray(items) ? items : [];
+  pruneMailSelectionToVisible();
   if (state.messages.length === 0) {
     const empty = document.createElement("li");
     empty.className = "message-empty";
     empty.textContent = "No messages to display.";
     el.messages.appendChild(empty);
+    syncMailBulkControls();
+    applyMailActionAvailability();
     return;
   }
   for (const m of state.messages) {
     const li = document.createElement("li");
+    li.dataset.messageId = String(m?.id || "");
+    const checked = selectedMailMessageIDs().has(String(m?.id || ""));
     const isActive = m.isDraft
       ? String(state.mail.selectedDraftID || "") === String(m.id || "")
       : !!(state.selectedMessage && state.selectedMessage.id === m.id);
     li.className = "message-row";
     if (isActive) li.classList.add("active");
+    if (checked) li.classList.add("is-selected");
     if (!m.seen) li.classList.add("is-unread");
     if (m.flagged) li.classList.add("is-flagged");
     if (m.answered) li.classList.add("is-answered");
     if (m.isDraft) li.classList.add("is-draft");
+
+    if (!m.isDraft) {
+      const selectWrap = document.createElement("label");
+      selectWrap.className = "message-row-select";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.className = "message-row-check";
+      checkbox.checked = checked;
+      checkbox.dataset.messageSelect = String(m.id || "");
+      checkbox.setAttribute("aria-label", `Select ${String(m.subject || "(no subject)")}`);
+      checkbox.addEventListener("click", (event) => {
+        event.stopPropagation();
+      });
+      checkbox.addEventListener("change", () => {
+        toggleMailMessageSelection(String(m.id || ""), checkbox.checked);
+      });
+      selectWrap.appendChild(checkbox);
+      li.appendChild(selectWrap);
+    }
+
     const btn = document.createElement("button");
     btn.type = "button";
     btn.className = "message-row-btn";
@@ -5697,6 +6321,8 @@ function renderMessages(items) {
     el.messages.appendChild(li);
   }
   syncMessageActiveDescendant();
+  syncMailBulkControls();
+  applyMailActionAvailability();
 }
 
 async function loadMessages(opts = {}) {
@@ -5866,24 +6492,38 @@ function renderReaderBody(message = state.selectedMessage) {
 }
 
 function applyMailActionAvailability() {
-  const hasSelection = !!state.selectedMessage;
-  [el.btnReply, el.btnForward, el.btnFlag, el.btnTrash].forEach((node) => {
+  const bulkSelected = hasBulkMailSelection();
+  const actionCount = selectedMailActionCount();
+  const hasReaderSelection = !!state.selectedMessage && !bulkSelected;
+  const hasActionSelection = actionCount > 0;
+  const hasArchiveMailbox = String(mailboxNameForRole("archive") || "").trim() !== "";
+  const hasTrashMailbox = String(mailboxNameForRole("trash") || "").trim() !== "";
+  const hasMoveTarget = String(el.mailMoveTarget?.value || "").trim() !== "";
+  [el.btnReply, el.btnForward].forEach((node) => {
     if (!node) return;
-    node.disabled = !hasSelection;
+    node.disabled = !hasReaderSelection;
   });
-  if (el.btnSeen) {
-    el.btnSeen.disabled = !hasSelection || !!state.selectedMessage?.seen;
-  }
+  [el.btnFlag, el.btnSeen].forEach((node) => {
+    if (!node) return;
+    node.disabled = !hasActionSelection;
+  });
+  if (el.btnArchive) el.btnArchive.disabled = !hasActionSelection || !hasArchiveMailbox;
+  if (el.btnMove) el.btnMove.disabled = !hasActionSelection || !hasMoveTarget;
+  if (el.btnTrash) el.btnTrash.disabled = !hasActionSelection || !hasTrashMailbox;
   if (el.btnFlag) {
-    el.btnFlag.textContent = state.selectedMessage?.flagged ? "Unflag" : "Flag";
+    el.btnFlag.textContent = selectedMailActionFlagMode() === "unflag" ? "Unflag" : "Flag";
+  }
+  if (el.btnSeen) {
+    el.btnSeen.textContent = selectedMailActionReadMode() === "unread" ? "Mark Unread" : "Mark Read";
   }
 }
 
 function clearReaderSelection() {
+  const expanded = state.thread?.expanded !== false;
   state.selectedMessage = null;
   state.selectedMessageSummary = null;
   state.mail.selectedDraftID = "";
-  state.thread = { id: "", items: [], index: -1, truncated: false };
+  state.thread = createThreadState({ expanded });
   if (el.messageSubjectAnchor) el.messageSubjectAnchor.textContent = "(no subject)";
   renderMessageMeta([]);
   renderReaderBody(null);
@@ -5892,33 +6532,171 @@ function clearReaderSelection() {
   applyMailActionAvailability();
 }
 
+function threadRailExpanded(thread = state.thread) {
+  if (isMobileLayout()) return true;
+  return thread?.expanded !== false;
+}
+
+function threadCanCollapse(thread = state.thread) {
+  const items = Array.isArray(thread?.items) ? thread.items : [];
+  return !isMobileLayout() && items.length > 1;
+}
+
+function setThreadExpanded(expanded) {
+  state.thread = createThreadState({
+    ...state.thread,
+    expanded: !!expanded,
+  });
+  renderThreadContext();
+}
+
+function toggleThreadExpanded() {
+  if (!threadCanCollapse(state.thread)) return;
+  setThreadExpanded(!threadRailExpanded(state.thread));
+}
+
+function formatThreadCountLabel(thread, hasSelection) {
+  const items = Array.isArray(thread?.items) ? thread.items : [];
+  const hasThread = !!thread?.id && items.length > 0 && Number(thread?.index ?? -1) >= 0;
+  if (!hasSelection) return "Conversation: -";
+  if (!hasThread || items.length <= 1) return "Conversation · 1 message";
+  return `Conversation · ${items.length} messages`;
+}
+
+function formatThreadSelectionLabel(thread, hasSelection) {
+  const items = Array.isArray(thread?.items) ? thread.items : [];
+  const index = Number(thread?.index ?? -1);
+  const hasThread = !!thread?.id && items.length > 0 && index >= 0;
+  if (!hasSelection) return "";
+  if (!hasThread || items.length <= 1) return "Viewing current message";
+  return `Viewing ${index + 1} of ${items.length}`;
+}
+
+function threadMailboxBadgeLabel(item, currentMailbox = "") {
+  const mailbox = String(item?.mailbox || "").trim();
+  const current = String(currentMailbox || "").trim();
+  if (!mailbox || !current || mailbox.toLowerCase() === current.toLowerCase()) {
+    return "";
+  }
+  const record = mailboxRecordByName(mailbox);
+  return mailboxDisplayLabel(record || { name: mailbox });
+}
+
+function syncThreadActiveDescendant() {
+  if (!el.threadList) return;
+  const buttons = Array.from(el.threadList.querySelectorAll(".thread-row-btn"));
+  const selectedID = String(state.selectedMessage?.id || "");
+  const active = buttons.find((node) => String(node.dataset.messageId || "") === selectedID) || null;
+  for (const button of buttons) {
+    const isActive = button === active;
+    const row = button.closest(".thread-row");
+    if (row) row.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", isActive ? "true" : "false");
+    button.setAttribute("aria-current", isActive ? "true" : "false");
+    button.tabIndex = -1;
+  }
+  if (active) {
+    if (!active.id) {
+      active.id = safeDomID("thread-option-", active.dataset.messageId || "", `${buttons.indexOf(active)}`);
+    }
+    el.threadList.setAttribute("aria-activedescendant", active.id);
+  } else {
+    el.threadList.removeAttribute("aria-activedescendant");
+  }
+}
+
+function renderThreadList() {
+  if (!el.threadList || !el.threadListWrap) return;
+  el.threadList.innerHTML = "";
+  const thread = state.thread || createThreadState();
+  const items = Array.isArray(thread.items) ? thread.items : [];
+  const hasThread = !!thread.id && items.length > 0 && Number(thread.index ?? -1) >= 0;
+  const expanded = hasThread && items.length > 1 && threadRailExpanded(thread);
+  el.threadListWrap.classList.toggle("hidden", !expanded);
+  if (!expanded) {
+    el.threadList.removeAttribute("aria-activedescendant");
+    return;
+  }
+  const currentMailbox = String(thread.mailbox || state.mailbox || "").trim();
+  for (const item of items) {
+    const row = document.createElement("li");
+    row.className = "thread-row";
+    if (!item?.seen) row.classList.add("is-unread");
+    if (item?.flagged) row.classList.add("is-flagged");
+    if (item?.answered) row.classList.add("is-answered");
+
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "thread-row-btn";
+    btn.dataset.messageId = String(item?.id || "");
+    btn.setAttribute("role", "option");
+    btn.tabIndex = -1;
+    const sender = formatSenderDisplayName(item?.from);
+    const previewText = String(item?.preview || "").trim();
+    const previewClass = previewText ? "thread-row-preview" : "thread-row-preview thread-row-preview--empty";
+    const mailboxLabel = threadMailboxBadgeLabel(item, currentMailbox);
+    const mailboxChip = mailboxLabel
+      ? `<span class="thread-row-mailbox">${escapeHtml(mailboxLabel)}</span>`
+      : "";
+    btn.innerHTML = `<span class="thread-row-mark" aria-hidden="true"></span>
+      <span class="thread-row-main">
+        <span class="thread-row-top">
+          <span class="thread-row-topline"><span class="thread-row-from">${escapeHtml(sender)}</span>${mailboxChip}</span>
+          <span class="thread-row-date">${escapeHtml(formatListDate(item?.date))}</span>
+        </span>
+        <span class="thread-row-subject">${escapeHtml(item?.subject || "(no subject)")}</span>
+        <span class="${previewClass}">${previewText ? escapeHtml(previewText) : "No preview available."}</span>
+      </span>`;
+    btn.addEventListener("click", () => {
+      focusMailPane("reader");
+      void openMessage(item.id, item).catch((err) => {
+        setStatus(err.message, "error");
+      });
+    });
+    row.appendChild(btn);
+    el.threadList.appendChild(row);
+  }
+  syncThreadActiveDescendant();
+}
+
 function renderThreadContext() {
-  if (!el.threadPosition || !el.btnThreadPrev || !el.btnThreadNext) return;
-  const thread = state.thread || { id: "", items: [], index: -1, truncated: false };
-  const hasThread = !!thread.id && Array.isArray(thread.items) && thread.items.length > 0 && thread.index >= 0;
+  if (
+    !el.threadStrip
+    || !el.threadPosition
+    || !el.threadSelectionStatus
+    || !el.threadTruncated
+    || !el.btnThreadCollapse
+    || !el.btnThreadPrev
+    || !el.btnThreadNext
+  ) return;
+  const thread = state.thread || createThreadState();
+  const items = Array.isArray(thread.items) ? thread.items : [];
+  const hasThread = !!thread.id && items.length > 0 && Number(thread.index ?? -1) >= 0;
   const hasSelection = !!state.selectedMessage;
-  if (!hasThread) {
-    el.threadPosition.textContent = hasSelection ? "Conversation: 1 message" : "Conversation: -";
-    el.btnThreadPrev.disabled = true;
-    el.btnThreadNext.disabled = true;
-    return;
-  }
-  if (thread.items.length <= 1) {
-    el.threadPosition.textContent = "Conversation: 1 message";
-    el.btnThreadPrev.disabled = true;
-    el.btnThreadNext.disabled = true;
-    return;
-  }
-  const suffix = thread.truncated ? " (partial)" : "";
-  el.threadPosition.textContent = `Message ${thread.index + 1} of ${thread.items.length}${suffix}`;
-  el.btnThreadPrev.disabled = thread.index <= 0;
-  el.btnThreadNext.disabled = thread.index >= thread.items.length - 1;
+  const hasMultiple = hasThread && items.length > 1;
+  const expanded = hasMultiple && threadRailExpanded(thread);
+  const canCollapse = threadCanCollapse(thread);
+  el.threadStrip.classList.toggle("hidden", !hasSelection);
+  el.threadStrip.classList.toggle("is-expanded", expanded);
+  el.threadStrip.classList.toggle("is-collapsed", hasMultiple && !expanded);
+  el.threadPosition.textContent = formatThreadCountLabel(thread, hasSelection);
+  const selectionLabel = formatThreadSelectionLabel(thread, hasSelection);
+  el.threadSelectionStatus.textContent = selectionLabel;
+  el.threadSelectionStatus.classList.toggle("hidden", selectionLabel === "");
+  el.threadTruncated.classList.toggle("hidden", !(hasMultiple && thread.truncated));
+  el.btnThreadCollapse.classList.toggle("hidden", !canCollapse);
+  el.btnThreadCollapse.setAttribute("aria-expanded", expanded ? "true" : "false");
+  el.btnThreadCollapse.textContent = expanded ? "Collapse" : "Expand";
+  el.btnThreadPrev.disabled = !hasMultiple || thread.index <= 0;
+  el.btnThreadNext.disabled = !hasMultiple || thread.index >= items.length - 1;
+  renderThreadList();
 }
 
 async function loadThreadContext(summary, messageID, mailboxHint = "") {
+  const expanded = state.thread?.expanded !== false;
   const threadID = String(summary?.thread_id || "").trim();
   if (!threadID) {
-    state.thread = { id: "", items: [], index: -1, truncated: false };
+    state.thread = createThreadState({ expanded });
     renderThreadContext();
     return;
   }
@@ -5938,27 +6716,45 @@ async function loadThreadContext(summary, messageID, mailboxHint = "") {
     if (index < 0 && items.length > 0) {
       index = items.length - 1;
     }
-    state.thread = {
+    state.thread = createThreadState({
       id: threadID,
       items,
       index,
       truncated: !!payload?.truncated,
-    };
+      mailbox: baseMailbox,
+      expanded,
+    });
   } catch {
-    state.thread = { id: "", items: [], index: -1, truncated: false };
+    state.thread = createThreadState({ expanded });
   }
   renderThreadContext();
+}
+
+async function openThreadIndex(index) {
+  const items = Array.isArray(state.thread?.items) ? state.thread.items : [];
+  if (items.length === 0) return;
+  const next = Number(index);
+  if (!Number.isFinite(next) || next < 0 || next >= items.length) return;
+  const target = items[next];
+  if (!target?.id) return;
+  if (String(target.id || "") === String(state.selectedMessage?.id || "")) {
+    focusMailPane("reader");
+    return;
+  }
+  await openMessage(target.id, target);
 }
 
 async function openThreadNeighbor(delta) {
   const items = Array.isArray(state.thread?.items) ? state.thread.items : [];
   const current = Number(state.thread?.index ?? -1);
   if (items.length === 0 || current < 0) return;
-  const next = current + delta;
-  if (next < 0 || next >= items.length) return;
-  const target = items[next];
-  if (!target?.id) return;
-  await openMessage(target.id, target);
+  await openThreadIndex(current + delta);
+}
+
+async function openThreadBoundary(position) {
+  const items = Array.isArray(state.thread?.items) ? state.thread.items : [];
+  if (items.length === 0) return;
+  await openThreadIndex(position === "start" ? 0 : items.length - 1);
 }
 
 async function refreshSelectedThreadContext(opts = {}) {
@@ -6120,6 +6916,80 @@ function buildForwardBodyPrefill(message) {
   return `----- Forwarded message -----\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\nTo: ${to}\n\n${body}`;
 }
 
+function pluralizeMessages(count) {
+  return count === 1 ? "message" : "messages";
+}
+
+async function runMailAction(action, options = {}) {
+  const ids = selectedMailActionIDs();
+  if (ids.length === 0) {
+    setStatus("Select at least one message.", "error");
+    return;
+  }
+  const targetMailbox = String(options.mailbox || "").trim();
+  if ((action === "move" || action === "archive" || action === "trash") && !targetMailbox) {
+    setStatus("Choose a destination mailbox first.", "error");
+    return;
+  }
+  const failed = [];
+  let succeeded = 0;
+  for (const id of ids) {
+    try {
+      if (action === "flag") {
+        await api(`/api/v1/messages/${encodeURIComponent(id)}/flags`, {
+          method: "POST",
+          json: { add: ["\\Flagged"] },
+        });
+      } else if (action === "unflag") {
+        await api(`/api/v1/messages/${encodeURIComponent(id)}/flags`, {
+          method: "POST",
+          json: { remove: ["\\Flagged"] },
+        });
+      } else if (action === "read") {
+        await api(`/api/v1/messages/${encodeURIComponent(id)}/flags`, {
+          method: "POST",
+          json: { add: ["\\Seen"] },
+        });
+      } else if (action === "unread") {
+        await api(`/api/v1/messages/${encodeURIComponent(id)}/flags`, {
+          method: "POST",
+          json: { remove: ["\\Seen"] },
+        });
+      } else if (action === "move" || action === "archive" || action === "trash") {
+        await api(`/api/v1/messages/${encodeURIComponent(id)}/move`, {
+          method: "POST",
+          json: { mailbox: targetMailbox },
+        });
+      } else {
+        throw new Error("Unsupported mail action.");
+      }
+      succeeded += 1;
+    } catch (err) {
+      failed.push({ id, message: err.message });
+    }
+  }
+
+  if (succeeded > 0) {
+    if (action === "move" || action === "archive" || action === "trash") {
+      clearMailMessageSelection({ render: false });
+      clearReaderSelection();
+      await Promise.all([
+        loadMailboxes({ quiet: true, logErrors: false }),
+        loadMessages({ quiet: true }),
+      ]);
+      setActiveMailPane("messages");
+    } else {
+      await refreshMailView({ preservePane: true });
+    }
+  }
+
+  if (failed.length > 0) {
+    setStatus(`${options.statusVerb || "Updated"} ${succeeded} ${pluralizeMessages(succeeded)}, ${failed.length} failed.`, "error");
+    return;
+  }
+  setStatus(`${options.statusVerb || "Updated"} ${succeeded} ${pluralizeMessages(succeeded)}.`, "ok");
+}
+
 async function openReplyCompose() {
   requireSelectedMessage();
   const message = state.selectedMessage;
@@ -6213,6 +7083,7 @@ async function searchMessages() {
     throw new Error("Sign in required");
   }
   const q = el.searchInput.value.trim();
+  clearMailMessageSelection({ render: false });
   if (isDraftsMailboxSelected()) {
     clearReaderSelection();
     await loadMessages({ quiet: true, query: q });
@@ -6227,6 +7098,32 @@ async function searchMessages() {
   setActiveMailPane("messages");
 }
 
+function composeShouldPersistSendFailure(err) {
+  const status = Number(err?.status || 0);
+  if (!status) return true;
+  return status >= 500;
+}
+
+async function markComposeDraftSendFailed(err) {
+  const message = formatAPIError(err, "Send failed.");
+  state.compose.draftStatus = "failed";
+  state.compose.lastSendError = message;
+  applyComposeSendFailurePresentation();
+  updateComposeSubmitState();
+  const draftID = String(state.compose.draftID || "").trim();
+  if (!draftID) return;
+  try {
+    const saved = await api(`/api/v2/drafts/${encodeURIComponent(draftID)}`, {
+      method: "PATCH",
+      json: { status: "failed", last_send_error: message },
+      logErrors: false,
+    });
+    syncComposeServerDraftState(saved || {}, { keepDirty: true });
+  } catch {
+    // Best effort only; keep the local failed state visible.
+  }
+}
+
 async function sendCompose(form) {
   if (!state.user) {
     throw new Error("Sign in required");
@@ -6234,69 +7131,19 @@ async function sendCompose(form) {
   commitComposeAllRecipientInputs();
   cleanupComposeInlineReferences();
   syncComposeDraftFields();
-  await flushComposeDraft({ immediate: true });
-  const bodySnapshot = composeEditorSnapshot("send");
+  await flushComposeDraft({ immediate: true, forceCreate: true });
   const draftID = String(state.compose.draftID || "").trim();
-  const hasLiveMedia = composeHasLiveMedia();
-
-  if (!hasLiveMedia && draftID) {
-    const result = await api(`/api/v2/drafts/${encodeURIComponent(draftID)}/send`, {
-      method: "POST",
-      json: {},
-      logErrors: false,
-    });
-    clearComposeCrashBuffer(draftID);
-    removeLocalDraft(draftID);
-    clearComposeDraft();
-    setComposeSendContext("send", "");
-    return result;
+  if (!draftID) {
+    throw new Error("Draft save failed.");
   }
-
-  const mp = new FormData();
-  mp.append("to", serializeComposeRecipients("to"));
-  if (state.compose.ccVisible) {
-    mp.append("cc", serializeComposeRecipients("cc"));
-  }
-  if (state.compose.bccVisible) {
-    mp.append("bcc", serializeComposeRecipients("bcc"));
-  }
-  mp.append("subject", String(el.composeSubjectInput?.value || ""));
-  mp.append("body", bodySnapshot.text);
-  mp.append("body_html", bodySnapshot.html);
-  mp.append("from_mode", state.compose.fromMode);
-  if (state.compose.fromMode === "identity") {
-    mp.append("identity_id", state.compose.selectedIdentityID || "");
-    mp.append("account_id", state.compose.selectedAccountID || "");
-  }
-  if (state.compose.fromMode === "manual") {
-    mp.append("from_manual", composeResolvedManualSender());
-  }
-
-  for (const item of state.compose.attachments) {
-    mp.append("attachments", item.file, item.name);
-  }
-  for (const item of state.compose.inlineImages) {
-    mp.append("inline_images", item.file, item.name);
-    mp.append("inline_image_cids", item.cid);
-  }
-
-  const result = await api(composeEndpointForContext(), { method: "POST", body: mp });
-  if (draftID) {
-    try {
-      await api(`/api/v2/drafts/${encodeURIComponent(draftID)}`, {
-        method: "PATCH",
-        json: { status: "sent" },
-        logErrors: false,
-      });
-    } catch {
-      // Best effort only; message send already succeeded.
-    }
-    clearComposeCrashBuffer(draftID);
-    removeLocalDraft(draftID);
-    clearComposeDraft();
-  } else {
-    clearComposeCrashBuffer("");
-  }
+  const result = await api(`/api/v2/drafts/${encodeURIComponent(draftID)}/send`, {
+    method: "POST",
+    json: {},
+    logErrors: false,
+  });
+  clearComposeCrashBuffer(draftID);
+  removeLocalDraft(draftID);
+  clearComposeDraft();
   setComposeSendContext("send", "");
   return result;
 }
@@ -7651,6 +8498,26 @@ async function handleMailKeyboard(event) {
     await moveMessageSelection(-1);
     return;
   }
+  if (state.ui.activeKeyboardPane === "reader" && (k === "j" || event.key === "ArrowDown")) {
+    event.preventDefault();
+    await openThreadNeighbor(1);
+    return;
+  }
+  if (state.ui.activeKeyboardPane === "reader" && (k === "k" || event.key === "ArrowUp")) {
+    event.preventDefault();
+    await openThreadNeighbor(-1);
+    return;
+  }
+  if (state.ui.activeKeyboardPane === "reader" && event.key === "Home") {
+    event.preventDefault();
+    await openThreadBoundary("start");
+    return;
+  }
+  if (state.ui.activeKeyboardPane === "reader" && event.key === "End") {
+    event.preventDefault();
+    await openThreadBoundary("end");
+    return;
+  }
 }
 
 function formatDate(value) {
@@ -8169,7 +9036,10 @@ function bindUI() {
       if (list === el.messages) focusMailPane("messages");
     });
   });
-  window.addEventListener("resize", () => setActiveMailPane(state.ui.activeMailPane, { focus: false }));
+  window.addEventListener("resize", () => {
+    setActiveMailPane(state.ui.activeMailPane, { focus: false });
+    renderThreadContext();
+  });
   document.addEventListener("keydown", (event) => {
     void handleMailKeyboard(event);
   });
@@ -8453,13 +9323,21 @@ function bindUI() {
       } catch (err) {
         if (err.code === "smtp_sender_rejected") {
           const requestRef = err.requestID ? ` (request ${err.requestID})` : "";
+          setComposeDraftNote("SMTP sender policy rejected this message.", "error");
           setStatus(`SMTP sender policy rejected this message. On Ubuntu, check Postfix sender-login policy and users.mail_login mapping.${requestRef}`, "error");
           return;
         }
         if (err.code === "invalid_sender_manual") {
+          setComposeDraftNote("Manual sender must exactly match your authenticated account email.", "error");
           setStatus("Manual sender must exactly match your authenticated account email.", "error");
           return;
         }
+        if (composeShouldPersistSendFailure(err)) {
+          await markComposeDraftSendFailed(err);
+          setStatus(formatAPIError(err, "Send failed."), "error");
+          return;
+        }
+        setComposeDraftNote(formatAPIError(err, "Send failed."), "error");
         setStatus(err.message, "error");
       } finally {
         state.compose.submitInFlight = false;
@@ -8651,19 +9529,6 @@ function bindUI() {
       queueComposeDraftSave();
       updateComposeSubmitState();
     });
-    el.composeEditor.addEventListener("click", (event) => {
-      const removeButton = event.target instanceof Element
-        ? event.target.closest("[data-compose-attachment-remove]")
-        : null;
-      if (!removeButton) return;
-      event.preventDefault();
-      const attachmentID = String(removeButton.getAttribute("data-compose-attachment-remove") || "");
-      if (!attachmentID) return;
-      removeComposeAttachmentByID(attachmentID);
-      syncComposeDraftFields();
-      queueComposeDraftSave();
-      updateComposeSubmitState();
-    });
     el.composeEditor.addEventListener("paste", (event) => {
       event.preventDefault();
       const text = event.clipboardData?.getData("text/plain") || "";
@@ -8778,6 +9643,23 @@ function bindUI() {
     el.composeAttachmentsInput.addEventListener("change", (event) => {
       addComposeFiles(event.target.files || []);
       event.target.value = "";
+    });
+  }
+  if (el.composeAssetsList) {
+    el.composeAssetsList.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      if (!target) return;
+      const retry = target.closest("[data-compose-asset-retry]");
+      if (retry) {
+        retryComposeAssetByID(String(retry.getAttribute("data-compose-asset-retry") || ""));
+        return;
+      }
+      const remove = target.closest("[data-compose-asset-remove]");
+      if (!remove) return;
+      void removeComposeAssetByID(String(remove.getAttribute("data-compose-asset-remove") || "")).catch((err) => {
+        setComposeDraftNote(formatAPIError(err, "Attachment removal failed."), "error");
+        setStatus(err.message, "error");
+      });
     });
   }
   renderComposeRecipientTokens("to");
@@ -9032,64 +9914,101 @@ function bindUI() {
     };
   }
 
-  el.btnFlag.onclick = async () => {
-    let prevFlagged = false;
-    try {
-      requireSelectedMessage();
-      prevFlagged = !!state.selectedMessage?.flagged;
-      const nextFlagged = !state.selectedMessage?.flagged;
-      applyLocalMessagePatch(state.selectedMessage.id, { flagged: nextFlagged });
-      await api(`/api/v1/messages/${encodeURIComponent(state.selectedMessage.id)}/flags`, {
-        method: "POST",
-        json: nextFlagged ? { add: ["\\Flagged"] } : { remove: ["\\Flagged"] },
-      });
-      await refreshMailView({ preservePane: true });
-      setStatus(nextFlagged ? "Message marked important." : "Message unflagged.", "ok");
-    } catch (err) {
-      if (state.selectedMessage?.id) {
-        applyLocalMessagePatch(state.selectedMessage.id, { flagged: prevFlagged });
+  if (el.btnFlag) {
+    el.btnFlag.onclick = async () => {
+      try {
+        const mode = selectedMailActionFlagMode();
+        await runMailAction(mode, { statusVerb: mode === "unflag" ? "Unflagged" : "Flagged" });
+      } catch (err) {
+        setStatus(err.message, "error");
       }
-      setStatus(err.message, "error");
-    }
-  };
+    };
+  }
 
-  el.btnSeen.onclick = async () => {
-    let changedID = "";
-    try {
-      requireSelectedMessage();
-      if (state.selectedMessage?.seen) {
-        setStatus("Message is already marked read.", "info");
-        return;
+  if (el.btnSeen) {
+    el.btnSeen.onclick = async () => {
+      try {
+        const mode = selectedMailActionReadMode();
+        await runMailAction(mode, { statusVerb: mode === "unread" ? "Marked unread" : "Marked read" });
+      } catch (err) {
+        setStatus(err.message, "error");
       }
-      changedID = String(state.selectedMessage.id || "");
-      applyLocalMessagePatch(state.selectedMessage.id, { seen: true });
-      await api(`/api/v1/messages/${encodeURIComponent(state.selectedMessage.id)}/flags`, { method: "POST", json: { add: ["\\Seen"] } });
-      await refreshMailView({ preservePane: true });
-      setStatus("Message marked seen.", "ok");
-    } catch (err) {
-      if (changedID) {
-        applyLocalMessagePatch(changedID, { seen: false });
-      }
-      setStatus(err.message, "error");
-    }
-  };
+    };
+  }
 
-  el.btnTrash.onclick = async () => {
-    try {
-      requireSelectedMessage();
-      const trashMailbox = mailboxNameForRole("trash") || "Trash";
-      await api(`/api/v1/messages/${encodeURIComponent(state.selectedMessage.id)}/move`, { method: "POST", json: { mailbox: trashMailbox } });
-      clearReaderSelection();
-      await Promise.all([
-        loadMailboxes({ quiet: true }),
-        loadMessages({ quiet: true }),
-      ]);
-      setStatus("Message moved to trash.", "ok");
-      setActiveMailPane("messages");
-    } catch (err) {
-      setStatus(err.message, "error");
-    }
-  };
+  if (el.btnArchive) {
+    el.btnArchive.onclick = async () => {
+      try {
+        const archiveMailbox = mailboxNameForRole("archive");
+        if (!archiveMailbox) {
+          setStatus("No archive mailbox is available.", "error");
+          return;
+        }
+        await runMailAction("archive", { mailbox: archiveMailbox, statusVerb: "Archived" });
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    };
+  }
+
+  if (el.btnMove) {
+    el.btnMove.onclick = async () => {
+      try {
+        const mailbox = String(el.mailMoveTarget?.value || "").trim();
+        await runMailAction("move", { mailbox, statusVerb: "Moved" });
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    };
+  }
+
+  if (el.btnTrash) {
+    el.btnTrash.onclick = async () => {
+      try {
+        const trashMailbox = mailboxNameForRole("trash") || "Trash";
+        await runMailAction("trash", { mailbox: trashMailbox, statusVerb: "Moved to trash" });
+      } catch (err) {
+        setStatus(err.message, "error");
+      }
+    };
+  }
+
+  if (el.mailMoveTarget) {
+    el.mailMoveTarget.addEventListener("change", () => {
+      applyMailActionAvailability();
+    });
+  }
+
+  if (el.btnMailSelectVisible) {
+    el.btnMailSelectVisible.onclick = () => {
+      const next = new Set(visibleActionableMessages().map((item) => String(item?.id || "")).filter(Boolean));
+      state.mail.selectedMessageIDs = next;
+      renderMessages(state.messages);
+    };
+  }
+
+  if (el.btnMailClear) {
+    el.btnMailClear.onclick = () => {
+      clearMailMessageSelection();
+    };
+  }
+
+  if (el.mailCheckAll) {
+    el.mailCheckAll.addEventListener("change", () => {
+      if (el.mailCheckAll.checked) {
+        state.mail.selectedMessageIDs = new Set(visibleActionableMessages().map((item) => String(item?.id || "")).filter(Boolean));
+      } else {
+        state.mail.selectedMessageIDs = new Set();
+      }
+      renderMessages(state.messages);
+    });
+  }
+
+  if (el.btnThreadCollapse) {
+    el.btnThreadCollapse.onclick = () => {
+      toggleThreadExpanded();
+    };
+  }
 
   if (el.btnThreadPrev) {
     el.btnThreadPrev.onclick = async () => {

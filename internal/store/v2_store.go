@@ -596,7 +596,7 @@ func (s *Store) ListDrafts(ctx context.Context, userID, accountID string, limit,
 	limit = clampLimit(limit)
 	offset = clampOffset(offset)
 	query := fmt.Sprintf(
-		`SELECT id,user_id,account_id,identity_id,compose_mode,context_message_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,created_at,updated_at
+		`SELECT id,user_id,account_id,identity_id,compose_mode,context_message_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,last_send_error,created_at,updated_at
 		 FROM drafts
 		 WHERE %s
 		 ORDER BY updated_at DESC
@@ -623,7 +623,7 @@ func (s *Store) ListDrafts(ctx context.Context, userID, accountID string, limit,
 
 func (s *Store) GetDraftByID(ctx context.Context, userID, id string) (models.Draft, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id,user_id,account_id,identity_id,compose_mode,context_message_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,created_at,updated_at
+		`SELECT id,user_id,account_id,identity_id,compose_mode,context_message_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,last_send_error,created_at,updated_at
 		 FROM drafts
 		 WHERE user_id=? AND id=?`,
 		userID, id,
@@ -646,6 +646,8 @@ func (s *Store) CreateDraft(ctx context.Context, in models.Draft) (models.Draft,
 	if strings.TrimSpace(in.Status) == "" {
 		in.Status = "draft"
 	}
+	in.AttachmentsJSON = normalizeDraftAttachmentsJSON(in.AttachmentsJSON)
+	in.LastSendError = strings.TrimSpace(in.LastSendError)
 	in.CreatedAt = now
 	in.UpdatedAt = now
 	if strings.TrimSpace(in.ComposeMode) == "" {
@@ -656,8 +658,8 @@ func (s *Store) CreateDraft(ctx context.Context, in models.Draft) (models.Draft,
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO drafts(
-		  id,user_id,account_id,identity_id,compose_mode,context_message_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,created_at,updated_at
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		  id,user_id,account_id,identity_id,compose_mode,context_message_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,last_send_error,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		in.ID,
 		in.UserID,
 		nullStringValue(in.AccountID),
@@ -678,6 +680,7 @@ func (s *Store) CreateDraft(ctx context.Context, in models.Draft) (models.Draft,
 		in.SendMode,
 		nullTimeValue(in.ScheduledFor),
 		in.Status,
+		in.LastSendError,
 		in.CreatedAt,
 		in.UpdatedAt,
 	)
@@ -697,9 +700,11 @@ func (s *Store) UpdateDraft(ctx context.Context, in models.Draft) (models.Draft,
 	if strings.TrimSpace(in.FromMode) == "" {
 		in.FromMode = "default"
 	}
+	in.AttachmentsJSON = normalizeDraftAttachmentsJSON(in.AttachmentsJSON)
+	in.LastSendError = strings.TrimSpace(in.LastSendError)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE drafts SET
-		  account_id=?,identity_id=?,compose_mode=?,context_message_id=?,from_mode=?,from_manual=?,client_state_json=?,to_value=?,cc_value=?,bcc_value=?,subject=?,body_text=?,body_html=?,attachments_json=?,crypto_options_json=?,send_mode=?,scheduled_for=?,status=?,updated_at=?
+		  account_id=?,identity_id=?,compose_mode=?,context_message_id=?,from_mode=?,from_manual=?,client_state_json=?,to_value=?,cc_value=?,bcc_value=?,subject=?,body_text=?,body_html=?,attachments_json=?,crypto_options_json=?,send_mode=?,scheduled_for=?,status=?,last_send_error=?,updated_at=?
 		 WHERE user_id=? AND id=?`,
 		nullStringValue(in.AccountID),
 		in.IdentityID,
@@ -719,6 +724,7 @@ func (s *Store) UpdateDraft(ctx context.Context, in models.Draft) (models.Draft,
 		in.SendMode,
 		nullTimeValue(in.ScheduledFor),
 		in.Status,
+		in.LastSendError,
 		in.UpdatedAt,
 		in.UserID,
 		in.ID,
@@ -742,6 +748,9 @@ func (s *Store) DeleteDraft(ctx context.Context, userID, draftID string) error {
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `DELETE FROM draft_versions WHERE draft_id=?`, draftID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM draft_attachments WHERE draft_id=? AND user_id=?`, draftID, userID); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM scheduled_send_queue WHERE draft_id=?`, draftID); err != nil {
@@ -820,6 +829,124 @@ func (s *Store) SetDraftStatus(ctx context.Context, userID, draftID, status stri
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE drafts SET status=?, updated_at=? WHERE user_id=? AND id=?`,
 		strings.TrimSpace(status), time.Now().UTC(), userID, draftID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) SetDraftSendState(ctx context.Context, userID, draftID, status, lastSendError string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE drafts SET status=?, last_send_error=?, updated_at=? WHERE user_id=? AND id=?`,
+		strings.TrimSpace(status), strings.TrimSpace(lastSendError), time.Now().UTC(), userID, draftID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+func (s *Store) NextDraftAttachmentSortOrder(ctx context.Context, userID, draftID string) (int, error) {
+	var next int
+	if err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(sort_order), -1) + 1 FROM draft_attachments WHERE user_id=? AND draft_id=?`,
+		userID, draftID,
+	).Scan(&next); err != nil {
+		return 0, err
+	}
+	if next < 0 {
+		next = 0
+	}
+	return next, nil
+}
+
+func (s *Store) CreateDraftAttachment(ctx context.Context, in models.DraftAttachment) (models.DraftAttachment, error) {
+	now := time.Now().UTC()
+	if strings.TrimSpace(in.ID) == "" {
+		in.ID = uuid.NewString()
+	}
+	if strings.TrimSpace(in.ContentType) == "" {
+		in.ContentType = "application/octet-stream"
+	}
+	in.CreatedAt = now
+	in.UpdatedAt = now
+	in.SizeBytes = int64(len(in.Data))
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO draft_attachments(
+		  id,draft_id,user_id,filename,content_type,size_bytes,inline_part,content_id,sort_order,data,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		in.ID,
+		in.DraftID,
+		in.UserID,
+		in.Filename,
+		in.ContentType,
+		in.SizeBytes,
+		boolToInt(in.InlinePart),
+		in.ContentID,
+		in.SortOrder,
+		in.Data,
+		in.CreatedAt,
+		in.UpdatedAt,
+	)
+	if err != nil {
+		return models.DraftAttachment{}, err
+	}
+	return in, nil
+}
+
+func (s *Store) ListDraftAttachments(ctx context.Context, userID, draftID string) ([]models.DraftAttachment, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,draft_id,user_id,filename,content_type,size_bytes,inline_part,content_id,sort_order,data,created_at,updated_at
+		 FROM draft_attachments
+		 WHERE user_id=? AND draft_id=?
+		 ORDER BY sort_order ASC, created_at ASC`,
+		userID, draftID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]models.DraftAttachment, 0, 8)
+	for rows.Next() {
+		item, err := scanDraftAttachment(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetDraftAttachmentByID(ctx context.Context, userID, draftID, attachmentID string) (models.DraftAttachment, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id,draft_id,user_id,filename,content_type,size_bytes,inline_part,content_id,sort_order,data,created_at,updated_at
+		 FROM draft_attachments
+		 WHERE user_id=? AND draft_id=? AND id=?`,
+		userID, draftID, attachmentID,
+	)
+	item, err := scanDraftAttachment(row)
+	if err == sql.ErrNoRows {
+		return models.DraftAttachment{}, ErrNotFound
+	}
+	if err != nil {
+		return models.DraftAttachment{}, err
+	}
+	return item, nil
+}
+
+func (s *Store) DeleteDraftAttachment(ctx context.Context, userID, draftID, attachmentID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`DELETE FROM draft_attachments WHERE user_id=? AND draft_id=? AND id=?`,
+		userID, draftID, attachmentID,
 	)
 	if err != nil {
 		return err
@@ -2623,6 +2750,7 @@ func scanDraft(scanner interface{ Scan(dest ...any) error }) (models.Draft, erro
 		&item.SendMode,
 		&scheduledAt,
 		&item.Status,
+		&item.LastSendError,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	); err != nil {
@@ -2634,6 +2762,29 @@ func scanDraft(scanner interface{ Scan(dest ...any) error }) (models.Draft, erro
 	if scheduledAt.Valid {
 		item.ScheduledFor = scheduledAt.Time
 	}
+	return item, nil
+}
+
+func scanDraftAttachment(scanner interface{ Scan(dest ...any) error }) (models.DraftAttachment, error) {
+	var item models.DraftAttachment
+	var inlinePart int
+	if err := scanner.Scan(
+		&item.ID,
+		&item.DraftID,
+		&item.UserID,
+		&item.Filename,
+		&item.ContentType,
+		&item.SizeBytes,
+		&inlinePart,
+		&item.ContentID,
+		&item.SortOrder,
+		&item.Data,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return models.DraftAttachment{}, err
+	}
+	item.InlinePart = inlinePart == 1
 	return item, nil
 }
 
@@ -2649,6 +2800,22 @@ func nullStringValue(v string) any {
 		return nil
 	}
 	return v
+}
+
+func normalizeDraftAttachmentsJSON(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "[]"
+	}
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &items); err != nil {
+		return "[]"
+	}
+	b, err := json.Marshal(items)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
 }
 
 func coalesceTime(v, fallback time.Time) time.Time {

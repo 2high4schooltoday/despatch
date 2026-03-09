@@ -16,6 +16,7 @@ import (
 	"despatch/internal/mail"
 	mailsecclient "despatch/internal/mailsec"
 	"despatch/internal/models"
+	"despatch/internal/service"
 	"despatch/internal/store"
 	"despatch/internal/util"
 )
@@ -239,7 +240,7 @@ func (w *MailWorkers) processScheduledSendItem(ctx context.Context, item models.
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			_ = w.st.MarkScheduledSendFailed(ctx, item.ID, "mail account not found")
-			_ = w.st.SetDraftStatus(ctx, item.UserID, item.DraftID, "failed")
+			_ = w.st.SetDraftSendState(ctx, item.UserID, item.DraftID, "failed", "mail account not found")
 			return nil
 		}
 		return err
@@ -252,36 +253,43 @@ func (w *MailWorkers) processScheduledSendItem(ctx context.Context, item models.
 	if err != nil {
 		return err
 	}
-	recipients := append(splitCSV(draft.ToValue), splitCSV(draft.CCValue)...)
-	recipients = append(recipients, splitCSV(draft.BCCValue)...)
+	cli := mail.NewIMAPSMTPClient(w.accountMailConfig(account))
+	svc := service.New(w.cfg, w.st, cli, mail.NoopProvisioner{}, nil)
+	sendReq, _, markAnswered, err := svc.BuildDraftSendRequest(ctx, user, account.Login, pass, draft)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			_ = w.st.MarkScheduledSendFailed(ctx, item.ID, err.Error())
+			_ = w.st.SetDraftSendState(ctx, item.UserID, item.DraftID, "failed", err.Error())
+			return nil
+		}
+		return err
+	}
+	recipients := append([]string{}, sendReq.To...)
+	recipients = append(recipients, sendReq.CC...)
+	recipients = append(recipients, sendReq.BCC...)
 	if len(recipients) == 0 {
 		_ = w.st.MarkScheduledSendFailed(ctx, item.ID, "no recipients")
-		_ = w.st.SetDraftStatus(ctx, item.UserID, item.DraftID, "failed")
+		_ = w.st.SetDraftSendState(ctx, item.UserID, item.DraftID, "failed", "no recipients")
 		return nil
 	}
-
-	sendReq := mail.SendRequest{
-		From:    user.Email,
-		To:      recipients,
-		Subject: draft.Subject,
-		Body:    draft.BodyText,
-	}
-	cli := mail.NewIMAPSMTPClient(w.accountMailConfig(account))
 	if _, err := cli.Send(ctx, account.Login, pass, sendReq); err != nil {
 		retryCount := item.RetryCount + 1
 		if retryCount >= 3 {
 			_ = w.st.MarkScheduledSendFailed(ctx, item.ID, err.Error())
-			_ = w.st.SetDraftStatus(ctx, item.UserID, item.DraftID, "failed")
+			_ = w.st.SetDraftSendState(ctx, item.UserID, item.DraftID, "failed", err.Error())
 			return nil
 		}
 		nextRetry := time.Now().UTC().Add(time.Duration(1<<uint(retryCount-1)) * 30 * time.Second)
 		_ = w.st.MarkScheduledSendRetry(ctx, item.ID, retryCount, nextRetry, err.Error())
-		_ = w.st.SetDraftStatus(ctx, item.UserID, item.DraftID, "retrying")
+		_ = w.st.SetDraftSendState(ctx, item.UserID, item.DraftID, "retrying", err.Error())
 		return nil
 	}
 
 	_ = w.st.MarkScheduledSendSent(ctx, item.ID)
-	_ = w.st.SetDraftStatus(ctx, item.UserID, item.DraftID, "sent")
+	_ = w.st.SetDraftSendState(ctx, item.UserID, item.DraftID, "sent", "")
+	if markAnswered && strings.TrimSpace(draft.ContextMessageID) != "" {
+		_ = cli.UpdateFlags(ctx, account.Login, pass, draft.ContextMessageID, mail.FlagPatch{Add: []string{"\\Answered"}})
+	}
 	return nil
 }
 

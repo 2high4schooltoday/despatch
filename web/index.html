@@ -430,7 +430,7 @@
         <article class="panel workspace-header">
           <div>
             <h2>Mailbox</h2>
-            <p class="hint">Keyboard: Tab pane, j/k row, Enter open, / search, c compose, r reply, Shift+F forward, f flag, s seen, Delete trash.</p>
+            <p class="hint">Keyboard: Tab pane, j/k move, Enter open, / search, c compose, r reply, Shift+F forward, f flag, s read state, Delete trash.</p>
           </div>
           <div class="actions">
             <button id="mail-mobile-back" class="cmd-btn cmd-btn--dense mail-nav-back" type="button">Back</button>
@@ -448,7 +448,14 @@
             </div>
             <div class="mail-commandbar-group" role="group" aria-label="Message state actions">
               <button id="btn-flag" class="cmd-btn cmd-btn--dense" type="button">Flag</button>
-              <button id="btn-mark-seen" class="cmd-btn cmd-btn--dense" type="button">Mark Seen</button>
+              <button id="btn-mark-seen" class="cmd-btn cmd-btn--dense" type="button">Mark Read</button>
+            </div>
+            <div class="mail-commandbar-group" role="group" aria-label="Mailbox actions">
+              <button id="btn-archive" class="cmd-btn cmd-btn--dense" type="button">Archive</button>
+              <select id="mail-move-target" aria-label="Move selected messages to mailbox">
+                <option value="">Move to…</option>
+              </select>
+              <button id="btn-move" class="cmd-btn cmd-btn--dense" type="button">Move</button>
             </div>
             <div class="mail-commandbar-group mail-commandbar-group--danger" role="group" aria-label="Destructive actions">
               <button id="btn-trash" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Move To Trash</button>
@@ -469,6 +476,12 @@
             <div class="pane-head">
               <button id="mail-back-to-mailboxes" class="cmd-btn cmd-btn--dense mail-nav-back" type="button">Back</button>
             </div>
+            <div id="mail-bulk-bar" class="bulk-bar mail-bulk-bar hidden">
+              <label class="bulk-check"><input id="mail-check-all" type="checkbox"> Select visible</label>
+              <span id="mail-selection-count" class="mail-selection-count">0 selected</span>
+              <button id="btn-mail-select-visible" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Select visible</button>
+              <button id="btn-mail-clear" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Clear</button>
+            </div>
             <ul id="messages" class="message-list" role="listbox" aria-label="Messages" tabindex="0"></ul>
           </section>
 
@@ -479,12 +492,22 @@
             <div class="reader-header">
               <h4 id="message-subject-anchor" class="reader-subject">(no subject)</h4>
               <div id="message-meta" class="meta"></div>
+            </div>
+            <div id="thread-strip" class="thread-strip hidden">
               <div class="thread-context">
-                <span id="thread-position" class="thread-position">Conversation: -</span>
+                <div class="thread-summary">
+                  <span id="thread-position" class="thread-position">Conversation: -</span>
+                  <span id="thread-selection-status" class="thread-selection-status hidden"></span>
+                </div>
                 <div class="thread-actions">
+                  <span id="thread-truncated" class="thread-badge hidden">Partial</span>
+                  <button id="btn-thread-collapse" class="cmd-btn cmd-btn--dense" type="button" aria-expanded="true">Collapse</button>
                   <button id="btn-thread-prev" class="cmd-btn cmd-btn--dense" type="button">Prev</button>
                   <button id="btn-thread-next" class="cmd-btn cmd-btn--dense" type="button">Next</button>
                 </div>
+              </div>
+              <div id="thread-list-wrap" class="thread-list-wrap hidden">
+                <ul id="thread-list" class="thread-list" role="listbox" aria-label="Conversation messages"></ul>
               </div>
             </div>
             <div class="reader-view-controls" role="group" aria-label="Reader view mode">
@@ -810,6 +833,12 @@
 
         <section class="compose-body-layer">
           <p id="compose-draft-note" class="compose-inline-note hidden" aria-live="polite"></p>
+          <section id="compose-assets" class="compose-assets hidden" aria-label="Draft attachments">
+            <div class="compose-assets-head">
+              <span class="compose-assets-title">Attachments</span>
+            </div>
+            <ul id="compose-assets-list" class="compose-assets-list"></ul>
+          </section>
           <div id="compose-editor-tools" class="compose-editor-tools hidden" role="toolbar" aria-label="Formatting tools">
             <button id="compose-tool-undo" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Undo">Undo</button>
             <button id="compose-tool-typography" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Paragraph style">Style</button>

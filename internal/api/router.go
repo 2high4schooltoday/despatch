@@ -258,6 +258,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Get("/saved-searches", h.V2ListSavedSearches)
 				r.Get("/drafts", h.V2ListDrafts)
 				r.Get("/drafts/{id}", h.V2GetDraft)
+				r.Get("/drafts/{id}/attachments/{attachment_id}", h.V2GetDraftAttachment)
 				r.Get("/drafts/{id}/versions", h.V2ListDraftVersions)
 				r.Get("/rules/scripts", h.V2ListRuleScripts)
 				r.Get("/rules/scripts/{name}", h.V2GetRuleScript)
@@ -294,6 +295,8 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Post("/drafts", h.V2CreateDraft)
 					r.Patch("/drafts/{id}", h.V2UpdateDraft)
 					r.Delete("/drafts/{id}", h.V2DeleteDraft)
+					r.Post("/drafts/{id}/attachments", h.V2UploadDraftAttachments)
+					r.Delete("/drafts/{id}/attachments/{attachment_id}", h.V2DeleteDraftAttachment)
 					r.Post("/drafts/{id}/send", h.V2SendDraft)
 					r.With(middleware.RateLimit(h.limiter, "send_v2", 30, time.Minute, h.cfg.TrustProxy)).Post("/messages/send", h.V2SendMessage)
 

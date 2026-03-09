@@ -8,8 +8,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,20 +33,34 @@ import (
 )
 
 func newV2Router(t *testing.T) http.Handler {
-	return newV2RouterWithConfig(t, nil)
+	return newV2RouterWithMailClient(t, mail.NoopClient{}, nil)
 }
 
 func newV2RouterWithConfig(t *testing.T, mutate func(*config.Config)) http.Handler {
-	router, _ := newV2RouterWithConfigAndStore(t, mutate)
+	router, _ := newV2RouterWithMailClientAndStore(t, mail.NoopClient{}, mutate)
 	return router
 }
 
 func newV2RouterWithConfigAndStore(t *testing.T, mutate func(*config.Config)) (http.Handler, *store.Store) {
-	router, st, _ := newV2RouterWithConfigAndStoreDB(t, mutate)
+	router, st, _ := newV2RouterWithMailClientAndStoreDB(t, mail.NoopClient{}, mutate)
 	return router, st
 }
 
 func newV2RouterWithConfigAndStoreDB(t *testing.T, mutate func(*config.Config)) (http.Handler, *store.Store, *sql.DB) {
+	return newV2RouterWithMailClientAndStoreDB(t, mail.NoopClient{}, mutate)
+}
+
+func newV2RouterWithMailClient(t *testing.T, despatch mail.Client, mutate func(*config.Config)) http.Handler {
+	router, _ := newV2RouterWithMailClientAndStore(t, despatch, mutate)
+	return router
+}
+
+func newV2RouterWithMailClientAndStore(t *testing.T, despatch mail.Client, mutate func(*config.Config)) (http.Handler, *store.Store) {
+	router, st, _ := newV2RouterWithMailClientAndStoreDB(t, despatch, mutate)
+	return router, st
+}
+
+func newV2RouterWithMailClientAndStoreDB(t *testing.T, despatch mail.Client, mutate func(*config.Config)) (http.Handler, *store.Store, *sql.DB) {
 	t.Helper()
 	sqdb, err := db.OpenSQLite(filepath.Join(t.TempDir(), "app.db"), 1, 1, time.Minute)
 	if err != nil {
@@ -76,6 +92,7 @@ func newV2RouterWithConfigAndStoreDB(t *testing.T, mutate func(*config.Config)) 
 		filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql"),
 		filepath.Join("..", "..", "migrations", "022_draft_compose_context.sql"),
 		filepath.Join("..", "..", "migrations", "023_drafts_nullable_account.sql"),
+		filepath.Join("..", "..", "migrations", "024_draft_attachments_and_send_errors.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -116,7 +133,6 @@ func newV2RouterWithConfigAndStoreDB(t *testing.T, mutate func(*config.Config)) 
 	if mutate != nil {
 		mutate(&cfg)
 	}
-	despatch := mail.NoopClient{}
 	svc := service.New(cfg, st, despatch, mail.NoopProvisioner{}, nil)
 	return NewRouter(cfg, svc), st, sqdb
 }
@@ -384,6 +400,29 @@ func doV2AuthedJSON(t *testing.T, router http.Handler, method, path string, payl
 		req.Header.Set("X-CSRF-Token", csrf.Value)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func doV2AuthedMultipart(t *testing.T, router http.Handler, method, path string, build func(*multipart.Writer), sess, csrf *http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if build != nil {
+		build(writer)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+	req := httptest.NewRequest(method, path, &body)
+	setTestLoopbackOrigin(req)
+	req.AddCookie(sess)
+	req.AddCookie(csrf)
+	if method != http.MethodGet {
+		req.Header.Set("X-CSRF-Token", csrf.Value)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 	return rec
@@ -1544,6 +1583,196 @@ func TestV2SendDraftWithoutAccountMarksDraftSent(t *testing.T) {
 		if item.ID == draft.ID {
 			t.Fatalf("expected sent draft %q to be excluded from active list", draft.ID)
 		}
+	}
+}
+
+func TestV2DraftAttachmentUploadRoundTripsAndSendUsesStoredMedia(t *testing.T) {
+	despatch := &sendTestDespatch{}
+	router := newV2RouterWithMailClient(t, despatch, nil)
+	sess, csrf := loginV2(t, router)
+
+	create := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts", map[string]any{
+		"account_id":   "",
+		"to":           "someone@example.com",
+		"subject":      "Send me with files",
+		"body_text":    "Hello",
+		"body_html":    "<p>Hello</p>",
+		"compose_mode": "send",
+		"from_mode":    "manual",
+		"from_manual":  "admin@example.com",
+	}, sess, csrf)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected draft create 201, got %d body=%s", create.Code, create.Body.String())
+	}
+	var draft models.Draft
+	if err := json.Unmarshal(create.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft response: %v", err)
+	}
+
+	upload := doV2AuthedMultipart(t, router, http.MethodPost, "/api/v2/drafts/"+draft.ID+"/attachments", func(w *multipart.Writer) {
+		file, err := w.CreateFormFile("attachments", "notes.txt")
+		if err != nil {
+			t.Fatalf("create attachment part: %v", err)
+		}
+		if _, err := file.Write([]byte("draft attachment")); err != nil {
+			t.Fatalf("write attachment part: %v", err)
+		}
+		inline, err := w.CreateFormFile("inline_images", "inline.png")
+		if err != nil {
+			t.Fatalf("create inline part: %v", err)
+		}
+		if _, err := inline.Write([]byte("PNGDATA")); err != nil {
+			t.Fatalf("write inline part: %v", err)
+		}
+		if err := w.WriteField("inline_image_cids", "cid-inline-1"); err != nil {
+			t.Fatalf("write cid field: %v", err)
+		}
+	}, sess, csrf)
+	if upload.Code != http.StatusCreated {
+		t.Fatalf("expected attachment upload 201, got %d body=%s", upload.Code, upload.Body.String())
+	}
+	var uploadPayload struct {
+		Draft    models.Draft            `json:"draft"`
+		Items    []models.DraftAttachment `json:"items"`
+		Uploaded []models.DraftAttachment `json:"uploaded"`
+	}
+	if err := json.Unmarshal(upload.Body.Bytes(), &uploadPayload); err != nil {
+		t.Fatalf("decode upload response: %v body=%s", err, upload.Body.String())
+	}
+	if len(uploadPayload.Items) != 2 || len(uploadPayload.Uploaded) != 2 {
+		t.Fatalf("expected 2 stored draft attachments, got items=%d uploaded=%d", len(uploadPayload.Items), len(uploadPayload.Uploaded))
+	}
+	contentID := ""
+	attachmentID := ""
+	for _, item := range uploadPayload.Items {
+		if item.InlinePart {
+			contentID = item.ContentID
+			continue
+		}
+		attachmentID = item.ID
+	}
+	if contentID != "cid-inline-1" {
+		t.Fatalf("expected inline content id cid-inline-1, got %q", contentID)
+	}
+	if attachmentID == "" {
+		t.Fatalf("expected regular attachment id in upload response")
+	}
+	if !strings.Contains(uploadPayload.Draft.AttachmentsJSON, attachmentID) {
+		t.Fatalf("expected attachments_json to reference uploaded attachment, got %q", uploadPayload.Draft.AttachmentsJSON)
+	}
+
+	getAttachment := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/drafts/"+draft.ID+"/attachments/"+attachmentID, nil, sess, csrf)
+	if getAttachment.Code != http.StatusOK {
+		t.Fatalf("expected draft attachment get 200, got %d body=%s", getAttachment.Code, getAttachment.Body.String())
+	}
+	if body := getAttachment.Body.String(); body != "draft attachment" {
+		t.Fatalf("expected stored attachment body, got %q", body)
+	}
+
+	send := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts/"+draft.ID+"/send", nil, sess, csrf)
+	if send.Code != http.StatusOK {
+		t.Fatalf("expected draft send 200, got %d body=%s", send.Code, send.Body.String())
+	}
+	_, req := despatch.snapshot()
+	if len(req.Attachments) != 2 {
+		t.Fatalf("expected 2 stored attachments on send request, got %d", len(req.Attachments))
+	}
+	var sawInline, sawFile bool
+	for _, item := range req.Attachments {
+		if item.Inline {
+			sawInline = item.ContentID == "cid-inline-1" && string(item.Data) == "PNGDATA"
+			continue
+		}
+		sawFile = item.Filename == "notes.txt" && string(item.Data) == "draft attachment"
+	}
+	if !sawInline || !sawFile {
+		t.Fatalf("expected stored inline and file attachments to be sent, got %#v", req.Attachments)
+	}
+}
+
+func TestV2SendDraftFailurePersistsFailedState(t *testing.T) {
+	despatch := &sendTestDespatch{sendErr: errors.New("temporary smtp outage")}
+	router := newV2RouterWithMailClient(t, despatch, nil)
+	sess, csrf := loginV2(t, router)
+
+	create := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts", map[string]any{
+		"account_id":   "",
+		"to":           "someone@example.com",
+		"subject":      "Retry me",
+		"body_text":    "Hello",
+		"compose_mode": "send",
+		"from_mode":    "manual",
+		"from_manual":  "admin@example.com",
+	}, sess, csrf)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected draft create 201, got %d body=%s", create.Code, create.Body.String())
+	}
+	var draft models.Draft
+	if err := json.Unmarshal(create.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft response: %v", err)
+	}
+
+	send := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts/"+draft.ID+"/send", nil, sess, csrf)
+	if send.Code != http.StatusBadGateway {
+		t.Fatalf("expected draft send 502, got %d body=%s", send.Code, send.Body.String())
+	}
+
+	get := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/drafts/"+draft.ID, nil, sess, csrf)
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected draft get 200, got %d body=%s", get.Code, get.Body.String())
+	}
+	var failedDraft models.Draft
+	if err := json.Unmarshal(get.Body.Bytes(), &failedDraft); err != nil {
+		t.Fatalf("decode failed draft: %v body=%s", err, get.Body.String())
+	}
+	if failedDraft.Status != "failed" {
+		t.Fatalf("expected failed draft status, got %+v", failedDraft)
+	}
+	if !strings.Contains(strings.ToLower(failedDraft.LastSendError), "temporary smtp outage") {
+		t.Fatalf("expected last_send_error to persist send failure, got %q", failedDraft.LastSendError)
+	}
+}
+
+func TestV2SendDraftSMTPPolicyFailureDoesNotPersistFailedState(t *testing.T) {
+	despatch := &sendTestDespatch{sendErr: mail.ErrSMTPSenderRejected}
+	router := newV2RouterWithMailClient(t, despatch, nil)
+	sess, csrf := loginV2(t, router)
+
+	create := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts", map[string]any{
+		"account_id":   "",
+		"to":           "someone@example.com",
+		"subject":      "Sender check",
+		"body_text":    "Hello",
+		"compose_mode": "send",
+		"from_mode":    "manual",
+		"from_manual":  "admin@example.com",
+	}, sess, csrf)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected draft create 201, got %d body=%s", create.Code, create.Body.String())
+	}
+	var draft models.Draft
+	if err := json.Unmarshal(create.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft response: %v", err)
+	}
+
+	send := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts/"+draft.ID+"/send", nil, sess, csrf)
+	if send.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected draft send 422, got %d body=%s", send.Code, send.Body.String())
+	}
+
+	get := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/drafts/"+draft.ID, nil, sess, csrf)
+	if get.Code != http.StatusOK {
+		t.Fatalf("expected draft get 200, got %d body=%s", get.Code, get.Body.String())
+	}
+	var current models.Draft
+	if err := json.Unmarshal(get.Body.Bytes(), &current); err != nil {
+		t.Fatalf("decode draft: %v body=%s", err, get.Body.String())
+	}
+	if current.Status == "failed" {
+		t.Fatalf("expected smtp sender rejection to keep draft editable, got %+v", current)
+	}
+	if current.LastSendError != "" {
+		t.Fatalf("expected smtp sender rejection not to persist last_send_error, got %q", current.LastSendError)
 	}
 }
 

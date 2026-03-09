@@ -130,28 +130,29 @@ type SavedSearch struct {
 }
 
 type Draft struct {
-	ID              string    `json:"id"`
-	UserID          string    `json:"user_id"`
-	AccountID       string    `json:"account_id"`
-	IdentityID      string    `json:"identity_id"`
-	ComposeMode     string    `json:"compose_mode"`
-	ContextMessageID string   `json:"context_message_id"`
-	FromMode        string    `json:"from_mode"`
-	FromManual      string    `json:"from_manual"`
-	ClientStateJSON string    `json:"client_state_json"`
-	ToValue         string    `json:"to"`
-	CCValue         string    `json:"cc"`
-	BCCValue        string    `json:"bcc"`
-	Subject         string    `json:"subject"`
-	BodyText        string    `json:"body_text"`
-	BodyHTML        string    `json:"body_html"`
-	AttachmentsJSON string    `json:"attachments_json"`
-	CryptoOptions   string    `json:"crypto_options_json"`
-	SendMode        string    `json:"send_mode"`
-	ScheduledFor    time.Time `json:"scheduled_for,omitempty"`
-	Status          string    `json:"status"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID               string    `json:"id"`
+	UserID           string    `json:"user_id"`
+	AccountID        string    `json:"account_id"`
+	IdentityID       string    `json:"identity_id"`
+	ComposeMode      string    `json:"compose_mode"`
+	ContextMessageID string    `json:"context_message_id"`
+	FromMode         string    `json:"from_mode"`
+	FromManual       string    `json:"from_manual"`
+	ClientStateJSON  string    `json:"client_state_json"`
+	ToValue          string    `json:"to"`
+	CCValue          string    `json:"cc"`
+	BCCValue         string    `json:"bcc"`
+	Subject          string    `json:"subject"`
+	BodyText         string    `json:"body_text"`
+	BodyHTML         string    `json:"body_html"`
+	AttachmentsJSON  string    `json:"attachments_json"`
+	CryptoOptions    string    `json:"crypto_options_json"`
+	SendMode         string    `json:"send_mode"`
+	ScheduledFor     time.Time `json:"scheduled_for,omitempty"`
+	Status           string    `json:"status"`
+	LastSendError    string    `json:"last_send_error,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 type DraftVersion struct {
@@ -160,6 +161,21 @@ type DraftVersion struct {
 	VersionNo    int       `json:"version_no"`
 	SnapshotJSON string    `json:"snapshot_json"`
 	CreatedAt    time.Time `json:"created_at"`
+}
+
+type DraftAttachment struct {
+	ID          string    `json:"id"`
+	DraftID     string    `json:"draft_id"`
+	UserID      string    `json:"user_id"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"content_type"`
+	SizeBytes   int64     `json:"size_bytes"`
+	InlinePart  bool      `json:"inline_part"`
+	ContentID   string    `json:"content_id,omitempty"`
+	SortOrder   int       `json:"sort_order"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Data        []byte    `json:"-"`
 }
 
 type SieveScript struct {

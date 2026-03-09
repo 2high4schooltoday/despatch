@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -1555,6 +1556,40 @@ func (h *Handlers) V2GetDraft(w http.ResponseWriter, r *http.Request) {
 	util.WriteJSON(w, 200, item)
 }
 
+func (h *Handlers) V2GetDraftAttachment(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	draftID := strings.TrimSpace(chi.URLParam(r, "id"))
+	attachmentID := strings.TrimSpace(chi.URLParam(r, "attachment_id"))
+	if _, err := h.svc.Store().GetDraftByID(r.Context(), u.ID, draftID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, 404, "draft_not_found", "draft not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, 500, "draft_get_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	item, err := h.svc.Store().GetDraftAttachmentByID(r.Context(), u.ID, draftID, attachmentID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, 404, "draft_attachment_not_found", "draft attachment not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, 500, "draft_attachment_get_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	w.Header().Set("Content-Type", item.ContentType)
+	disposition := "attachment"
+	if item.InlinePart {
+		disposition = "inline"
+	}
+	w.Header().Set("Content-Disposition", disposition+`; filename="`+item.Filename+`"`)
+	if item.SizeBytes > 0 {
+		w.Header().Set("Content-Length", strconv.FormatInt(item.SizeBytes, 10))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(item.Data)
+}
+
 func (h *Handlers) V2CreateDraft(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
 	var req models.Draft
@@ -1609,6 +1644,91 @@ func (h *Handlers) V2UpdateDraft(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	util.WriteJSON(w, 200, out)
+}
+
+func (h *Handlers) V2UploadDraftAttachments(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	draftID := strings.TrimSpace(chi.URLParam(r, "id"))
+	draft, err := h.svc.Store().GetDraftByID(r.Context(), u.ID, draftID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, 404, "draft_not_found", "draft not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, 500, "draft_get_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	items, err := decodeDraftAttachmentUpload(r)
+	if err != nil {
+		util.WriteError(w, 400, "bad_request", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	nextOrder, err := h.svc.Store().NextDraftAttachmentSortOrder(r.Context(), u.ID, draft.ID)
+	if err != nil {
+		util.WriteError(w, 500, "draft_attachment_upload_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	createdIDs := make([]string, 0, len(items))
+	for i := range items {
+		items[i].DraftID = draft.ID
+		items[i].UserID = u.ID
+		items[i].SortOrder = nextOrder + i
+		created, createErr := h.svc.Store().CreateDraftAttachment(r.Context(), items[i])
+		if createErr != nil {
+			for _, insertedID := range createdIDs {
+				_ = h.svc.Store().DeleteDraftAttachment(r.Context(), u.ID, draft.ID, insertedID)
+			}
+			util.WriteError(w, 500, "draft_attachment_upload_failed", createErr.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		items[i] = created
+		createdIDs = append(createdIDs, created.ID)
+	}
+	updatedDraft, refs, err := h.syncDraftAttachmentMetadata(r.Context(), draft)
+	if err != nil {
+		for _, insertedID := range createdIDs {
+			_ = h.svc.Store().DeleteDraftAttachment(r.Context(), u.ID, draft.ID, insertedID)
+		}
+		util.WriteError(w, 500, "draft_update_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	util.WriteJSON(w, 201, map[string]any{
+		"draft":    updatedDraft,
+		"items":    refs,
+		"uploaded": draftAttachmentRefs(items),
+	})
+}
+
+func (h *Handlers) V2DeleteDraftAttachment(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	draftID := strings.TrimSpace(chi.URLParam(r, "id"))
+	attachmentID := strings.TrimSpace(chi.URLParam(r, "attachment_id"))
+	draft, err := h.svc.Store().GetDraftByID(r.Context(), u.ID, draftID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, 404, "draft_not_found", "draft not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, 500, "draft_get_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	if err := h.svc.Store().DeleteDraftAttachment(r.Context(), u.ID, draftID, attachmentID); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, 404, "draft_attachment_not_found", "draft attachment not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, 500, "draft_attachment_delete_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	updatedDraft, refs, err := h.syncDraftAttachmentMetadata(r.Context(), draft)
+	if err != nil {
+		util.WriteError(w, 500, "draft_update_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	util.WriteJSON(w, 200, map[string]any{
+		"draft": updatedDraft,
+		"items": refs,
+	})
 }
 
 func (h *Handlers) V2DeleteDraft(w http.ResponseWriter, r *http.Request) {
@@ -1669,6 +1789,7 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		draft.Status = "scheduled"
+		draft.LastSendError = ""
 		_, _ = h.svc.Store().UpdateDraft(r.Context(), draft)
 		util.WriteJSON(w, 202, map[string]any{
 			"status":        "scheduled",
@@ -1686,7 +1807,23 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 		}
 		cryptoJSON = string(b)
 	}
-	sendReq, sendAccountID, markAnswered, err := h.buildDraftSendRequest(r.Context(), u, draft)
+	replyContext := strings.EqualFold(strings.TrimSpace(draft.ComposeMode), "reply") && strings.TrimSpace(draft.ContextMessageID) != ""
+	mailLogin := service.MailIdentity(u)
+	mailPass := ""
+	if replyContext {
+		mailPass, err = h.sessionMailPasswordFromContext(r.Context())
+		if err != nil {
+			code := "send_failed"
+			status := 400
+			if errors.Is(err, store.ErrNotFound) {
+				code = "context_message_not_found"
+				status = 404
+			}
+			util.WriteError(w, status, code, err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+	}
+	sendReq, sendAccountID, markAnswered, err := h.svc.BuildDraftSendRequest(r.Context(), u, mailLogin, mailPass, draft)
 	if err != nil {
 		code := "send_failed"
 		status := 400
@@ -1708,10 +1845,11 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 			util.WriteError(w, 422, "smtp_sender_rejected", err.Error(), middleware.RequestID(r.Context()))
 			return
 		}
+		_ = h.svc.Store().SetDraftSendState(r.Context(), u.ID, draft.ID, "failed", err.Error())
 		util.WriteError(w, 502, "send_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	_ = h.svc.Store().SetDraftStatus(r.Context(), u.ID, draft.ID, "sent")
+	_ = h.svc.Store().SetDraftSendState(r.Context(), u.ID, draft.ID, "sent", "")
 	if markAnswered && strings.TrimSpace(draft.ContextMessageID) != "" {
 		pass, passErr := h.sessionMailPasswordFromContext(r.Context())
 		if passErr == nil {
@@ -1725,74 +1863,6 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 		"saved_copy_mailbox": result.SavedCopyMailbox,
 		"warning":            result.Warning,
 	})
-}
-
-func (h *Handlers) buildDraftSendRequest(ctx context.Context, u models.User, draft models.Draft) (mail.SendRequest, string, bool, error) {
-	sendAccountID := strings.TrimSpace(draft.AccountID)
-	if sendAccountID != "" {
-		if _, err := h.svc.Store().GetMailAccountByID(ctx, u.ID, sendAccountID); err != nil {
-			return mail.SendRequest{}, "", false, err
-		}
-	}
-	req := mail.SendRequest{
-		To:       splitCSV(draft.ToValue),
-		CC:       splitCSV(draft.CCValue),
-		BCC:      splitCSV(draft.BCCValue),
-		Subject:  draft.Subject,
-		Body:     draft.BodyText,
-		BodyHTML: draft.BodyHTML,
-	}
-	switch strings.ToLower(strings.TrimSpace(draft.FromMode)) {
-	case "", "default":
-		req.From = strings.TrimSpace(u.Email)
-	case "manual":
-		manualSender := strings.TrimSpace(draft.FromManual)
-		if manualSender == "" {
-			manualSender = strings.TrimSpace(u.Email)
-		}
-		if !strings.EqualFold(manualSender, strings.TrimSpace(u.Email)) {
-			return mail.SendRequest{}, "", false, fmt.Errorf("manual sender must match authenticated account email")
-		}
-		req.From = strings.TrimSpace(u.Email)
-	case "identity":
-		if strings.TrimSpace(draft.IdentityID) == "" {
-			return mail.SendRequest{}, "", false, fmt.Errorf("identity_id is required when from_mode=identity")
-		}
-		identity, err := h.svc.Store().GetMailIdentityByID(ctx, strings.TrimSpace(draft.IdentityID))
-		if err != nil {
-			return mail.SendRequest{}, "", false, err
-		}
-		account, err := h.svc.Store().GetMailAccountByID(ctx, u.ID, identity.AccountID)
-		if err != nil {
-			return mail.SendRequest{}, "", false, err
-		}
-		fromEmail := strings.TrimSpace(identity.FromEmail)
-		if fromEmail == "" {
-			return mail.SendRequest{}, "", false, fmt.Errorf("selected identity is missing from_email")
-		}
-		req.From = fromEmail
-		sendAccountID = account.ID
-	default:
-		return mail.SendRequest{}, "", false, fmt.Errorf("unsupported from_mode")
-	}
-	if req.From == "" {
-		req.From = strings.TrimSpace(u.Email)
-	}
-	if strings.ToLower(strings.TrimSpace(draft.ComposeMode)) != "reply" || strings.TrimSpace(draft.ContextMessageID) == "" {
-		return req, sendAccountID, false, nil
-	}
-	pass, err := h.sessionMailPasswordFromContext(ctx)
-	if err != nil {
-		return mail.SendRequest{}, "", false, err
-	}
-	login := service.MailIdentity(u)
-	original, err := h.svc.Mail().GetMessage(ctx, login, pass, strings.TrimSpace(draft.ContextMessageID))
-	if err != nil {
-		return mail.SendRequest{}, "", false, err
-	}
-	req.InReplyToID = strings.TrimSpace(original.MessageID)
-	req.References = append([]string{}, original.References...)
-	return req, sendAccountID, true, nil
 }
 
 func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
@@ -3503,11 +3573,123 @@ func mergeDraftPatch(current *models.Draft, patch map[string]any) {
 	if v, ok := patch["status"].(string); ok {
 		current.Status = strings.TrimSpace(v)
 	}
+	if v, ok := patch["last_send_error"].(string); ok {
+		current.LastSendError = strings.TrimSpace(v)
+	}
 	if v, ok := patch["scheduled_for"].(string); ok {
 		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(v)); err == nil {
 			current.ScheduledFor = t.UTC()
 		}
 	}
+}
+
+func decodeDraftAttachmentUpload(r *http.Request) ([]models.DraftAttachment, error) {
+	if err := r.ParseMultipartForm(maxUploadAttachmentBytes); err != nil {
+		return nil, err
+	}
+	files := r.MultipartForm.File["attachments"]
+	inlineFiles := r.MultipartForm.File["inline_images"]
+	inlineCIDs := r.MultipartForm.Value["inline_image_cids"]
+	totalBytes := int64(0)
+	out := make([]models.DraftAttachment, 0, len(files)+len(inlineFiles))
+	for _, fh := range files {
+		if fh.Size > maxUploadAttachmentBytes {
+			return nil, errors.New("attachment exceeds per-file size limit")
+		}
+		f, err := fh.Open()
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxUploadAttachmentBytes))
+		_ = f.Close()
+		if err != nil {
+			return nil, err
+		}
+		totalBytes += int64(len(data))
+		if totalBytes > maxUploadTotalBytes {
+			return nil, errors.New("attachments exceed total size limit")
+		}
+		out = append(out, models.DraftAttachment{
+			ID:          uuid.NewString(),
+			Filename:    fh.Filename,
+			ContentType: fh.Header.Get("Content-Type"),
+			SizeBytes:   int64(len(data)),
+			Data:        data,
+		})
+	}
+	for i, fh := range inlineFiles {
+		if fh.Size > maxUploadAttachmentBytes {
+			return nil, errors.New("attachment exceeds per-file size limit")
+		}
+		f, err := fh.Open()
+		if err != nil {
+			return nil, err
+		}
+		data, err := io.ReadAll(io.LimitReader(f, maxUploadAttachmentBytes))
+		_ = f.Close()
+		if err != nil {
+			return nil, err
+		}
+		totalBytes += int64(len(data))
+		if totalBytes > maxUploadTotalBytes {
+			return nil, errors.New("attachments exceed total size limit")
+		}
+		contentID := ""
+		if i < len(inlineCIDs) {
+			contentID = strings.TrimSpace(inlineCIDs[i])
+		}
+		if contentID == "" {
+			contentID = fmt.Sprintf("inline-image-%d", i+1)
+		}
+		out = append(out, models.DraftAttachment{
+			ID:          uuid.NewString(),
+			Filename:    fh.Filename,
+			ContentType: fh.Header.Get("Content-Type"),
+			SizeBytes:   int64(len(data)),
+			InlinePart:  true,
+			ContentID:   contentID,
+			Data:        data,
+		})
+	}
+	return out, nil
+}
+
+func draftAttachmentRefs(items []models.DraftAttachment) []models.DraftAttachment {
+	out := make([]models.DraftAttachment, 0, len(items))
+	for _, item := range items {
+		out = append(out, models.DraftAttachment{
+			ID:          item.ID,
+			Filename:    item.Filename,
+			ContentType: item.ContentType,
+			SizeBytes:   item.SizeBytes,
+			InlinePart:  item.InlinePart,
+			ContentID:   item.ContentID,
+			SortOrder:   item.SortOrder,
+		})
+	}
+	return out
+}
+
+func (h *Handlers) syncDraftAttachmentMetadata(ctx context.Context, draft models.Draft) (models.Draft, []models.DraftAttachment, error) {
+	items, err := h.svc.Store().ListDraftAttachments(ctx, draft.UserID, draft.ID)
+	if err != nil {
+		return models.Draft{}, nil, err
+	}
+	refs := draftAttachmentRefs(items)
+	b, err := json.Marshal(refs)
+	if err != nil {
+		return models.Draft{}, nil, err
+	}
+	draft.AttachmentsJSON = string(b)
+	if strings.EqualFold(strings.TrimSpace(draft.Status), "failed") {
+		draft.Status = "active"
+		draft.LastSendError = ""
+	}
+	updated, err := h.svc.Store().UpdateDraft(ctx, draft)
+	if err != nil {
+		return models.Draft{}, nil, err
+	}
+	return updated, refs, nil
 }
 
 func validateSieveScript(body string) error {

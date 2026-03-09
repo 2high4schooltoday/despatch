@@ -82,6 +82,7 @@ func main() {
 		"migrations/021_password_reset_token_reservations.sql",
 		"migrations/022_draft_compose_context.sql",
 		"migrations/023_drafts_nullable_account.sql",
+		"migrations/024_draft_attachments_and_send_errors.sql",
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			log.Fatalf("migration %s: %v", migration, err)

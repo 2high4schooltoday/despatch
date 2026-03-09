@@ -42,6 +42,7 @@ func newV2ScopedStore(t *testing.T) *Store {
 		filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql"),
 		filepath.Join("..", "..", "migrations", "022_draft_compose_context.sql"),
 		filepath.Join("..", "..", "migrations", "023_drafts_nullable_account.sql"),
+		filepath.Join("..", "..", "migrations", "024_draft_attachments_and_send_errors.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
