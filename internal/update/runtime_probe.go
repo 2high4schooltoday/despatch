@@ -64,7 +64,7 @@ func (s updaterRuntimeStatus) ConfigDiagnostic(cfg config.Config) *ConfigDiagnos
 		}
 	}
 	if !s.PathUnit.Known() || !s.PathUnit.Active() {
-		if s.PathUnit.TriggerLimited() || s.ServiceUnit.StartLimited() {
+		if s.PathUnit.TriggerLimited() || s.PathUnit.StartLimited() || s.ServiceUnit.StartLimited() {
 			return &ConfigDiagnostic{
 				Reason:     "updater_path_trigger_limited",
 				Detail:     updaterPathFailureDetail(s),
@@ -102,7 +102,7 @@ func (s updaterRuntimeStatus) StaleQueueError() string {
 		return "queued request was not picked up because despatch-updater.service is not installed or not known to systemd"
 	}
 	if !s.PathUnit.Known() || !s.PathUnit.Active() {
-		if s.PathUnit.TriggerLimited() || s.ServiceUnit.StartLimited() {
+		if s.PathUnit.TriggerLimited() || s.PathUnit.StartLimited() || s.ServiceUnit.StartLimited() {
 			return fmt.Sprintf(
 				"queued request was not picked up because despatch-updater.path hit a systemd trigger/start limit (%s)",
 				updaterPathFailureSummary(s),

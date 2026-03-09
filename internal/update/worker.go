@@ -37,6 +37,55 @@ func RunWorker(ctx context.Context, cfg config.Config) error {
 	return mgr.runWorker(ctx)
 }
 
+func RunWorkerFromEnv(ctx context.Context) error {
+	bootstrapCfg := bootstrapWorkerConfigFromEnv()
+	pending, err := pendingRequestPaths(bootstrapCfg)
+	if err != nil {
+		return err
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	if !bootstrapCfg.UpdateEnabled {
+		_ = removePendingRequestPaths(bootstrapCfg)
+		return nil
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	return RunWorker(ctx, cfg)
+}
+
+func bootstrapWorkerConfigFromEnv() config.Config {
+	return config.Config{
+		UpdateEnabled: envBoolLoose("UPDATE_ENABLED", true),
+		UpdateBaseDir: envOrDefault("UPDATE_BASE_DIR", "/var/lib/despatch/update"),
+	}
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func envBoolLoose(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	switch strings.ToLower(raw) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	case "0", "false", "no", "n", "off":
+		return false
+	default:
+		return fallback
+	}
+}
+
 func (m *Manager) runWorker(ctx context.Context) error {
 	if !m.cfg.UpdateEnabled {
 		// Prevent a stale request file from repeatedly retriggering the path unit

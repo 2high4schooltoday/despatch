@@ -149,6 +149,9 @@ func TestQueueApplyValidationAndInProgress(t *testing.T) {
 		UpdateServiceName:      "despatch",
 		UpdateSystemdUnitDir:   unitDir,
 	}
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
 	mgr := NewManager(cfg)
 
 	if _, err := mgr.QueueApply(context.Background(), st, "admin@example.com", "bad version!", ""); err == nil {
@@ -230,6 +233,9 @@ func TestAutomaticTickQueuesPrepareForLatestRelease(t *testing.T) {
 		UpdateServiceName:      "despatch",
 		UpdateSystemdUnitDir:   unitDir,
 	}
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
 	mgr := NewManager(cfg)
 	ctx := context.Background()
 	_ = st.UpsertSetting(ctx, settingLastCheckAt, time.Now().UTC().Format(time.RFC3339))
@@ -255,6 +261,48 @@ func TestAutomaticTickQueuesPrepareForLatestRelease(t *testing.T) {
 	}
 	if pending[0].Request.Mode != ApplyModePrepare {
 		t.Fatalf("expected prepare request, got %q", pending[0].Request.Mode)
+	}
+}
+
+func TestAutomaticTickNoopsWhenUpdaterRuntimeIsInactive(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "inactive", "loaded", "inactive")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	mgr := NewManager(cfg)
+	ctx := context.Background()
+	_ = st.UpsertSetting(ctx, settingLastCheckAt, time.Now().UTC().Format(time.RFC3339))
+	_ = st.UpsertSetting(ctx, settingLatestTag, "v9.9.9")
+	_ = st.UpsertSetting(ctx, settingLatestPublished, time.Now().UTC().Format(time.RFC3339))
+
+	if err := mgr.AutomaticTick(ctx, st); err != nil {
+		t.Fatalf("automatic tick: %v", err)
+	}
+	if _, err := os.Stat(autoStatusPath(cfg)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no auto-update state write while updater is inactive, stat err=%v", err)
+	}
+	pending, err := pendingRequestPaths(cfg)
+	if err != nil {
+		t.Fatalf("pending request paths: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("expected no queued updater request while runtime is inactive, got %v", pending)
 	}
 }
 
@@ -390,6 +438,35 @@ func TestRunWorkerRemovesStaleRequestWhenUpdatesDisabled(t *testing.T) {
 	}
 }
 
+func TestRunWorkerFromEnvSkipsConfigLoadWithoutPendingRequest(t *testing.T) {
+	base := t.TempDir()
+	t.Setenv("UPDATE_BASE_DIR", filepath.Join(base, "update"))
+	t.Setenv("SESSION_ENCRYPT_KEY", "short")
+
+	if err := RunWorkerFromEnv(context.Background()); err != nil {
+		t.Fatalf("expected noise wakeup without pending request to exit cleanly, got %v", err)
+	}
+}
+
+func TestRunWorkerFromEnvRequiresFullConfigWhenPendingRequestExists(t *testing.T) {
+	base := t.TempDir()
+	cfg := config.Config{
+		UpdateBaseDir: filepath.Join(base, "update"),
+	}
+	if err := os.MkdirAll(requestDir(cfg), 0o770); err != nil {
+		t.Fatalf("mkdir request dir: %v", err)
+	}
+	if err := os.WriteFile(requestPath(cfg), []byte(`{}`), 0o640); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	t.Setenv("UPDATE_BASE_DIR", cfg.UpdateBaseDir)
+	t.Setenv("SESSION_ENCRYPT_KEY", "short")
+
+	if err := RunWorkerFromEnv(context.Background()); err == nil {
+		t.Fatalf("expected pending request to force full config load failure")
+	}
+}
+
 func TestQueueApplyIgnoresUnreadableStatusFile(t *testing.T) {
 	st := newUpdateTestStore(t)
 	base := t.TempDir()
@@ -408,10 +485,10 @@ func TestQueueApplyIgnoresUnreadableStatusFile(t *testing.T) {
 		UpdateServiceName:      "despatch",
 		UpdateSystemdUnitDir:   unitDir,
 	}
-	mgr := NewManager(cfg)
-	if err := os.MkdirAll(statusDir(cfg), 0o755); err != nil {
-		t.Fatalf("mkdir status dir: %v", err)
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
 	}
+	mgr := NewManager(cfg)
 	if err := os.WriteFile(statusPath(cfg), []byte(`{"state":"idle"}`), 0o000); err != nil {
 		t.Fatalf("write unreadable status file: %v", err)
 	}
@@ -441,6 +518,9 @@ func TestQueueApplyIgnoresUnreadableLockDir(t *testing.T) {
 		UpdateInstallDir:       filepath.Join(base, "install"),
 		UpdateServiceName:      "despatch",
 		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
 	}
 	makeLockDirUnreadable(t, cfg)
 	mgr := NewManager(cfg)
@@ -614,7 +694,7 @@ func TestStatusReportsRequestDirDiagnostic(t *testing.T) {
 	}
 }
 
-func TestStatusAutoHealsRequestDirModeBeforeProbe(t *testing.T) {
+func TestStatusReportsRequestDirDiagnosticWithoutMutatingPermissions(t *testing.T) {
 	st := newUpdateTestStore(t)
 	base := t.TempDir()
 	unitDir := filepath.Join(base, "units")
@@ -649,14 +729,17 @@ func TestStatusAutoHealsRequestDirModeBeforeProbe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("status: %v", err)
 	}
-	if !status.Configured {
-		t.Fatalf("expected configured=true after auto-heal of request dir mode")
+	if status.Configured {
+		t.Fatalf("expected configured=false when request dir is not writable")
 	}
-	if status.ConfigDiagnostic != nil {
-		t.Fatalf("expected no config diagnostic after auto-heal, got %#v", status.ConfigDiagnostic)
+	if status.ConfigDiagnostic == nil {
+		t.Fatalf("expected request dir diagnostic")
 	}
-	if got := dirPerm(t, requestDir(cfg)); got != 0o770 {
-		t.Fatalf("expected request dir mode repaired to 0770, got %#o", got)
+	if status.ConfigDiagnostic.Reason != "request_dir_unwritable" {
+		t.Fatalf("expected request_dir_unwritable, got %#v", status.ConfigDiagnostic)
+	}
+	if got := dirPerm(t, requestDir(cfg)); got != 0o500 {
+		t.Fatalf("expected request dir mode to remain unchanged at 0500, got %#o", got)
 	}
 }
 
@@ -678,6 +761,9 @@ func TestStatusConfiguredWhenUpdaterReady(t *testing.T) {
 		UpdateServiceName:      "despatch",
 		UpdateSystemdUnitDir:   unitDir,
 	}
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
 	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		t.Fatalf("set last check timestamp: %v", err)
 	}
@@ -691,6 +777,62 @@ func TestStatusConfiguredWhenUpdaterReady(t *testing.T) {
 	}
 	if status.ConfigDiagnostic != nil {
 		t.Fatalf("expected no config diagnostic when updater is configured, got %#v", status.ConfigDiagnostic)
+	}
+}
+
+func TestStatusConfiguredWhenUpdaterReadyDoesNotMutateWatchedDirectories(t *testing.T) {
+	st := newUpdateTestStore(t)
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "active", "loaded", "inactive")
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
+	frozen := time.Unix(1_700_000_000, 0).UTC()
+	if err := os.Chtimes(requestDir(cfg), frozen, frozen); err != nil {
+		t.Fatalf("chtimes request dir: %v", err)
+	}
+	if err := os.Chtimes(statusDir(cfg), frozen, frozen); err != nil {
+		t.Fatalf("chtimes status dir: %v", err)
+	}
+	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
+		t.Fatalf("set last check timestamp: %v", err)
+	}
+	mgr := NewManager(cfg)
+
+	status, err := mgr.Status(context.Background(), st, false)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !status.Configured {
+		t.Fatalf("expected configured=true when updater is ready")
+	}
+	requestInfo, err := os.Stat(requestDir(cfg))
+	if err != nil {
+		t.Fatalf("stat request dir: %v", err)
+	}
+	statusInfo, err := os.Stat(statusDir(cfg))
+	if err != nil {
+		t.Fatalf("stat status dir: %v", err)
+	}
+	if !requestInfo.ModTime().Equal(frozen) {
+		t.Fatalf("expected request dir modtime to stay %s, got %s", frozen, requestInfo.ModTime())
+	}
+	if !statusInfo.ModTime().Equal(frozen) {
+		t.Fatalf("expected status dir modtime to stay %s, got %s", frozen, statusInfo.ModTime())
 	}
 }
 
@@ -758,6 +900,9 @@ func TestStatusReportsUpdaterPathInactiveDiagnostic(t *testing.T) {
 		UpdateServiceName:      "despatch",
 		UpdateSystemdUnitDir:   unitDir,
 	}
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
+	}
 	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		t.Fatalf("set last check timestamp: %v", err)
 	}
@@ -779,7 +924,7 @@ func TestStatusReportsUpdaterPathTriggerLimitDiagnostic(t *testing.T) {
 	base := t.TempDir()
 	unitDir := filepath.Join(base, "units")
 	writeUpdaterUnitFiles(t, unitDir)
-	installFakeSystemctlWithDetails(t, "loaded", "failed", "failed", "trigger-limit-hit", "loaded", "failed", "failed", "start-limit-hit")
+	installFakeSystemctlWithDetails(t, "loaded", "failed", "failed", "unit-start-limit-hit", "loaded", "failed", "failed", "exit-code")
 	cfg := config.Config{
 		UpdateEnabled:          true,
 		UpdateRepoOwner:        "2high4schooltoday",
@@ -791,6 +936,9 @@ func TestStatusReportsUpdaterPathTriggerLimitDiagnostic(t *testing.T) {
 		UpdateInstallDir:       filepath.Join(base, "install"),
 		UpdateServiceName:      "despatch",
 		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
 	}
 	if err := st.UpsertSetting(context.Background(), settingLastCheckAt, time.Now().UTC().Format(time.RFC3339)); err != nil {
 		t.Fatalf("set last check timestamp: %v", err)
@@ -828,6 +976,9 @@ func TestQueueApplyWritesUniqueRequestFile(t *testing.T) {
 		UpdateInstallDir:       filepath.Join(base, "install"),
 		UpdateServiceName:      "despatch",
 		UpdateSystemdUnitDir:   unitDir,
+	}
+	if err := ensureUpdaterRequestStatusDirectories(cfg); err != nil {
+		t.Fatalf("ensure dirs: %v", err)
 	}
 	mgr := NewManager(cfg)
 	req, err := mgr.QueueApply(context.Background(), st, "admin@example.com", "v1.2.3", "req-queue")
@@ -911,8 +1062,15 @@ func TestStatusFailsStaleQueuedRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pending request paths: %v", err)
 	}
-	if len(pending) != 0 {
-		t.Fatalf("expected stale request files to be removed, got %v", pending)
+	if len(pending) != 1 {
+		t.Fatalf("expected stale request files to remain untouched during status read, got %v", pending)
+	}
+	stored, err := readApplyStatus(statusPath(cfg))
+	if err != nil {
+		t.Fatalf("read stored apply status: %v", err)
+	}
+	if stored.State != ApplyStateQueued {
+		t.Fatalf("expected stored apply status to remain queued during status read, got %#v", stored)
 	}
 }
 
@@ -971,6 +1129,13 @@ func TestStatusFailsStaleQueuedRequestWhenLockDirUnreadable(t *testing.T) {
 	}
 	if !strings.Contains(status.Apply.Error, "queued request was not picked up") {
 		t.Fatalf("unexpected stale queue error: %q", status.Apply.Error)
+	}
+	pending, err := pendingRequestPaths(cfg)
+	if err != nil {
+		t.Fatalf("pending request paths: %v", err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("expected stale request files to remain untouched during status read, got %v", pending)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -94,11 +95,7 @@ func (m *Manager) Status(ctx context.Context, st *store.Store, forceCheck bool) 
 		return StatusResponse{}, err
 	}
 	status.Apply = apply
-	if recovered, err := m.recoverStaleQueuedApply(runtimeStatus, status.Apply); err != nil {
-		return StatusResponse{}, err
-	} else {
-		status.Apply = recovered
-	}
+	status.Apply = m.staleQueuedApplyStatus(runtimeStatus, status.Apply)
 	if status.Apply.State == ApplyStateIdle && configured {
 		pending, err := pendingRequests(m.cfg)
 		if err != nil {
@@ -236,29 +233,66 @@ func (m *Manager) checkWritablePath(dirPath, stage string) (bool, *ConfigDiagnos
 	}
 	pathState := describePathState(dirPath, 5)
 	repairHint := m.updaterPermissionRepairHint()
-	if err := ensureUpdaterWritableDirectory(m.cfg, dirPath); err != nil {
+	info, err := os.Stat(dirPath)
+	if err != nil {
 		return false, &ConfigDiagnostic{
 			Reason:     fmt.Sprintf("%s_dir_unwritable", reasonPrefix),
 			Detail:     fmt.Sprintf("cannot access updater %s directory %s: %v (path_state=%s)", reasonPrefix, dirPath, err, pathState),
 			RepairHint: repairHint,
 		}
 	}
-	probePath := filepath.Join(dirPath, fmt.Sprintf(".write-check-%d", time.Now().UnixNano()))
-	if err := os.WriteFile(probePath, []byte("ok"), 0o600); err != nil {
+	if !info.IsDir() {
 		return false, &ConfigDiagnostic{
-			Reason:     fmt.Sprintf("%s_probe_failed", reasonPrefix),
-			Detail:     fmt.Sprintf("write probe failed for updater %s directory %s: %v (path_state=%s)", reasonPrefix, dirPath, err, pathState),
+			Reason:     fmt.Sprintf("%s_dir_unwritable", reasonPrefix),
+			Detail:     fmt.Sprintf("updater %s path %s is not a directory (path_state=%s)", reasonPrefix, dirPath, pathState),
 			RepairHint: repairHint,
 		}
 	}
-	if err := os.Remove(probePath); err != nil {
+	if !dirWritableByCurrentProcess(info) {
 		return false, &ConfigDiagnostic{
-			Reason:     fmt.Sprintf("%s_probe_failed", reasonPrefix),
-			Detail:     fmt.Sprintf("write probe cleanup failed for updater %s directory %s: %v (path_state=%s)", reasonPrefix, dirPath, err, pathState),
+			Reason:     fmt.Sprintf("%s_dir_unwritable", reasonPrefix),
+			Detail:     fmt.Sprintf("updater %s directory %s is not writable/searchable by the current service user (path_state=%s)", reasonPrefix, dirPath, pathState),
 			RepairHint: repairHint,
 		}
 	}
 	return true, nil
+}
+
+func dirWritableByCurrentProcess(info os.FileInfo) bool {
+	if !info.IsDir() {
+		return false
+	}
+	if os.Geteuid() == 0 {
+		return true
+	}
+	perm := info.Mode().Perm()
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return perm&0o003 == 0o003
+	}
+	if uint32(os.Geteuid()) == stat.Uid {
+		return perm&0o300 == 0o300
+	}
+	if processInGroup(stat.Gid) {
+		return perm&0o030 == 0o030
+	}
+	return perm&0o003 == 0o003
+}
+
+func processInGroup(gid uint32) bool {
+	if uint32(os.Getegid()) == gid {
+		return true
+	}
+	groups, err := os.Getgroups()
+	if err != nil {
+		return false
+	}
+	for _, groupID := range groups {
+		if uint32(groupID) == gid {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) updaterPermissionRepairHint() string {
@@ -495,6 +529,9 @@ func (m *Manager) AutomaticTick(ctx context.Context, st *store.Store) error {
 	if err != nil {
 		return err
 	}
+	if !status.Configured {
+		return nil
+	}
 	enabled := status.AutoUpdate.Enabled
 	rec, err := readAutoUpdateState(autoStatusPath(m.cfg))
 	if err != nil && !isUpdaterPermissionError(err) {
@@ -590,27 +627,35 @@ func compareVersions(current, latest string) bool {
 }
 
 func (m *Manager) recoverStaleQueuedApply(runtimeStatus updaterRuntimeStatus, current ApplyStatus) (ApplyStatus, error) {
-	if current.State != ApplyStateQueued {
-		return current, nil
-	}
-	requestedAt := current.RequestedAt
-	if requestedAt.IsZero() {
-		return current, nil
-	}
-	if m.now().Before(requestedAt.Add(updateQueuePickupGrace)) {
+	next := m.staleQueuedApplyStatus(runtimeStatus, current)
+	if next.State == current.State && next.Error == current.Error && next.FinishedAt.Equal(current.FinishedAt) {
 		return current, nil
 	}
 	if err := removePendingRequestPaths(m.cfg); err != nil {
 		return ApplyStatus{}, err
 	}
-	current.State = ApplyStateFailed
-	current.FinishedAt = m.now()
-	current.Error = runtimeStatus.StaleQueueError()
-	if err := writeJSONAtomic(statusPath(m.cfg), current, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750)); err != nil {
+	if err := writeJSONAtomic(statusPath(m.cfg), next, 0o640, updaterDirModeForPath(m.cfg, statusDir(m.cfg), 0o750)); err != nil {
 		return ApplyStatus{}, err
 	}
 	_ = ensureDespatchReadable(statusPath(m.cfg))
-	return current, nil
+	return next, nil
+}
+
+func (m *Manager) staleQueuedApplyStatus(runtimeStatus updaterRuntimeStatus, current ApplyStatus) ApplyStatus {
+	if current.State != ApplyStateQueued {
+		return current
+	}
+	requestedAt := current.RequestedAt
+	if requestedAt.IsZero() {
+		return current
+	}
+	if m.now().Before(requestedAt.Add(updateQueuePickupGrace)) {
+		return current
+	}
+	current.State = ApplyStateFailed
+	current.FinishedAt = m.now()
+	current.Error = runtimeStatus.StaleQueueError()
+	return current
 }
 
 func ApplyErrorCode(err error) string {

@@ -130,13 +130,18 @@ fn main() {
 }
 
 fn run() -> Result<(), WorkerError> {
-    let cfg = Config::from_env()?;
-    if !cfg.update_enabled {
-        // Prevent a stale request file from repeatedly retriggering the path unit
-        // when updates are intentionally disabled.
-        let _ = remove_pending_request_paths(&cfg);
+    let bootstrap_cfg = Config::bootstrap_from_env();
+    let pending = pending_request_paths(&bootstrap_cfg)?;
+    if pending.is_empty() {
         return Ok(());
     }
+    if !bootstrap_cfg.update_enabled {
+        // Prevent a stale request file from repeatedly retriggering the path unit
+        // when updates are intentionally disabled.
+        let _ = remove_pending_request_paths(&bootstrap_cfg);
+        return Ok(());
+    }
+    let cfg = Config::from_env()?;
 
     ensure_updater_dirs(&cfg)?;
 
@@ -319,28 +324,44 @@ fn run() -> Result<(), WorkerError> {
 }
 
 impl Config {
-    fn from_env() -> Result<Self, WorkerError> {
-        let mut cfg = Self {
+    fn bootstrap_from_env() -> Self {
+        Self {
             update_enabled: env_bool("UPDATE_ENABLED", true),
-            update_repo_owner: env_var("UPDATE_REPO_OWNER", "2high4schooltoday"),
-            update_repo_name: env_var("UPDATE_REPO_NAME", "despatch"),
-            update_http_timeout_sec: env_u64("UPDATE_HTTP_TIMEOUT_SEC", 10)?,
-            update_github_token: env::var("UPDATE_GITHUB_TOKEN").unwrap_or_default(),
-            update_backup_keep: env_u64("UPDATE_BACKUP_KEEP", 3)? as usize,
+            update_repo_owner: "2high4schooltoday".to_string(),
+            update_repo_name: "despatch".to_string(),
+            update_http_timeout_sec: 10,
+            update_github_token: String::new(),
+            update_backup_keep: 3,
             update_base_dir: PathBuf::from(env_var("UPDATE_BASE_DIR", "/var/lib/despatch/update")),
-            update_install_dir: PathBuf::from(env_var("UPDATE_INSTALL_DIR", "/opt/despatch")),
-            update_service_name: env_var("UPDATE_SERVICE_NAME", "despatch"),
-            update_systemd_unit_dir: PathBuf::from(env_var(
-                "UPDATE_SYSTEMD_UNIT_DIR",
-                "/etc/systemd/system",
-            )),
-            update_require_signature: env_bool("UPDATE_REQUIRE_SIGNATURE", true),
-            update_signature_asset: env_var("UPDATE_SIGNATURE_ASSET", "checksums.txt.sig"),
-            update_signing_public_keys: env_csv("UPDATE_SIGNING_PUBLIC_KEYS"),
-            listen_addr: env_var("LISTEN_ADDR", ":8080"),
-            mailsec_enabled: env_bool("MAILSEC_ENABLED", false),
-            mailsec_socket: PathBuf::from(env_var("MAILSEC_SOCKET", "/run/despatch/mailsec.sock")),
-        };
+            update_install_dir: PathBuf::from("/opt/despatch"),
+            update_service_name: "despatch".to_string(),
+            update_systemd_unit_dir: PathBuf::from("/etc/systemd/system"),
+            update_require_signature: true,
+            update_signature_asset: "checksums.txt.sig".to_string(),
+            update_signing_public_keys: Vec::new(),
+            listen_addr: ":8080".to_string(),
+            mailsec_enabled: false,
+            mailsec_socket: PathBuf::from("/run/despatch/mailsec.sock"),
+        }
+    }
+
+    fn from_env() -> Result<Self, WorkerError> {
+        let mut cfg = Self::bootstrap_from_env();
+        cfg.update_repo_owner = env_var("UPDATE_REPO_OWNER", "2high4schooltoday");
+        cfg.update_repo_name = env_var("UPDATE_REPO_NAME", "despatch");
+        cfg.update_http_timeout_sec = env_u64("UPDATE_HTTP_TIMEOUT_SEC", 10)?;
+        cfg.update_github_token = env::var("UPDATE_GITHUB_TOKEN").unwrap_or_default();
+        cfg.update_backup_keep = env_u64("UPDATE_BACKUP_KEEP", 3)? as usize;
+        cfg.update_install_dir = PathBuf::from(env_var("UPDATE_INSTALL_DIR", "/opt/despatch"));
+        cfg.update_service_name = env_var("UPDATE_SERVICE_NAME", "despatch");
+        cfg.update_systemd_unit_dir =
+            PathBuf::from(env_var("UPDATE_SYSTEMD_UNIT_DIR", "/etc/systemd/system"));
+        cfg.update_require_signature = env_bool("UPDATE_REQUIRE_SIGNATURE", true);
+        cfg.update_signature_asset = env_var("UPDATE_SIGNATURE_ASSET", "checksums.txt.sig");
+        cfg.update_signing_public_keys = env_csv("UPDATE_SIGNING_PUBLIC_KEYS");
+        cfg.listen_addr = env_var("LISTEN_ADDR", ":8080");
+        cfg.mailsec_enabled = env_bool("MAILSEC_ENABLED", false);
+        cfg.mailsec_socket = PathBuf::from(env_var("MAILSEC_SOCKET", "/run/despatch/mailsec.sock"));
         cfg.update_signing_public_keys =
             parse_signing_public_keys(&cfg.update_signing_public_keys)?;
         if cfg.update_require_signature && cfg.update_signature_asset.trim().is_empty() {
@@ -1101,7 +1122,11 @@ fn prepare_release_payload(
     let tmp_prepared = prepared_dir.with_extension("tmp");
     let _ = fs::remove_dir_all(&tmp_prepared);
     fs::create_dir_all(&tmp_prepared)?;
-    copy_file(&payload_root.join("despatch"), &tmp_prepared.join("despatch"), 0o755)?;
+    copy_file(
+        &payload_root.join("despatch"),
+        &tmp_prepared.join("despatch"),
+        0o755,
+    )?;
     copy_file(
         &payload_root.join("despatch-pam-reset-helper"),
         &tmp_prepared.join("despatch-pam-reset-helper"),
@@ -1113,7 +1138,10 @@ fn prepare_release_payload(
         0o755,
     )?;
     copy_dir(&payload_root.join("web"), &tmp_prepared.join("web"))?;
-    copy_dir(&payload_root.join("migrations"), &tmp_prepared.join("migrations"))?;
+    copy_dir(
+        &payload_root.join("migrations"),
+        &tmp_prepared.join("migrations"),
+    )?;
     copy_dir(&payload_root.join("deploy"), &tmp_prepared.join("deploy"))?;
     let mailsec_payload = payload_root.join("despatch-mailsec-service");
     if mailsec_payload.exists() {
@@ -2030,6 +2058,31 @@ fn local_base_url(listen_addr: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn set_env_vars(vars: &[(&str, &str)]) -> Vec<(String, Option<String>)> {
+        let mut saved = Vec::with_capacity(vars.len());
+        for (key, value) in vars {
+            saved.push(((*key).to_string(), env::var(key).ok()));
+            env::set_var(key, value);
+        }
+        saved
+    }
+
+    fn restore_env_vars(saved: Vec<(String, Option<String>)>) {
+        for (key, value) in saved {
+            if let Some(value) = value {
+                env::set_var(&key, value);
+            } else {
+                env::remove_var(&key);
+            }
+        }
+    }
 
     fn test_config(update_base_dir: PathBuf) -> Config {
         Config {
@@ -2161,6 +2214,66 @@ mod tests {
             .starts_with("update-request-"));
 
         let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn run_ignores_noise_when_no_request_exists_even_with_invalid_env() {
+        let _env_guard = env_lock().lock().expect("env lock");
+        let unique = format!(
+            "despatch-update-worker-no-noise-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let base = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&base).expect("create temp base");
+
+        let saved = set_env_vars(&[
+            ("UPDATE_BASE_DIR", base.to_string_lossy().as_ref()),
+            ("UPDATE_HTTP_TIMEOUT_SEC", "broken"),
+            ("UPDATE_SIGNING_PUBLIC_KEYS", ""),
+            ("UPDATE_REQUIRE_SIGNATURE", "true"),
+        ]);
+
+        let result = run();
+
+        restore_env_vars(saved);
+        let _ = fs::remove_dir_all(base);
+
+        assert!(
+            result.is_ok(),
+            "expected noise wakeup to exit cleanly, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn run_requires_full_config_when_real_request_exists() {
+        let _env_guard = env_lock().lock().expect("env lock");
+        let unique = format!(
+            "despatch-update-worker-real-request-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let base = std::env::temp_dir().join(unique);
+        let cfg = test_config(base.clone());
+        fs::create_dir_all(request_dir(&cfg)).expect("create request dir");
+        fs::write(request_path(&cfg), b"{}").expect("write request");
+
+        let saved = set_env_vars(&[
+            ("UPDATE_BASE_DIR", base.to_string_lossy().as_ref()),
+            ("UPDATE_HTTP_TIMEOUT_SEC", "broken"),
+            ("UPDATE_SIGNING_PUBLIC_KEYS", ""),
+            ("UPDATE_REQUIRE_SIGNATURE", "true"),
+        ]);
+
+        let result = run();
+
+        restore_env_vars(saved);
+        let _ = fs::remove_dir_all(base);
+
+        assert!(
+            result.is_err(),
+            "expected real request to force full config load"
+        );
     }
 
     #[test]

@@ -148,6 +148,26 @@ func newUpdateFixture(t *testing.T, enabled bool, configured bool) updateTestFix
 		UpdateServiceName:      "despatch",
 		UpdateSystemdUnitDir:   unitDir,
 	}
+	if enabled {
+		for _, dir := range []string{
+			updateBase,
+			filepath.Join(updateBase, "request"),
+			filepath.Join(updateBase, "status"),
+		} {
+			if err := os.MkdirAll(dir, 0o770); err != nil {
+				t.Fatalf("mkdir updater dir %s: %v", dir, err)
+			}
+		}
+		if err := os.Chmod(updateBase, 0o750); err != nil {
+			t.Fatalf("chmod updater base: %v", err)
+		}
+		if err := os.Chmod(filepath.Join(updateBase, "request"), 0o770); err != nil {
+			t.Fatalf("chmod updater request dir: %v", err)
+		}
+		if err := os.Chmod(filepath.Join(updateBase, "status"), 0o770); err != nil {
+			t.Fatalf("chmod updater status dir: %v", err)
+		}
+	}
 	svc := service.New(cfg, st, nil, nil, nil)
 	return updateTestFixture{
 		router:     NewRouter(cfg, svc),
@@ -430,7 +450,7 @@ func TestAdminUpdateStatusReportsInactiveUpdaterPathDiagnostic(t *testing.T) {
 
 func TestAdminUpdateStatusReportsTriggerLimitedUpdaterPathDiagnostic(t *testing.T) {
 	fx := newUpdateFixture(t, true, true)
-	installFakeSystemctlForAPITestWithDetails(t, "loaded", "failed", "failed", "trigger-limit-hit", "loaded", "failed", "failed", "start-limit-hit")
+	installFakeSystemctlForAPITestWithDetails(t, "loaded", "failed", "failed", "unit-start-limit-hit", "loaded", "failed", "failed", "exit-code")
 	sessionCookie, _ := loginCookies(t, fx.router, "admin@example.com", "SecretPass123!")
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/system/update/status", nil)
 	req.AddCookie(sessionCookie)

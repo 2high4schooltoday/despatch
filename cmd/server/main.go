@@ -21,15 +21,15 @@ import (
 )
 
 func main() {
-	cfg, err := config.Load()
-	if err != nil {
-		log.Fatalf("load config: %v", err)
-	}
 	if len(os.Args) > 1 && os.Args[1] == "update-worker" {
-		if err := update.RunWorker(context.Background(), cfg); err != nil {
+		if err := update.RunWorkerFromEnv(context.Background()); err != nil {
 			log.Fatalf("update worker: %v", err)
 		}
 		return
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("load config: %v", err)
 	}
 	if len(os.Args) > 1 && os.Args[1] == "pam-reset-helper" {
 		helperCfg := pamreset.HelperConfig{

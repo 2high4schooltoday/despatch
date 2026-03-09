@@ -2410,9 +2410,9 @@ begin_stage "service_install_start" "Service Install and Start" "10"
 "${PREFIX[@]}" systemctl daemon-reload
 "${PREFIX[@]}" rm -f /var/lib/despatch/update/request/update-request*.json /var/lib/despatch/update/lock/update.lock || true
 "${PREFIX[@]}" systemctl reset-failed despatch-updater.service despatch-updater.path || true
+"${PREFIX[@]}" systemctl enable --now despatch-updater.path
 "${PREFIX[@]}" systemctl enable --now despatch
 "${PREFIX[@]}" systemctl enable --now despatch-mailsec
-"${PREFIX[@]}" systemctl enable --now despatch-updater.path
 "${PREFIX[@]}" systemctl enable --now despatch-pam-reset-helper.socket
 
 log "Service installed and started: despatch"
@@ -2483,40 +2483,18 @@ if ! wait_for_condition "despatch updater path state" 20 1 "${PREFIX[@]}" system
     exit 1
   fi
 fi
-if ! run_as_despatch test -w /var/lib/despatch/update/request; then
-  err "despatch user cannot write /var/lib/despatch/update/request."
+if ! run_as_despatch sh -c "test -w /var/lib/despatch/update/request && test -x /var/lib/despatch/update/request"; then
+  err "despatch user cannot access /var/lib/despatch/update/request with write+search permissions."
   err "Run: chown despatch:despatch /var/lib/despatch && chmod 0750 /var/lib/despatch"
   err "Run: chown root:despatch /var/lib/despatch/update /var/lib/despatch/update/request"
   err "Run: chmod 0750 /var/lib/despatch/update && chmod 0770 /var/lib/despatch/update/request"
   exit 1
 fi
-if ! run_as_despatch test -w /var/lib/despatch/update/status; then
-  err "despatch user cannot write /var/lib/despatch/update/status."
+if ! run_as_despatch sh -c "test -w /var/lib/despatch/update/status && test -x /var/lib/despatch/update/status"; then
+  err "despatch user cannot access /var/lib/despatch/update/status with write+search permissions."
   err "Run: chown despatch:despatch /var/lib/despatch && chmod 0750 /var/lib/despatch"
   err "Run: chown root:despatch /var/lib/despatch/update /var/lib/despatch/update/status"
   err "Run: chmod 0750 /var/lib/despatch/update && chmod 0770 /var/lib/despatch/update/status"
-  exit 1
-fi
-UPDATER_REQUEST_PROBE="/var/lib/despatch/update/request/.installer-write-check.$$"
-UPDATER_STATUS_PROBE="/var/lib/despatch/update/status/.installer-write-check.$$"
-if ! run_as_despatch sh -c "printf '%s\n' ok > '$UPDATER_REQUEST_PROBE'"; then
-  err "Failed to write updater request probe as despatch user."
-  err "Run: ls -ld /var/lib/despatch/update /var/lib/despatch/update/request"
-  exit 1
-fi
-if ! run_as_despatch rm -f "$UPDATER_REQUEST_PROBE"; then
-  err "Failed to remove updater request probe as despatch user."
-  err "Run: ls -l /var/lib/despatch/update/request"
-  exit 1
-fi
-if ! run_as_despatch sh -c "printf '%s\n' ok > '$UPDATER_STATUS_PROBE'"; then
-  err "Failed to write updater status probe as despatch user."
-  err "Run: ls -ld /var/lib/despatch/update /var/lib/despatch/update/status"
-  exit 1
-fi
-if ! run_as_despatch rm -f "$UPDATER_STATUS_PROBE"; then
-  err "Failed to remove updater status probe as despatch user."
-  err "Run: ls -l /var/lib/despatch/update/status"
   exit 1
 fi
 
@@ -2534,6 +2512,20 @@ if ! wait_for_condition "auth/setup API sanity check" 20 1 verify_setup_status "
   err "Auth/setup API sanity check failed on local endpoint."
   err "Run: journalctl -u despatch -n 100 --no-pager"
   exit 1
+fi
+
+step "Final updater watcher verification"
+if ! wait_for_condition "despatch updater path state" 20 1 "${PREFIX[@]}" systemctl is-active --quiet despatch-updater.path; then
+  warn "despatch-updater.path did not remain active through install checks; attempting final recovery."
+  "${PREFIX[@]}" rm -f /var/lib/despatch/update/request/update-request*.json /var/lib/despatch/update/lock/update.lock || true
+  "${PREFIX[@]}" systemctl reset-failed despatch-updater.service despatch-updater.path || true
+  "${PREFIX[@]}" systemctl enable --now despatch-updater.path || true
+  if ! wait_for_condition "despatch updater path state" 20 1 "${PREFIX[@]}" systemctl is-active --quiet despatch-updater.path; then
+    err "despatch-updater.path is not active after final install verification."
+    err "Run: systemctl status despatch-updater.path --no-pager"
+    err "Run: systemctl status despatch-updater.service --no-pager"
+    exit 1
+  fi
 fi
 
 if [[ "$CAPTCHA_ENABLED" == "true" && "$CAPTCHA_PROVIDER" == "cap" ]]; then
