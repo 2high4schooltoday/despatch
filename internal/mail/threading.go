@@ -27,6 +27,7 @@ var (
 	previewURLPattern        = regexp.MustCompile(`https?://[^\s<>"']+`)
 	previewBase64Token       = regexp.MustCompile(`(?i)^[a-z0-9+/=_-]{24,}$`)
 	previewHexToken          = regexp.MustCompile(`(?i)^[a-f0-9]{24,}$`)
+	messageIDTokenPattern    = regexp.MustCompile(`<[^>]+>|[^<>,\\s]+@[^<>,\\s]+`)
 )
 
 // NormalizeThreadSubject strips repeated reply/forward prefixes and lowercases
@@ -56,6 +57,64 @@ func DeriveThreadID(mailbox, subject, from string) string {
 	}
 	sum := sha256.Sum256([]byte(normalized))
 	return "conv:" + hex.EncodeToString(sum[:10])
+}
+
+func NormalizeMessageIDHeader(value string) string {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	normalized = strings.TrimPrefix(normalized, "<")
+	normalized = strings.TrimSuffix(normalized, ">")
+	return strings.TrimSpace(normalized)
+}
+
+func NormalizeMessageIDHeaders(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := NormalizeMessageIDHeader(value)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func ParseMessageIDList(raw string) []string {
+	items := messageIDTokenPattern.FindAllString(raw, -1)
+	if len(items) == 0 {
+		return nil
+	}
+	return NormalizeMessageIDHeaders(items)
+}
+
+func FormatMessageIDList(values []string) string {
+	normalized := NormalizeMessageIDHeaders(values)
+	if len(normalized) == 0 {
+		return ""
+	}
+	return strings.Join(normalized, " ")
+}
+
+func DeriveIndexedThreadID(messageID, inReplyTo string, references []string, subject, from string) string {
+	root := ""
+	normalizedRefs := NormalizeMessageIDHeaders(references)
+	switch {
+	case len(normalizedRefs) > 0:
+		root = normalizedRefs[0]
+	case NormalizeMessageIDHeader(inReplyTo) != "":
+		root = NormalizeMessageIDHeader(inReplyTo)
+	case NormalizeMessageIDHeader(messageID) != "":
+		root = NormalizeMessageIDHeader(messageID)
+	}
+	if root != "" {
+		sum := sha256.Sum256([]byte("hdr:" + root))
+		return "hdr:" + hex.EncodeToString(sum[:10])
+	}
+	return DeriveThreadID("", subject, from)
 }
 
 // BuildPreviewFromBodySample creates a compact, plain-text snippet from sampled

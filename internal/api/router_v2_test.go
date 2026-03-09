@@ -1716,6 +1716,45 @@ func TestV2DraftCRUDPersistsComposeContext(t *testing.T) {
 	}
 }
 
+func TestV2DraftUpdateClearsScheduledFor(t *testing.T) {
+	router := newV2Router(t)
+	sess, csrf := loginV2(t, router)
+
+	scheduledFor := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+	create := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts", map[string]any{
+		"to":            "someone@example.com",
+		"subject":       "Schedule me",
+		"body_text":     "Hello",
+		"send_mode":     "scheduled",
+		"scheduled_for": scheduledFor,
+	}, sess, csrf)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected draft create 201, got %d body=%s", create.Code, create.Body.String())
+	}
+	var draft models.Draft
+	if err := json.Unmarshal(create.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft response: %v", err)
+	}
+	if draft.ScheduledFor.IsZero() {
+		t.Fatalf("expected scheduled draft to keep scheduled_for, got %+v", draft)
+	}
+
+	update := doV2AuthedJSON(t, router, http.MethodPatch, "/api/v2/drafts/"+draft.ID, map[string]any{
+		"send_mode":     "",
+		"scheduled_for": "",
+	}, sess, csrf)
+	if update.Code != http.StatusOK {
+		t.Fatalf("expected draft update 200, got %d body=%s", update.Code, update.Body.String())
+	}
+	var updated models.Draft
+	if err := json.Unmarshal(update.Body.Bytes(), &updated); err != nil {
+		t.Fatalf("decode updated draft: %v", err)
+	}
+	if !updated.ScheduledFor.IsZero() {
+		t.Fatalf("expected scheduled_for to clear, got %+v", updated)
+	}
+}
+
 func TestV2SendDraftWithoutAccountMarksDraftSent(t *testing.T) {
 	router := newV2Router(t)
 	sess, csrf := loginV2(t, router)

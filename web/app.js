@@ -17,6 +17,17 @@ const state = {
   mail: {
     mailboxes: [],
     drafts: [],
+    indexedAccounts: [],
+    indexedAccountID: "",
+    indexedAuthEmail: "",
+    indexedSelfEmails: [],
+    indexedRuntimeFallback: false,
+    indexedFallbackReason: "",
+    syncStatus: null,
+    savedSearches: [],
+    viewKind: "mailbox",
+    smartView: "",
+    savedSearchID: "",
     selectedDraftID: "",
     selectedMessageIDs: new Set(),
     activeMessageID: "",
@@ -101,7 +112,10 @@ const state = {
       mode: "send",
       messageID: "",
     },
+    sendMode: "send_now",
+    scheduledFor: "",
     assets: [],
+    recipientSuggestions: [],
     submitInFlight: false,
     draftID: "",
     draftLoaded: false,
@@ -259,6 +273,9 @@ const el = {
   attachments: document.getElementById("attachment-list"),
   searchInput: document.getElementById("search-input"),
   btnSearch: document.getElementById("btn-search"),
+  mailIndexStatus: document.getElementById("mail-index-status"),
+  btnMailSaveSearch: document.getElementById("btn-mail-save-search"),
+  btnMailDeleteSearch: document.getElementById("btn-mail-delete-search"),
   btnReply: document.getElementById("btn-reply"),
   btnForward: document.getElementById("btn-forward"),
   btnFlag: document.getElementById("btn-flag"),
@@ -277,6 +294,7 @@ const el = {
   composeDialog: document.getElementById("compose-dialog"),
   composeTitle: document.getElementById("compose-title"),
   composeForm: document.getElementById("form-compose"),
+  btnComposeHistory: document.getElementById("btn-compose-history"),
   btnComposeSend: document.getElementById("btn-compose-send"),
   composeToggleCc: document.getElementById("compose-toggle-cc"),
   composeToggleBcc: document.getElementById("compose-toggle-bcc"),
@@ -293,6 +311,10 @@ const el = {
   composeCcInput: document.getElementById("compose-cc-input"),
   composeBccInput: document.getElementById("compose-bcc-input"),
   composeSubjectInput: document.getElementById("compose-subject-input"),
+  composeSendMode: document.getElementById("compose-send-mode"),
+  composeScheduledForInput: document.getElementById("compose-scheduled-for"),
+  composeDeliveryNote: document.getElementById("compose-delivery-note"),
+  composeRecipientSuggestions: document.getElementById("compose-recipient-suggestions"),
   composeFromSelect: document.getElementById("compose-from-select"),
   composeFromManualWrap: document.getElementById("compose-from-manual-wrap"),
   composeFromManualInput: document.getElementById("compose-from-manual"),
@@ -518,6 +540,12 @@ const el = {
 };
 
 const APP_DRAFTS_MAILBOX = "__despatch_app_drafts__";
+const MAIL_SMART_VIEWS = [
+  { id: "waiting", name: "Waiting" },
+  { id: "unread", name: "Unread" },
+  { id: "flagged", name: "Flagged" },
+  { id: "attachments", name: "Attachments" },
+];
 
 const setupSteps = [
   document.getElementById("setup-step-0"),
@@ -758,7 +786,8 @@ function safeDomID(prefix, raw, fallback = "item") {
 function syncMailboxActiveDescendant() {
   if (!el.mailboxes) return;
   const buttons = mailboxesButtons();
-  const active = buttons.find((node) => String(node.dataset.mailboxName || "") === state.mailbox) || null;
+  const activeKey = currentMailNavKey();
+  const active = buttons.find((node) => String(node.dataset.mailNavKey || "") === activeKey) || null;
   for (const button of buttons) {
     const isActive = button === active;
     button.classList.toggle("active", isActive);
@@ -767,7 +796,7 @@ function syncMailboxActiveDescendant() {
   }
   if (active) {
     if (!active.id) {
-      active.id = safeDomID("mailbox-option-", active.dataset.mailboxName || "", `${buttons.indexOf(active)}`);
+      active.id = safeDomID("mailbox-option-", active.dataset.mailNavKey || "", `${buttons.indexOf(active)}`);
     }
     el.mailboxes.setAttribute("aria-activedescendant", active.id);
   } else {
@@ -917,6 +946,8 @@ function composeComparableDraftPayload(raw = {}) {
     subject: String(raw.subject ?? "").trim(),
     body_text: String(raw.body_text ?? raw.bodyText ?? "").trim(),
     body_html: String(raw.body_html ?? raw.bodyHTML ?? "").trim(),
+    send_mode: String(raw.send_mode ?? raw.sendMode ?? "").trim().toLowerCase(),
+    scheduled_for: String(raw.scheduled_for ?? raw.scheduledFor ?? "").trim(),
     status: String(raw.status ?? "active").trim().toLowerCase() || "active",
     last_send_error: String(raw.last_send_error ?? raw.lastSendError ?? "").trim(),
   };
@@ -942,6 +973,8 @@ function composeCurrentDraftPayload() {
     subject: String(el.composeSubjectInput?.value || ""),
     body_text: composeEditorText(),
     body_html: composeEditorHTML(),
+    send_mode: state.compose.sendMode === "scheduled" ? "scheduled" : "",
+    scheduled_for: composeScheduledForISOValue(),
     status: composePersistedDraftStatus(),
     last_send_error: composePersistedDraftStatus() === "failed" ? state.compose.lastSendError : "",
   });
@@ -999,6 +1032,9 @@ function composePersistedDraftStatus() {
   const current = String(state.compose.draftStatus || "active").trim().toLowerCase();
   if (current === "failed") {
     return state.compose.draftDirty ? "active" : "failed";
+  }
+  if (current === "scheduled" && state.compose.sendMode !== "scheduled") {
+    return "active";
   }
   if (current === "scheduled" || current === "retrying" || current === "sent") {
     return current;
@@ -1235,6 +1271,112 @@ function composeAuthEmailValue() {
   return String(state.compose.authEmail || state.user?.email || "").trim();
 }
 
+function composeDefaultScheduledLocalValue() {
+  const next = new Date();
+  next.setSeconds(0, 0);
+  next.setMinutes(0);
+  next.setHours(next.getHours() + 1);
+  const year = next.getFullYear();
+  const month = String(next.getMonth() + 1).padStart(2, "0");
+  const day = String(next.getDate()).padStart(2, "0");
+  const hours = String(next.getHours()).padStart(2, "0");
+  const minutes = String(next.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function composeScheduledLocalValueFromISO(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function composeScheduledForISOValue() {
+  if (state.compose.sendMode !== "scheduled") return "";
+  const localValue = String(el.composeScheduledForInput?.value || state.compose.scheduledFor || "").trim();
+  if (!localValue) return "";
+  const date = new Date(localValue);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toISOString();
+}
+
+function syncComposeDeliveryControls() {
+  if (el.composeSendMode) {
+    el.composeSendMode.value = state.compose.sendMode === "scheduled" ? "scheduled" : "send_now";
+  }
+  if (el.composeScheduledForInput) {
+    el.composeScheduledForInput.classList.toggle("hidden", state.compose.sendMode !== "scheduled");
+    if (state.compose.sendMode === "scheduled") {
+      if (!state.compose.scheduledFor) {
+        state.compose.scheduledFor = composeDefaultScheduledLocalValue();
+      }
+      el.composeScheduledForInput.value = state.compose.scheduledFor;
+    } else {
+      el.composeScheduledForInput.value = "";
+    }
+  }
+  if (state.compose.sendMode !== "scheduled") {
+    setComposeDeliveryNote("Schedule uses your local time zone.");
+    return;
+  }
+  const accountID = String(state.compose.selectedAccountID || "").trim();
+  const isoValue = composeScheduledForISOValue();
+  if (!accountID) {
+    setComposeDeliveryNote("Scheduled send requires an account-backed sender identity.", "error");
+    return;
+  }
+  if (!isoValue) {
+    setComposeDeliveryNote("Choose when this message should send.", "warn");
+    return;
+  }
+  if (new Date(isoValue).getTime() <= Date.now()) {
+    setComposeDeliveryNote("Scheduled send must be in the future.", "error");
+    return;
+  }
+  setComposeDeliveryNote(`Scheduled for ${formatDate(isoValue)}.`, "ok");
+}
+
+function clearComposeRecipientSuggestions() {
+  state.compose.recipientSuggestions = [];
+  if (!el.composeRecipientSuggestions) return;
+  el.composeRecipientSuggestions.replaceChildren();
+}
+
+function renderComposeRecipientSuggestions(items = []) {
+  state.compose.recipientSuggestions = Array.isArray(items) ? items : [];
+  if (!el.composeRecipientSuggestions) return;
+  el.composeRecipientSuggestions.replaceChildren();
+  for (const item of state.compose.recipientSuggestions) {
+    const option = document.createElement("option");
+    option.value = String(item?.email || "").trim();
+    option.label = String(item?.label || item?.email || "").trim();
+    el.composeRecipientSuggestions.appendChild(option);
+  }
+}
+
+async function fetchComposeRecipientSuggestions(query) {
+  const accountID = String(state.compose.selectedAccountID || state.mail.indexedAccountID || "").trim();
+  const q = String(query || "").trim();
+  if (!accountID || q.length < 2) {
+    clearComposeRecipientSuggestions();
+    return;
+  }
+  try {
+    const payload = await api(`/api/v2/recipients/suggest?account_id=${encodeURIComponent(accountID)}&q=${encodeURIComponent(q)}&limit=8`, {
+      logErrors: false,
+    });
+    renderComposeRecipientSuggestions(Array.isArray(payload?.items) ? payload.items : []);
+  } catch {
+    clearComposeRecipientSuggestions();
+  }
+}
+
 function composeResolvedManualSender() {
   const manual = String(el.composeFromManualInput?.value || "").trim();
   if (manual !== "") return manual;
@@ -1296,6 +1438,16 @@ function syncComposeServerDraftState(draft, options = {}) {
   state.compose.draftError = "";
   state.compose.draftStatus = String(record.status || state.compose.draftStatus || "active").trim().toLowerCase() || "active";
   state.compose.lastSendError = String(record.last_send_error || "").trim();
+  if (Object.prototype.hasOwnProperty.call(record, "send_mode")) {
+    state.compose.sendMode = String(record.send_mode || "").trim().toLowerCase() === "scheduled"
+      ? "scheduled"
+      : "send_now";
+  }
+  if (Object.prototype.hasOwnProperty.call(record, "scheduled_for")) {
+    state.compose.scheduledFor = composeScheduledLocalValueFromISO(record.scheduled_for);
+  } else if (state.compose.sendMode !== "scheduled") {
+    state.compose.scheduledFor = "";
+  }
   state.compose.draftLastSavedAt = String(record.updated_at || state.compose.draftLastSavedAt || new Date().toISOString());
   if (options.skipBaseline !== true) {
     state.compose.draftBaselineJSON = composeDraftPayloadJSON(record);
@@ -1313,6 +1465,7 @@ function syncComposeServerDraftState(draft, options = {}) {
     upsertLocalDraft(record);
   }
   applyComposeSendFailurePresentation();
+  syncComposeDeliveryControls();
 }
 
 function applyComposeSendFailurePresentation() {
@@ -1345,6 +1498,26 @@ function setComposeFromNote(text = "", tone = "muted") {
     el.composeFromNote.classList.add("compose-inline-note--error");
   }
   updateComposeFromRowVisibility();
+}
+
+function setComposeDeliveryNote(text = "", tone = "muted") {
+  if (!el.composeDeliveryNote) return;
+  const msg = String(text || "").trim();
+  el.composeDeliveryNote.classList.remove("compose-inline-note--ok", "compose-inline-note--warn", "compose-inline-note--error");
+  if (msg === "") {
+    el.composeDeliveryNote.textContent = "";
+    el.composeDeliveryNote.classList.add("hidden");
+    return;
+  }
+  el.composeDeliveryNote.textContent = msg;
+  el.composeDeliveryNote.classList.remove("hidden");
+  if (tone === "ok") {
+    el.composeDeliveryNote.classList.add("compose-inline-note--ok");
+  } else if (tone === "warn") {
+    el.composeDeliveryNote.classList.add("compose-inline-note--warn");
+  } else if (tone === "error") {
+    el.composeDeliveryNote.classList.add("compose-inline-note--error");
+  }
 }
 
 function updateComposeFromRowVisibility() {
@@ -1503,6 +1676,12 @@ function composeCanSubmit() {
     const manual = composeResolvedManualSender().toLowerCase();
     if (!authEmail || manual !== authEmail) return false;
   }
+  if (state.compose.sendMode === "scheduled") {
+    const accountID = String(state.compose.selectedAccountID || "").trim();
+    const scheduledFor = composeScheduledForISOValue();
+    if (!accountID || !scheduledFor) return false;
+    if (new Date(scheduledFor).getTime() <= Date.now()) return false;
+  }
   return true;
 }
 
@@ -1510,7 +1689,10 @@ function updateComposeSubmitState() {
   const disabled = state.compose.submitInFlight || !composeCanSubmit();
   if (el.btnComposeSend) {
     el.btnComposeSend.disabled = disabled;
-    const retryLabel = String(state.compose.draftStatus || "").toLowerCase() === "failed" ? "Retry send" : "Send";
+    let retryLabel = state.compose.sendMode === "scheduled" ? "Schedule" : "Send";
+    if (String(state.compose.draftStatus || "").toLowerCase() === "failed") {
+      retryLabel = state.compose.sendMode === "scheduled" ? "Retry schedule" : "Retry send";
+    }
     el.btnComposeSend.textContent = state.compose.submitInFlight ? "Sending..." : retryLabel;
   }
   const [draftText, draftTone] = composeDraftStatusText();
@@ -1548,6 +1730,7 @@ function syncComposeBodyFields() {
 function syncComposeDraftFields() {
   syncComposeBodyFields();
   updateComposeFromFields();
+  syncComposeDeliveryControls();
 }
 
 function clearComposeDraftSaveTimer() {
@@ -1567,6 +1750,9 @@ function clearComposeDraft() {
   state.compose.lastSendError = "";
   state.compose.draftLastSavedAt = "";
   state.compose.draftBaselineJSON = "";
+  state.compose.sendMode = "send_now";
+  state.compose.scheduledFor = "";
+  clearComposeRecipientSuggestions();
   clearComposeCrashBuffer();
 }
 
@@ -1627,6 +1813,8 @@ function applyComposeDraftPayload(payload, opts = {}) {
   state.compose.fromMode = draft.from_mode || "default";
   state.compose.selectedIdentityID = draft.identity_id || "";
   state.compose.selectedAccountID = draft.account_id || "";
+  state.compose.sendMode = draft.send_mode === "scheduled" ? "scheduled" : "send_now";
+  state.compose.scheduledFor = composeScheduledLocalValueFromISO(draft.scheduled_for);
   setComposeSendContext(draft.compose_mode || "send", draft.context_message_id || "");
   renderComposeFromControls();
   if (state.compose.fromMode === "manual") {
@@ -1644,6 +1832,7 @@ function applyComposeDraftPayload(payload, opts = {}) {
   setComposeCcVisible(Boolean(clientState.cc_visible || draft.cc || String(clientState.cc_pending || "").trim() !== ""), { clearWhenHidden: false });
   setComposeBccVisible(Boolean(clientState.bcc_visible || draft.bcc || String(clientState.bcc_pending || "").trim() !== ""), { clearWhenHidden: false });
   setComposeFormatToolsVisible(Boolean(clientState.format_tools_visible));
+  syncComposeDeliveryControls();
   syncComposeDraftFields();
 }
 
@@ -1715,6 +1904,8 @@ async function createServerDraft(payload) {
       subject: payload.subject,
       body_text: payload.body_text,
       body_html: payload.body_html,
+      send_mode: payload.send_mode,
+      scheduled_for: payload.scheduled_for,
       status: payload.status || "active",
       last_send_error: payload.last_send_error || "",
     },
@@ -1739,6 +1930,8 @@ async function updateServerDraft(draftID, payload) {
       subject: payload.subject,
       body_text: payload.body_text,
       body_html: payload.body_html,
+      send_mode: payload.send_mode,
+      scheduled_for: payload.scheduled_for,
       status: payload.status || "active",
       last_send_error: payload.last_send_error || "",
     },
@@ -1750,8 +1943,59 @@ async function loadComposeDraftByID(draftID) {
   return api(`/api/v2/drafts/${encodeURIComponent(draftID)}`, { logErrors: false });
 }
 
+async function restoreComposeDraftVersion(trigger = null) {
+  if (!state.user) {
+    throw new Error("Sign in required");
+  }
+  const saved = await flushComposeDraft({ immediate: true, forceCreate: true });
+  const draftID = String(state.compose.draftID || saved?.id || "").trim();
+  if (!draftID) {
+    throw new Error("Draft save failed.");
+  }
+  const payload = await api(`/api/v2/drafts/${encodeURIComponent(draftID)}/versions`, { logErrors: false });
+  const versions = Array.isArray(payload?.items) ? payload.items : [];
+  if (versions.length === 0) {
+    setComposeDraftNote("No draft history is available yet.", "warn");
+    return;
+  }
+  const labels = versions.map((item) => `v${Number(item?.version_no || 0)} · ${formatDate(item?.created_at) || "unknown time"}`);
+  const choice = await showPromptModal({
+    title: "Draft History",
+    body: "Pick a saved draft snapshot to restore into this composer.",
+    label: "Version",
+    defaultValue: labels[0],
+    choices: labels,
+    confirmText: "Restore",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (choice === null) return;
+  const index = labels.findIndex((label) => label === choice);
+  const selected = versions[index >= 0 ? index : 0];
+  let snapshot = {};
+  try {
+    snapshot = JSON.parse(String(selected?.snapshot_json || "{}"));
+  } catch {
+    throw new Error("Selected draft snapshot is unreadable.");
+  }
+  clearComposeAssets({ removeEditorNodes: false });
+  applyComposeDraftPayload(snapshot, { normalizeDraftMedia: false });
+  const assetInfo = hydrateComposeDraftAssets(snapshot);
+  normalizeComposeEditorDraftMedia();
+  state.compose.draftDirty = true;
+  syncComposeDraftFields();
+  queueComposeDraftSave();
+  updateComposeSubmitState();
+  if (assetInfo.legacyMissingMedia) {
+    setComposeDraftNote("Restored an older draft snapshot. Re-add missing attachments or inline images if needed.", "warn");
+    return;
+  }
+  setComposeDraftNote(`Restored draft version from ${formatDate(selected?.created_at) || "history"}.`, "ok");
+}
+
 function composeDraftStatusText() {
   if (state.compose.submitInFlight) return ["Sending", "muted"];
+  if (String(state.compose.draftStatus || "").toLowerCase() === "scheduled") return ["Scheduled", "ok"];
   if (composeAssetUploadInProgress()) return ["Uploading", "muted"];
   if (composeAssetHasFailed()) return ["Attachment failed", "error"];
   if (state.compose.draftSaving) return ["Saving", "muted"];
@@ -1867,20 +2111,30 @@ function draftPrimaryLine(draft) {
 
 function buildDraftMessageSummary(draft) {
   const bodyText = String(draft?.body_text || "").trim() || stripHTMLToText(draft?.body_html || "");
+  const draftStatus = String(draft?.status || "").trim().toLowerCase();
+  let contextBadge = composeDraftContextLabel(draft?.compose_mode);
+  if (draftStatus === "scheduled") {
+    contextBadge = "Scheduled";
+  } else if (draftStatus === "failed") {
+    contextBadge = "Failed";
+  }
+  const previewText = draftStatus === "scheduled" && draft?.scheduled_for
+    ? `Sends ${formatDate(draft.scheduled_for)}`
+    : bodyText;
   return {
     id: String(draft?.id || ""),
     mailbox: APP_DRAFTS_MAILBOX,
     isDraft: true,
     subject: String(draft?.subject || "").trim() || "(no subject)",
     from: draftPrimaryLine(draft),
-    preview: bodyText,
+    preview: previewText,
     date: draft?.updated_at || draft?.created_at || new Date().toISOString(),
     seen: true,
     flagged: false,
     answered: false,
     draft_id: String(draft?.id || ""),
     compose_mode: String(draft?.compose_mode || "send"),
-    context_badge: composeDraftContextLabel(draft?.compose_mode),
+    context_badge: contextBadge,
   };
 }
 
@@ -2573,6 +2827,7 @@ function setComposeFromMode(mode) {
   }
   updateComposeFromRowVisibility();
   updateComposeFromFields();
+  syncComposeDeliveryControls();
   updateComposeSubmitState();
 }
 
@@ -2593,6 +2848,7 @@ function renderComposeFromControls() {
       setComposeFromNote("");
     }
     updateComposeFromFields();
+    syncComposeDeliveryControls();
     return;
   }
 
@@ -2621,6 +2877,7 @@ function renderComposeFromControls() {
   setComposeFromNote("");
   updateComposeFromRowVisibility();
   updateComposeFromFields();
+  syncComposeDeliveryControls();
 }
 
 function composeIdentityByID(identityID) {
@@ -2792,7 +3049,12 @@ async function loadComposeIdentities() {
   try {
     const payload = await api("/api/v1/compose/identities");
     state.compose.authEmail = String(payload.auth_email || state.user?.email || "").trim();
+    state.mail.indexedAuthEmail = state.compose.authEmail.toLowerCase();
     state.compose.identities = Array.isArray(payload.items) ? payload.items : [];
+    state.mail.indexedSelfEmails = dedupeLowercaseValues([
+      payload?.auth_email,
+      ...state.compose.identities.flatMap((item) => [item?.from_email, item?.account_login]),
+    ]);
     state.compose.manualFallbackRequired = !!payload.manual_fallback_required;
   } catch (err) {
     state.compose.identities = [];
@@ -2800,6 +3062,7 @@ async function loadComposeIdentities() {
     state.compose.identityLookupError = String(err.message || "lookup failed");
   }
   renderComposeFromControls();
+  syncComposeDeliveryControls();
 }
 
 function resetComposeDraftSession(options = {}) {
@@ -2819,6 +3082,9 @@ function resetComposeDraftSession(options = {}) {
   state.compose.fromMode = "default";
   state.compose.selectedIdentityID = "";
   state.compose.selectedAccountID = "";
+  state.compose.sendMode = "send_now";
+  state.compose.scheduledFor = "";
+  clearComposeRecipientSuggestions();
   clearComposeAssets({ removeEditorNodes: false });
   state.mail.selectedDraftID = "";
   if (!keepCrash) {
@@ -3009,6 +3275,7 @@ async function openComposeOverlay(trigger = null, opts = {}) {
   setComposeFromNote("");
   setComposeDraftNote("");
   setComposeDraftState("Draft", "muted");
+  syncComposeDeliveryControls();
   if (el.composeEditor) el.composeEditor.innerHTML = "";
   await loadComposeIdentities();
   let shouldAutoInsertSignature = false;
@@ -7001,8 +7268,339 @@ async function ensureSpecialMailbox(role, trigger = null) {
   return String(payload?.mailbox_name || mailboxName).trim();
 }
 
+function dedupeLowercaseValues(values = []) {
+  const seen = new Set();
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const normalized = String(value || "").trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function mailNavKeyForMailbox(name) {
+  return `mailbox:${String(name || "").trim()}`;
+}
+
+function mailNavKeyForSmart(viewID) {
+  return `smart:${String(viewID || "").trim()}`;
+}
+
+function mailNavKeyForSaved(id) {
+  return `saved:${String(id || "").trim()}`;
+}
+
+function currentMailNavKey() {
+  if (state.mail.viewKind === "smart" && state.mail.smartView) {
+    return mailNavKeyForSmart(state.mail.smartView);
+  }
+  if (state.mail.viewKind === "saved" && state.mail.savedSearchID) {
+    return mailNavKeyForSaved(state.mail.savedSearchID);
+  }
+  return mailNavKeyForMailbox(state.mailbox || "INBOX");
+}
+
+function selectedSavedSearchRecord() {
+  const id = String(state.mail.savedSearchID || "").trim();
+  if (!id) return null;
+  return (Array.isArray(state.mail.savedSearches) ? state.mail.savedSearches : [])
+    .find((item) => String(item?.id || "") === id) || null;
+}
+
+function visibleSavedSearches() {
+  const accountID = String(state.mail.indexedAccountID || "").trim();
+  return (Array.isArray(state.mail.savedSearches) ? state.mail.savedSearches : []).filter((item) => {
+    const itemAccountID = String(item?.account_id || "").trim();
+    return itemAccountID === "" || itemAccountID === accountID;
+  });
+}
+
+function parseSavedSearchFilters(raw) {
+  let parsed = {};
+  try {
+    parsed = raw && typeof raw === "string" ? JSON.parse(raw) : (raw || {});
+  } catch {
+    parsed = {};
+  }
+  const smartView = String(parsed.smart_view || parsed.smartView || "").trim();
+  let viewKind = String(parsed.view_kind || parsed.viewKind || "").trim().toLowerCase();
+  if (viewKind !== "smart" && viewKind !== "mailbox") {
+    viewKind = smartView ? "smart" : "mailbox";
+  }
+  return {
+    viewKind,
+    mailbox: String(parsed.mailbox || "").trim(),
+    smartView,
+    query: String(parsed.query || "").trim(),
+  };
+}
+
+function syncMailSearchInput() {
+  if (!el.searchInput) return;
+  if (document.activeElement === el.searchInput) return;
+  el.searchInput.value = String(state.mail.searchQuery || "");
+}
+
+function setIndexedRuntimeFallback(reason = "") {
+  state.mail.indexedRuntimeFallback = true;
+  state.mail.indexedFallbackReason = String(reason || "indexed view unavailable").trim();
+  renderMailIndexStatus();
+}
+
+function clearIndexedRuntimeFallback() {
+  state.mail.indexedRuntimeFallback = false;
+  state.mail.indexedFallbackReason = "";
+}
+
+function currentIndexedAccount() {
+  const accountID = String(state.mail.indexedAccountID || "").trim();
+  if (!accountID) return null;
+  return (Array.isArray(state.mail.indexedAccounts) ? state.mail.indexedAccounts : [])
+    .find((item) => String(item?.id || "") === accountID) || null;
+}
+
+function setIndexedAccountContext(accountID) {
+  const resolvedID = String(accountID || "").trim();
+  state.mail.indexedAccountID = resolvedID;
+  state.mail.syncStatus = resolvedID
+    ? ((Array.isArray(state.mail.indexedAccounts) ? state.mail.indexedAccounts : [])
+      .find((item) => String(item?.id || "") === resolvedID) || null)
+    : null;
+}
+
+function mailUsesIndexedMode() {
+  return !isDraftsMailboxSelected() && !!String(state.mail.indexedAccountID || "").trim();
+}
+
+function currentMailFiltersPayload() {
+  if (state.mail.viewKind === "saved") {
+    const record = selectedSavedSearchRecord();
+    if (record) {
+      const parsed = parseSavedSearchFilters(record.filters_json);
+      return {
+        viewKind: parsed.viewKind,
+        mailbox: parsed.mailbox || state.mailbox || "INBOX",
+        smartView: parsed.smartView,
+        query: String(state.mail.searchQuery || parsed.query || "").trim(),
+      };
+    }
+  }
+  if (state.mail.viewKind === "smart") {
+    return {
+      viewKind: "smart",
+      mailbox: "",
+      smartView: String(state.mail.smartView || "").trim(),
+      query: String(state.mail.searchQuery || "").trim(),
+    };
+  }
+  return {
+    viewKind: "mailbox",
+    mailbox: String(state.mailbox || "INBOX").trim() || "INBOX",
+    smartView: "",
+    query: String(state.mail.searchQuery || "").trim(),
+  };
+}
+
+function currentMailViewLabel() {
+  if (isDraftsMailboxSelected()) return "Drafts";
+  if (state.mail.viewKind === "saved") {
+    return String(selectedSavedSearchRecord()?.name || "Saved View").trim();
+  }
+  if (state.mail.viewKind === "smart") {
+    return MAIL_SMART_VIEWS.find((item) => item.id === state.mail.smartView)?.name || "View";
+  }
+  return mailboxDisplayLabel(mailboxRecordByName(state.mailbox) || { name: state.mailbox || "INBOX" });
+}
+
+function setMailSourceMailbox(name, options = {}) {
+  state.mail.viewKind = "mailbox";
+  state.mail.smartView = "";
+  state.mail.savedSearchID = "";
+  state.mailbox = String(name || "INBOX").trim() || "INBOX";
+  if (options.keepQuery !== true) {
+    state.mail.searchQuery = "";
+  }
+  syncMailSearchInput();
+  renderMailboxes();
+}
+
+function setMailSourceSmart(viewID) {
+  state.mail.viewKind = "smart";
+  state.mail.smartView = String(viewID || "").trim();
+  state.mail.savedSearchID = "";
+  state.mail.searchQuery = "";
+  syncMailSearchInput();
+  renderMailboxes();
+}
+
+function applySavedSearchSelection(record) {
+  if (!record) return;
+  const parsed = parseSavedSearchFilters(record.filters_json);
+  state.mail.viewKind = "saved";
+  state.mail.savedSearchID = String(record.id || "").trim();
+  state.mail.smartView = parsed.smartView;
+  if (parsed.mailbox) {
+    state.mailbox = parsed.mailbox;
+  }
+  state.mail.searchQuery = parsed.query;
+  syncMailSearchInput();
+  renderMailboxes();
+}
+
+function formatMailIndexFreshness(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "sync pending";
+  const at = new Date(value);
+  if (Number.isNaN(at.getTime())) return `synced ${value}`;
+  const deltaMs = Date.now() - at.getTime();
+  if (deltaMs < 60000) return "synced just now";
+  if (deltaMs < 3600000) return `synced ${Math.max(1, Math.round(deltaMs / 60000))}m ago`;
+  if (deltaMs < 86400000) return `synced ${Math.max(1, Math.round(deltaMs / 3600000))}h ago`;
+  return `synced ${formatDate(raw)}`;
+}
+
+function renderMailIndexStatus() {
+  if (!el.mailIndexStatus) return;
+  el.mailIndexStatus.classList.remove("mail-index-status--ok", "mail-index-status--warn", "mail-index-status--error");
+  const sync = state.mail.syncStatus || currentIndexedAccount() || null;
+  let text = "Live mailbox";
+  let tone = "warn";
+  if (state.mail.indexedRuntimeFallback) {
+    text = `Live mailbox · ${String(state.mail.indexedFallbackReason || "indexed view unavailable").trim()}`;
+    tone = "error";
+  } else if (!String(state.mail.indexedAccountID || "").trim()) {
+    text = "Live mailbox · indexed view unavailable";
+    tone = "warn";
+  } else if (sync?.last_error) {
+    text = `Indexed · ${formatMailIndexFreshness(sync?.last_sync_at)} · ${String(sync.last_error).trim()}`;
+    tone = "warn";
+  } else if (sync?.last_sync_at) {
+    text = `Indexed · ${formatMailIndexFreshness(sync.last_sync_at)}`;
+    tone = "ok";
+  } else {
+    text = "Indexed · first sync pending";
+    tone = "warn";
+  }
+  el.mailIndexStatus.textContent = text;
+  el.mailIndexStatus.classList.add(`mail-index-status--${tone}`);
+  const canUseSavedViews = !isDraftsMailboxSelected() && !!String(state.mail.indexedAccountID || "").trim() && !state.mail.indexedRuntimeFallback;
+  if (el.btnMailSaveSearch) {
+    el.btnMailSaveSearch.classList.toggle("hidden", !canUseSavedViews);
+    el.btnMailSaveSearch.disabled = !canUseSavedViews;
+  }
+  if (el.btnMailDeleteSearch) {
+    const canDelete = canUseSavedViews && state.mail.viewKind === "saved" && !!selectedSavedSearchRecord();
+    el.btnMailDeleteSearch.classList.toggle("hidden", !canDelete);
+    el.btnMailDeleteSearch.disabled = !canDelete;
+  }
+}
+
+async function refreshIndexedMailContext(opts = {}) {
+  if (!state.user) return null;
+  const fetchAuthIdentity = opts.refreshAuthIdentity === true
+    || (!state.mail.indexedAuthEmail && (Array.isArray(state.mail.indexedSelfEmails) ? state.mail.indexedSelfEmails.length : 0) === 0);
+  try {
+    const requests = [
+      api("/api/v2/accounts", { logErrors: opts.logErrors }),
+      api("/api/v2/saved-searches", { logErrors: opts.logErrors }),
+    ];
+    if (fetchAuthIdentity) {
+      requests.push(api("/api/v1/compose/identities", { logErrors: false }));
+    }
+    const [accountsPayload, savedPayload, composePayload] = await Promise.all(requests);
+    state.mail.indexedAccounts = Array.isArray(accountsPayload?.items) ? accountsPayload.items : [];
+    state.mail.savedSearches = Array.isArray(savedPayload?.items) ? savedPayload.items : [];
+    if (composePayload && typeof composePayload === "object") {
+      state.mail.indexedAuthEmail = String(composePayload?.auth_email || "").trim().toLowerCase();
+      state.mail.indexedSelfEmails = dedupeLowercaseValues([
+        composePayload?.auth_email,
+        ...((Array.isArray(composePayload?.items) ? composePayload.items : []).flatMap((item) => [item?.from_email, item?.account_login])),
+      ]);
+    }
+    const accounts = Array.isArray(state.mail.indexedAccounts) ? state.mail.indexedAccounts : [];
+    const previous = currentIndexedAccount();
+    const authEmail = String(state.mail.indexedAuthEmail || "").trim().toLowerCase();
+    let chosen = previous && accounts.find((item) => String(item?.id || "") === String(previous.id || "")) || null;
+    if (!chosen && authEmail) {
+      chosen = accounts.find((item) => String(item?.login || "").trim().toLowerCase() === authEmail) || null;
+    }
+    if (!chosen) {
+      chosen = accounts.find((item) => !!item?.is_default) || null;
+    }
+    if (!chosen && accounts.length === 1) {
+      chosen = accounts[0];
+    }
+    if (!chosen && accounts.length > 0) {
+      chosen = accounts[0];
+    }
+    setIndexedAccountContext(chosen?.id || "");
+    if (state.mail.viewKind === "saved" && !selectedSavedSearchRecord()) {
+      state.mail.viewKind = "mailbox";
+      state.mail.savedSearchID = "";
+    }
+    renderMailIndexStatus();
+    renderMailboxes();
+    return chosen || null;
+  } catch {
+    renderMailIndexStatus();
+    return currentIndexedAccount();
+  }
+}
+
+function normalizeIndexedMessageSummary(item) {
+  return {
+    id: String(item?.id || "").trim(),
+    mailbox: String(item?.mailbox || state.mailbox || "").trim(),
+    from: String(item?.from || item?.from_value || "").trim(),
+    subject: String(item?.subject || "").trim(),
+    date: item?.date || item?.date_header || item?.internal_date || item?.internalDate || "",
+    seen: !!item?.seen,
+    flagged: !!item?.flagged,
+    answered: !!item?.answered,
+    preview: String(item?.preview || item?.snippet || "").trim(),
+    thread_id: String(item?.thread_id || item?.threadID || "").trim(),
+    has_attachments: !!(item?.has_attachments || item?.hasAttachments),
+  };
+}
+
+function filterWaitingIndexedSummaries(items) {
+  const selfEmails = new Set(dedupeLowercaseValues(state.mail.indexedSelfEmails));
+  const seenThreads = new Set();
+  const sorted = [...(Array.isArray(items) ? items : [])].sort((a, b) => new Date(b?.date || 0).getTime() - new Date(a?.date || 0).getTime());
+  return sorted.filter((item) => {
+    const threadID = String(item?.thread_id || item?.id || "").trim();
+    if (!threadID || seenThreads.has(threadID)) return false;
+    seenThreads.add(threadID);
+    if (item?.answered) return false;
+    const sender = extractPrimaryEmailAddress(item?.from);
+    if (!sender || selfEmails.has(sender)) return false;
+    return true;
+  });
+}
+
+function filterIndexedSummariesForSmartView(items, viewID) {
+  const normalizedView = String(viewID || "").trim().toLowerCase();
+  if (normalizedView === "unread") {
+    return items.filter((item) => !item?.seen);
+  }
+  if (normalizedView === "flagged") {
+    return items.filter((item) => !!item?.flagged);
+  }
+  if (normalizedView === "attachments") {
+    return items.filter((item) => !!item?.has_attachments);
+  }
+  if (normalizedView === "waiting") {
+    return filterWaitingIndexedSummaries(items);
+  }
+  return items;
+}
+
 function renderMailboxes() {
   const items = Array.isArray(state.mail.mailboxes) ? state.mail.mailboxes : [];
+  const activeNavKey = currentMailNavKey();
+  const showIndexedSections = !!String(state.mail.indexedAccountID || "").trim() && !state.mail.indexedRuntimeFallback;
   const system = [];
   const folders = [];
   for (const mb of items) {
@@ -7026,54 +7624,93 @@ function renderMailboxes() {
 
   el.mailboxes.innerHTML = "";
   let optionIndex = 0;
-  const appendSection = (title, list) => {
+  const appendSection = (title, list, kind = "mailbox") => {
     if (!Array.isArray(list) || list.length === 0) return;
     const header = document.createElement("li");
     header.className = "mailbox-section";
     header.innerHTML = `<div class="mailbox-section-title">${escapeHtml(title)}</div>`;
     el.mailboxes.appendChild(header);
 
-    for (const mb of list) {
-      const role = normalizeMailboxRole(mb?.role, mb?.name);
-      const unread = role === "drafts"
-        ? Math.max(0, Number(mb?.count || 0))
-        : Math.max(0, Number(mb?.unread || 0));
+    for (const entry of list) {
       const li = document.createElement("li");
       li.className = "mailbox-row";
       const btn = document.createElement("button");
-      btn.innerHTML = `<span class="mailbox-name">${escapeHtml(mailboxDisplayLabel(mb))}</span><span class="mailbox-meta">${unread > 0 ? `(${unread})` : ""}</span>`;
-      btn.className = String(mb.name || "") === String(state.mailbox || "") ? "active" : "";
-      btn.dataset.mailboxName = mb.name;
-      btn.dataset.mailboxRole = role;
-      btn.id = safeDomID("mailbox-option-", mb.name, `${optionIndex}`);
       btn.type = "button";
       btn.setAttribute("role", "option");
-      btn.setAttribute("aria-selected", String(mb.name || "") === String(state.mailbox || "") ? "true" : "false");
       btn.tabIndex = -1;
-      btn.onclick = async () => {
-        state.mailbox = mb.name;
-        state.mail.searchQuery = "";
-        state.mail.selectedDraftID = "";
-        clearMailMessageSelection({ render: false });
-        clearReaderSelection();
-        await loadMessages();
-        await loadMailboxes({ quiet: true });
-        setActiveMailPane("messages");
-      };
+
+      let label = "";
+      let meta = "";
+      let navKey = "";
+      if (kind === "smart") {
+        label = String(entry?.name || "View");
+        navKey = mailNavKeyForSmart(entry?.id || "");
+        btn.onclick = async () => {
+          setMailSourceSmart(entry?.id || "");
+          state.mail.selectedDraftID = "";
+          clearMailMessageSelection({ render: false });
+          clearReaderSelection();
+          await loadMessages();
+          await loadMailboxes({ quiet: true });
+          setActiveMailPane("messages");
+        };
+      } else if (kind === "saved") {
+        label = String(entry?.name || "Saved View");
+        navKey = mailNavKeyForSaved(entry?.id || "");
+        btn.onclick = async () => {
+          applySavedSearchSelection(entry);
+          state.mail.selectedDraftID = "";
+          clearMailMessageSelection({ render: false });
+          clearReaderSelection();
+          await loadMessages();
+          await loadMailboxes({ quiet: true });
+          setActiveMailPane("messages");
+        };
+      } else {
+        const role = normalizeMailboxRole(entry?.role, entry?.name);
+        const unread = role === "drafts"
+          ? Math.max(0, Number(entry?.count || 0))
+          : Math.max(0, Number(entry?.unread || 0));
+        label = mailboxDisplayLabel(entry);
+        meta = unread > 0 ? `(${unread})` : "";
+        navKey = mailNavKeyForMailbox(entry?.name || "");
+        btn.dataset.mailboxName = String(entry?.name || "");
+        btn.dataset.mailboxRole = role;
+        btn.onclick = async () => {
+          setMailSourceMailbox(entry?.name || "INBOX");
+          state.mail.selectedDraftID = "";
+          clearMailMessageSelection({ render: false });
+          clearReaderSelection();
+          await loadMessages();
+          await loadMailboxes({ quiet: true });
+          setActiveMailPane("messages");
+        };
+      }
+
+      btn.dataset.mailNavKey = navKey;
+      btn.id = safeDomID("mailbox-option-", navKey, `${optionIndex}`);
+      btn.className = navKey === activeNavKey ? "active" : "";
+      btn.setAttribute("aria-selected", navKey === activeNavKey ? "true" : "false");
+      btn.innerHTML = `<span class="mailbox-name">${escapeHtml(label)}</span><span class="mailbox-meta">${escapeHtml(meta)}</span>`;
       optionIndex += 1;
       li.appendChild(btn);
       el.mailboxes.appendChild(li);
     }
   };
 
-  appendSection("System", system);
-  appendSection("Folders", folders);
-  if (system.length === 0 && folders.length === 0) {
+  if (showIndexedSections) {
+    appendSection("Smart Views", MAIL_SMART_VIEWS, "smart");
+    appendSection("Saved Views", visibleSavedSearches(), "saved");
+  }
+  appendSection("System", system, "mailbox");
+  appendSection("Folders", folders, "mailbox");
+  if (el.mailboxes.children.length === 0) {
     const empty = document.createElement("li");
     empty.className = "message-empty";
     empty.textContent = "No mailboxes available.";
     el.mailboxes.appendChild(empty);
   }
+  renderMailIndexStatus();
   syncMailboxActiveDescendant();
 }
 
@@ -7084,8 +7721,11 @@ async function loadMailboxes(opts = {}) {
   const [mailboxes] = await Promise.all([
     api("/api/v1/mailboxes", { logErrors: opts.logErrors }),
     loadDrafts({ logErrors: false }).catch(() => state.mail.drafts),
+    refreshIndexedMailContext({ logErrors: false }),
   ]);
   reconcileMailboxes(Array.isArray(mailboxes) ? mailboxes : []);
+  syncMailSearchInput();
+  renderMailIndexStatus();
 }
 
 function updateLocalMailboxCounts(mailboxName, deltas = {}) {
@@ -7201,8 +7841,10 @@ function reconcileVisibleMessages(items, options = {}) {
     previousReaderID
     && !visibleIDs.has(previousReaderID)
     && options.clearMissingReader !== false
-    && readerMailbox
-    && readerMailbox === String(state.mailbox || "").trim()
+    && (
+      state.mail.viewKind !== "mailbox"
+      || (readerMailbox && readerMailbox === String(state.mailbox || "").trim())
+    )
   ) {
     clearReaderSelection();
   } else if (previousReaderID && visibleIDs.has(previousReaderID)) {
@@ -7553,18 +8195,75 @@ function renderMessages(items) {
   applyMailActionAvailability();
 }
 
+function indexedSearchMatches(item, query) {
+  const needle = String(query || "").trim().toLowerCase();
+  if (!needle) return true;
+  const haystack = [
+    item?.from,
+    item?.subject,
+    item?.preview,
+    item?.body,
+    item?.body_text,
+    item?.snippet,
+  ].join("\n").toLowerCase();
+  return haystack.includes(needle);
+}
+
+async function loadLegacyMailMessages(query) {
+  const endpoint = query
+    ? `/api/v1/search?mailbox=${encodeURIComponent(state.mailbox)}&q=${encodeURIComponent(query)}&page=1&page_size=40`
+    : `/api/v1/messages?mailbox=${encodeURIComponent(state.mailbox)}&page=1&page_size=40`;
+  return api(endpoint);
+}
+
+async function loadIndexedMailMessages(query) {
+  const accountID = String(state.mail.indexedAccountID || "").trim();
+  if (!accountID) {
+    throw new Error("indexed account unavailable");
+  }
+  const filters = currentMailFiltersPayload();
+  const params = new URLSearchParams({
+    account_id: accountID,
+    page: "1",
+    page_size: "40",
+  });
+
+  if (query) {
+    params.set("q", query);
+    if (filters.viewKind === "mailbox" && filters.mailbox) {
+      params.set("mailbox", filters.mailbox);
+    }
+    const payload = await api(`/api/v2/search?${params.toString()}`, { logErrors: false });
+    let items = (Array.isArray(payload?.items) ? payload.items : []).map((item) => normalizeIndexedMessageSummary(item));
+    if (filters.viewKind === "smart") {
+      items = filterIndexedSummariesForSmartView(items, filters.smartView);
+    }
+    return { items, total: Number(payload?.total || items.length) };
+  }
+
+  if (filters.viewKind === "smart" && filters.smartView) {
+    params.set("view", filters.smartView);
+  } else {
+    params.set("mailbox", filters.mailbox || state.mailbox || "INBOX");
+  }
+  const payload = await api(`/api/v2/messages?${params.toString()}`, { logErrors: false });
+  let items = (Array.isArray(payload?.items) ? payload.items : []).map((item) => normalizeIndexedMessageSummary(item));
+  if (filters.viewKind === "smart") {
+    items = filterIndexedSummariesForSmartView(items, filters.smartView);
+  }
+  return { items, total: Number(payload?.total || items.length) };
+}
+
 async function loadMessages(opts = {}) {
   if (!state.user) {
     throw new Error("Sign in required");
   }
-  const searchMode = opts.searchMode === true;
-  if (!searchMode) {
-    state.mail.searchQuery = "";
-  } else {
-    state.mail.searchQuery = String(opts.query ?? state.mail.searchQuery ?? "").trim();
+  if (Object.prototype.hasOwnProperty.call(opts, "query")) {
+    state.mail.searchQuery = String(opts.query ?? "").trim();
   }
+  syncMailSearchInput();
   if (isDraftsMailboxSelected()) {
-    const query = String(opts.query ?? state.mail.searchQuery ?? "").trim().toLowerCase();
+    const query = String(state.mail.searchQuery || "").trim().toLowerCase();
     if (!Array.isArray(state.mail.drafts) || state.mail.drafts.length === 0 || opts.refreshDrafts) {
       await loadDrafts({ logErrors: false });
     }
@@ -7589,13 +8288,37 @@ async function loadMessages(opts = {}) {
     }
     return;
   }
-  const query = String(opts.query ?? state.mail.searchQuery ?? "").trim();
-  const endpoint = query
-    ? `/api/v1/search?mailbox=${encodeURIComponent(state.mailbox)}&q=${encodeURIComponent(query)}&page=1&page_size=40`
-    : `/api/v1/messages?mailbox=${encodeURIComponent(state.mailbox)}&page=1&page_size=40`;
-  const data = await api(endpoint);
+  const query = String(state.mail.searchQuery || "").trim();
   const selectedID = String(state.selectedMessage?.id || "");
-  reconcileVisibleMessages(data.items || [], { clearMissingReader: true });
+  let items = [];
+  try {
+    if (mailUsesIndexedMode()) {
+      const hadFallback = state.mail.indexedRuntimeFallback;
+      const data = await loadIndexedMailMessages(query);
+      items = Array.isArray(data?.items) ? data.items : [];
+      clearIndexedRuntimeFallback();
+      if (hadFallback) {
+        renderMailboxes();
+      }
+      renderMailIndexStatus();
+    } else {
+      const data = await loadLegacyMailMessages(query);
+      items = Array.isArray(data?.items) ? data.items : [];
+    }
+  } catch (err) {
+    if (mailUsesIndexedMode()) {
+      setIndexedRuntimeFallback(formatAPIError(err, "indexed view unavailable"));
+      if (state.mail.viewKind !== "mailbox") {
+        state.mail.viewKind = "mailbox";
+        state.mail.smartView = "";
+        state.mail.savedSearchID = "";
+        renderMailboxes();
+      }
+    }
+    const fallback = await loadLegacyMailMessages(query);
+    items = Array.isArray(fallback?.items) ? fallback.items : [];
+  }
+  reconcileVisibleMessages(items, { clearMissingReader: true });
   if (selectedID) {
     state.selectedMessageSummary = state.messages.find((item) => String(item?.id || "") === selectedID) || state.selectedMessageSummary;
     if (state.messages.some((item) => String(item?.id || "") === selectedID)) {
@@ -7604,7 +8327,11 @@ async function loadMessages(opts = {}) {
     }
   }
   if (!opts.quiet) {
-    setStatus(`Mailbox ${state.mailbox} loaded.`, "ok");
+    if (query) {
+      setStatus(`Search complete (${state.messages.length} results).`, "ok");
+    } else {
+      setStatus(`${currentMailViewLabel()} loaded.`, "ok");
+    }
   }
 }
 
@@ -7944,6 +8671,31 @@ async function loadThreadContext(summary, messageID, mailboxHint = "") {
     return;
   }
   const baseMailbox = String(mailboxHint || summary?.mailbox || state.mailbox || "INBOX").trim() || "INBOX";
+  if (mailUsesIndexedMode()) {
+    try {
+      const payload = await api(`/api/v2/threads/${encodeURIComponent(threadID)}?account_id=${encodeURIComponent(state.mail.indexedAccountID)}`, { logErrors: false });
+      const items = (Array.isArray(payload?.items) ? payload.items : []).map((item) => normalizeIndexedMessageSummary(item));
+      items.sort((a, b) => new Date(a?.date || 0).getTime() - new Date(b?.date || 0).getTime());
+      let index = items.findIndex((it) => String(it?.id || "") === String(messageID || ""));
+      if (index < 0 && items.length > 0) {
+        index = items.length - 1;
+      }
+      state.thread = createThreadState({
+        id: threadID,
+        items,
+        index,
+        truncated: false,
+        mailbox: baseMailbox,
+        expanded,
+      });
+      renderThreadContext();
+      return;
+    } catch {
+      state.thread = createThreadState({ expanded });
+      renderThreadContext();
+      return;
+    }
+  }
   try {
     const payload = await api(`/api/v1/threads/${encodeURIComponent(threadID)}/messages?mailbox=${encodeURIComponent(baseMailbox)}&scope=conversation&page=1&page_size=100`, { logErrors: false });
     const items = Array.isArray(payload?.items) ? [...payload.items] : [];
@@ -8018,32 +8770,12 @@ async function refreshMailView(opts = {}) {
   if (!state.user) return;
   const preservePane = opts.preservePane !== false;
   const activePane = state.ui.activeMailPane;
-  if (isDraftsMailboxSelected()) {
-    await Promise.all([
-      loadMailboxes({ quiet: true, logErrors: false }),
-      loadMessages({
-        quiet: true,
-        refreshDrafts: true,
-        query: state.mail.searchQuery,
-        searchMode: !!String(state.mail.searchQuery || "").trim(),
-      }),
-    ]);
-  } else {
-    const query = String(state.mail.searchQuery || "").trim();
-    const [mailboxes, draftsPayload, data] = await Promise.all([
-      api("/api/v1/mailboxes", { logErrors: false }),
-      api("/api/v2/drafts?page=1&page_size=100", { logErrors: false }).catch(() => ({ items: state.mail.drafts })),
-      api(
-        query
-          ? `/api/v1/search?mailbox=${encodeURIComponent(state.mailbox)}&q=${encodeURIComponent(query)}&page=1&page_size=40`
-          : `/api/v1/messages?mailbox=${encodeURIComponent(state.mailbox)}&page=1&page_size=40`,
-        { logErrors: false },
-      ),
-    ]);
-    state.mail.drafts = Array.isArray(draftsPayload?.items) ? draftsPayload.items : [];
-    reconcileMailboxes(Array.isArray(mailboxes) ? mailboxes : []);
-    reconcileVisibleMessages(data?.items || [], { clearMissingReader: true });
-  }
+  await loadMailboxes({ quiet: true, logErrors: false });
+  await loadMessages({
+    quiet: true,
+    refreshDrafts: true,
+    query: state.mail.searchQuery,
+  });
   await refreshSelectedThreadContext({ quiet: true });
   if (preservePane) {
     setActiveMailPane(activePane || (state.selectedMessage ? "reader" : "messages"), { focus: false });
@@ -8356,27 +9088,79 @@ async function searchMessages() {
     throw new Error("Sign in required");
   }
   const q = el.searchInput.value.trim();
-  state.mail.searchQuery = q;
   clearMailMessageSelection({ render: false });
-  if (isDraftsMailboxSelected()) {
-    clearReaderSelection();
-    await loadMessages({ quiet: true, query: q, searchMode: true });
-    setStatus(`Draft search complete (${state.messages.length} results).`, "ok");
-    setActiveMailPane("messages");
-    return;
-  }
-  if (!q) {
-    clearReaderSelection();
-    await loadMessages({ quiet: true });
-    setStatus(`Mailbox ${state.mailbox} loaded.`, "ok");
-    setActiveMailPane("messages");
-    return;
-  }
-  const data = await api(`/api/v1/search?mailbox=${encodeURIComponent(state.mailbox)}&q=${encodeURIComponent(q)}&page=1&page_size=40`);
   clearReaderSelection();
-  reconcileVisibleMessages(data.items || [], { clearMissingReader: true });
-  setStatus(`Search complete (${(data.items || []).length} results).`, "ok");
+  await loadMessages({ quiet: true, query: q });
+  if (q) {
+    setStatus(`Search complete (${state.messages.length} results).`, "ok");
+  } else {
+    setStatus(`${currentMailViewLabel()} loaded.`, "ok");
+  }
   setActiveMailPane("messages");
+}
+
+function currentSavedSearchFiltersJSON() {
+  const filters = currentMailFiltersPayload();
+  return JSON.stringify({
+    view_kind: filters.viewKind,
+    mailbox: filters.viewKind === "mailbox" ? String(filters.mailbox || state.mailbox || "INBOX").trim() : "",
+    smart_view: filters.viewKind === "smart" ? String(filters.smartView || "").trim() : "",
+    query: String(filters.query || state.mail.searchQuery || "").trim(),
+  });
+}
+
+async function saveCurrentMailView(trigger = null) {
+  const accountID = String(state.mail.indexedAccountID || "").trim();
+  if (!accountID) {
+    throw new Error("Indexed mail is not available for this account.");
+  }
+  const current = selectedSavedSearchRecord();
+  const name = await showPromptModal({
+    title: current ? "Update Saved View" : "Save Current View",
+    body: "Name this mailbox, smart view, or search so you can reopen it quickly.",
+    label: "View name",
+    defaultValue: String(current?.name || currentMailViewLabel()).trim(),
+    confirmText: current ? "Update" : "Save",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (name === null) return;
+  const trimmedName = String(name || "").trim();
+  if (!trimmedName) {
+    throw new Error("View name is required.");
+  }
+  const payload = {
+    account_id: accountID,
+    name: trimmedName,
+    filters_json: currentSavedSearchFiltersJSON(),
+    pinned: !!current?.pinned,
+  };
+  const saved = current
+    ? await api(`/api/v2/saved-searches/${encodeURIComponent(current.id)}`, { method: "PATCH", json: payload })
+    : await api("/api/v2/saved-searches", { method: "POST", json: payload });
+  await refreshIndexedMailContext({ logErrors: false });
+  applySavedSearchSelection(saved);
+  setStatus(current ? "Saved view updated." : "Saved view created.", "ok");
+}
+
+async function deleteCurrentSavedView(trigger = null) {
+  const current = selectedSavedSearchRecord();
+  if (!current) return;
+  const confirmed = await showConfirmModal({
+    title: "Delete saved view?",
+    body: `${String(current.name || "This view")} will be removed from the sidebar.`,
+    confirmText: "Delete",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (!confirmed) return;
+  await api(`/api/v2/saved-searches/${encodeURIComponent(current.id)}`, { method: "DELETE", json: {} });
+  state.mail.viewKind = "mailbox";
+  state.mail.savedSearchID = "";
+  await refreshIndexedMailContext({ logErrors: false });
+  renderMailboxes();
+  await loadMessages({ quiet: true, query: state.mail.searchQuery });
+  setStatus("Saved view deleted.", "ok");
 }
 
 function composeShouldPersistSendFailure(err) {
@@ -8423,7 +9207,9 @@ async function sendCompose(form) {
     logErrors: false,
   });
   clearComposeCrashBuffer(draftID);
-  removeLocalDraft(draftID);
+  if (String(result?.status || "").trim().toLowerCase() !== "scheduled") {
+    removeLocalDraft(draftID);
+  }
   clearComposeDraft();
   setComposeSendContext("send", "");
   return result;
@@ -9646,7 +10432,8 @@ function messageButtons() {
 async function moveMailboxSelection(delta) {
   const buttons = mailboxesButtons();
   if (buttons.length === 0) return;
-  const index = Math.max(0, buttons.findIndex((node) => String(node.dataset.mailboxName || "") === state.mailbox));
+  const activeKey = currentMailNavKey();
+  const index = Math.max(0, buttons.findIndex((node) => String(node.dataset.mailNavKey || "") === activeKey));
   const next = Math.max(0, Math.min(buttons.length - 1, index + delta));
   const nextBtn = buttons[next];
   if (nextBtn) {
@@ -9765,7 +10552,7 @@ async function handleMailKeyboard(event) {
       event.preventDefault();
       const activeID = el.mailboxes?.getAttribute("aria-activedescendant") || "";
       const active = activeID ? document.getElementById(activeID) : null;
-      const current = active || mailboxesButtons().find((node) => String(node.dataset.mailboxName || "") === state.mailbox);
+      const current = active || mailboxesButtons().find((node) => String(node.dataset.mailNavKey || "") === currentMailNavKey());
       if (current) current.click();
       return;
     }
@@ -10673,26 +11460,30 @@ function bindUI() {
         const sendMode = String(state.compose.sendContext?.mode || "send").toLowerCase();
         const sendContextMessageID = String(state.compose.sendContext?.messageID || "").trim();
         const composeSnapshot = captureComposeSendSnapshot();
+        const activeDraftID = String(state.compose.draftID || "").trim();
         if (!mailboxNameForRole("sent")) {
           await ensureSpecialMailbox("sent", el.btnComposeSend || e.target);
         }
         const result = await sendCompose(e.target);
         const savedCopyMailbox = String(result?.saved_copy_mailbox || "").trim();
-        const statusInfo = composeSendStatusMessage(sendMode, result);
-        if (sendMode === "reply" && sendContextMessageID) {
+        const scheduled = String(result?.status || "").trim().toLowerCase() === "scheduled";
+        const statusInfo = scheduled
+          ? { text: `Message scheduled for ${formatDate(result?.scheduled_for) || "later"}.`, tone: "ok" }
+          : composeSendStatusMessage(sendMode, result);
+        if (!scheduled && sendMode === "reply" && sendContextMessageID) {
           applyLocalMessagePatch(sendContextMessageID, { answered: true });
         }
-        if (savedCopyMailbox && savedCopyMailbox === String(state.mailbox || "").trim() && !String(state.mail.searchQuery || "").trim()) {
+        if (!scheduled && savedCopyMailbox && savedCopyMailbox === String(state.mailbox || "").trim() && !String(state.mail.searchQuery || "").trim()) {
           insertOptimisticMailboxSummary(optimisticComposeSummary(composeSnapshot, savedCopyMailbox, {
             answered: sendMode === "reply",
           }));
         }
         setStatus(statusInfo.text, statusInfo.tone);
-        const sentDraftID = String(state.compose.draftID || "").trim();
         e.target.reset();
         state.compose.recipients.to = [];
         state.compose.recipients.cc = [];
         state.compose.recipients.bcc = [];
+        clearComposeRecipientSuggestions();
         renderComposeRecipientTokens("to");
         renderComposeRecipientTokens("cc");
         renderComposeRecipientTokens("bcc");
@@ -10701,13 +11492,15 @@ function bindUI() {
         setComposeCcVisible(false);
         setComposeBccVisible(false);
         setComposeFormatToolsVisible(false);
+        state.compose.sendMode = "send_now";
+        state.compose.scheduledFor = "";
+        syncComposeDeliveryControls();
         setComposeFromNote("");
         setComposeDraftNote("");
         setComposeDraftState("Draft", "muted");
         clearComposeAssets();
-        if (sentDraftID) {
-          clearComposeCrashBuffer(sentDraftID);
-          removeLocalDraft(sentDraftID);
+        if (!scheduled && activeDraftID) {
+          removeLocalDraft(activeDraftID);
         } else {
           clearComposeCrashBuffer("");
         }
@@ -10863,11 +11656,15 @@ function bindUI() {
 
   const bindComposeRecipientInput = (field, input) => {
     if (!input) return;
+    if (el.composeRecipientSuggestions) {
+      input.setAttribute("list", "compose-recipient-suggestions");
+    }
     input.addEventListener("input", () => {
       const value = String(input.value || "").trim();
       const chunks = splitComposeRecipients(value);
       const single = chunks.length === 1 ? chunks[0] : "";
       input.classList.toggle("compose-input-invalid", single !== "" && !validEmail(single));
+      void fetchComposeRecipientSuggestions(single || value);
       queueComposeDraftSave();
       updateComposeSubmitState();
     });
@@ -10875,6 +11672,7 @@ function bindUI() {
       if (event.key === "," || event.key === ";" || event.key === "Enter") {
         event.preventDefault();
         commitComposeRecipientInput(field);
+        clearComposeRecipientSuggestions();
         input.classList.remove("compose-input-invalid");
         syncComposeDraftFields();
         queueComposeDraftSave();
@@ -10883,6 +11681,7 @@ function bindUI() {
       }
       if (event.key === "Tab") {
         commitComposeRecipientInput(field);
+        clearComposeRecipientSuggestions();
         input.classList.remove("compose-input-invalid");
         syncComposeDraftFields();
         queueComposeDraftSave();
@@ -10895,6 +11694,7 @@ function bindUI() {
     });
     input.addEventListener("blur", () => {
       commitComposeRecipientInput(field);
+      clearComposeRecipientSuggestions();
       input.classList.remove("compose-input-invalid");
       syncComposeDraftFields();
       void flushComposeDraft({ immediate: true });
@@ -10905,6 +11705,7 @@ function bindUI() {
       if (!text) return;
       event.preventDefault();
       splitComposeRecipients(text).forEach((item) => addComposeRecipientToken(field, item));
+      clearComposeRecipientSuggestions();
       input.classList.remove("compose-input-invalid");
       syncComposeDraftFields();
       queueComposeDraftSave();
@@ -10973,6 +11774,44 @@ function bindUI() {
       syncComposeDraftFields();
       queueComposeDraftSave();
       updateComposeSubmitState();
+    });
+  }
+
+  if (el.composeSendMode) {
+    el.composeSendMode.addEventListener("change", () => {
+      state.compose.sendMode = String(el.composeSendMode.value || "send_now") === "scheduled" ? "scheduled" : "send_now";
+      if (state.compose.sendMode !== "scheduled") {
+        state.compose.scheduledFor = "";
+      }
+      syncComposeDraftFields();
+      queueComposeDraftSave();
+      updateComposeSubmitState();
+    });
+  }
+
+  if (el.composeScheduledForInput) {
+    el.composeScheduledForInput.addEventListener("input", () => {
+      state.compose.scheduledFor = String(el.composeScheduledForInput.value || "").trim();
+      syncComposeDraftFields();
+      queueComposeDraftSave();
+      updateComposeSubmitState();
+    });
+    el.composeScheduledForInput.addEventListener("blur", () => {
+      state.compose.scheduledFor = String(el.composeScheduledForInput.value || "").trim();
+      syncComposeDraftFields();
+      void flushComposeDraft({ immediate: true });
+      updateComposeSubmitState();
+    });
+  }
+
+  if (el.btnComposeHistory) {
+    el.btnComposeHistory.addEventListener("click", async () => {
+      try {
+        await restoreComposeDraftVersion(el.btnComposeHistory);
+      } catch (err) {
+        setComposeDraftNote(formatAPIError(err, "Draft history restore failed."), "error");
+        setStatus(err.message, "error");
+      }
     });
   }
 
@@ -11276,6 +12115,26 @@ function bindUI() {
       setStatus(err.message, "error");
     }
   };
+
+  if (el.btnMailSaveSearch) {
+    el.btnMailSaveSearch.onclick = async () => {
+      try {
+        await saveCurrentMailView(el.btnMailSaveSearch);
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to save view."), "error");
+      }
+    };
+  }
+
+  if (el.btnMailDeleteSearch) {
+    el.btnMailDeleteSearch.onclick = async () => {
+      try {
+        await deleteCurrentSavedView(el.btnMailDeleteSearch);
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to delete view."), "error");
+      }
+    };
+  }
 
   if (el.btnReaderViewHTML) {
     el.btnReaderViewHTML.onclick = () => {

@@ -72,6 +72,10 @@ func NormalizeIndexedMessageID(accountID, id string) string {
 	return ScopeIndexedMessageID(accountID, id)
 }
 
+func UnscopeIndexedMessageID(id string) string {
+	return unscopeIndexedID(scopedIndexedMessageIDPrefix, id)
+}
+
 func ScopeIndexedThreadID(accountID, legacyThreadID string) string {
 	return scopeIndexedID(scopedIndexedThreadIDPrefix, accountID, legacyThreadID)
 }
@@ -85,6 +89,10 @@ func NormalizeIndexedThreadID(accountID, id string) string {
 		return strings.TrimSpace(id)
 	}
 	return ScopeIndexedThreadID(accountID, id)
+}
+
+func UnscopeIndexedThreadID(id string) string {
+	return unscopeIndexedID(scopedIndexedThreadIDPrefix, id)
 }
 
 func scopeIndexedID(prefix, accountID, legacyID string) string {
@@ -118,4 +126,21 @@ func isScopedIndexedID(prefix, id string) bool {
 	}
 	parts := strings.SplitN(string(decoded), "\x00", 2)
 	return len(parts) == 2 && strings.TrimSpace(parts[0]) != "" && strings.TrimSpace(parts[1]) != ""
+}
+
+func unscopeIndexedID(prefix, id string) string {
+	id = strings.TrimSpace(id)
+	if !isScopedIndexedID(prefix, id) {
+		return id
+	}
+	raw := strings.TrimPrefix(id, prefix)
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return id
+	}
+	parts := strings.SplitN(string(decoded), "\x00", 2)
+	if len(parts) != 2 || strings.TrimSpace(parts[1]) == "" {
+		return id
+	}
+	return parts[1]
 }

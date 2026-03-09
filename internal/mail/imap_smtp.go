@@ -997,6 +997,12 @@ func parseMessage(raw []byte, messageID, mailbox string, uid uint32) (Message, e
 	if to, err := mr.Header.AddressList("To"); err == nil {
 		msg.To = mailAddressStrings(to)
 	}
+	if cc, err := mr.Header.AddressList("Cc"); err == nil {
+		msg.CC = mailAddressStrings(cc)
+	}
+	if bcc, err := mr.Header.AddressList("Bcc"); err == nil {
+		msg.BCC = mailAddressStrings(bcc)
+	}
 	if subject, err := mr.Header.Subject(); err == nil {
 		msg.Subject = subject
 	}
@@ -1010,6 +1016,7 @@ func parseMessage(raw []byte, messageID, mailbox string, uid uint32) (Message, e
 		msg.References = append([]string{}, references...)
 	}
 	if replyRefs, err := mr.Header.MsgIDList("In-Reply-To"); err == nil && len(replyRefs) > 0 {
+		msg.InReplyTo = strings.TrimSpace(replyRefs[0])
 		for _, item := range replyRefs {
 			if strings.TrimSpace(item) == "" {
 				continue

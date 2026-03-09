@@ -638,6 +638,11 @@
             <input id="search-input" type="text" placeholder="Search subject, body, sender">
             <button id="btn-search" class="cmd-btn cmd-btn--dense" type="button">Search</button>
           </div>
+          <div class="mail-commandbar-meta">
+            <span id="mail-index-status" class="mail-index-status">Live mailbox</span>
+            <button id="btn-mail-save-search" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Save View</button>
+            <button id="btn-mail-delete-search" class="cmd-btn cmd-btn--dense cmd-btn--ghost hidden" type="button">Delete View</button>
+          </div>
         </article>
 
         <div class="mail-layout">
@@ -940,6 +945,7 @@
           <div class="compose-window-actions compose-window-actions--right">
             <button id="compose-tool-attach" class="cmd-btn cmd-btn--dense compose-window-btn" type="button" title="Attach files">Attach</button>
             <button id="compose-toggle-formatting" class="cmd-btn cmd-btn--dense compose-window-btn" type="button" aria-expanded="false">Formatting</button>
+            <button id="btn-compose-history" class="cmd-btn cmd-btn--dense compose-window-btn" type="button">History</button>
             <button id="btn-compose-send" class="cmd-btn cmd-btn--primary compose-send-btn" type="submit">Send</button>
           </div>
         </header>
@@ -985,6 +991,20 @@
             </div>
             <span class="compose-meta-tail"></span>
           </div>
+          <div class="compose-meta-row">
+            <div class="compose-meta-label">Delivery</div>
+            <div class="compose-meta-value compose-meta-value--delivery">
+              <div class="compose-delivery-controls">
+                <select id="compose-send-mode" autocomplete="off">
+                  <option value="send_now">Send now</option>
+                  <option value="scheduled">Schedule</option>
+                </select>
+                <input id="compose-scheduled-for" class="hidden" type="datetime-local" autocomplete="off">
+              </div>
+              <p id="compose-delivery-note" class="compose-inline-note">Schedule uses your local time zone.</p>
+            </div>
+            <span class="compose-meta-tail"></span>
+          </div>
           <div id="compose-from-row" class="compose-meta-row compose-meta-row--from hidden">
             <div class="compose-meta-label">From</div>
             <div class="compose-meta-value compose-meta-value--from">
@@ -1017,6 +1037,7 @@
             <button id="compose-tool-clear" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Clear formatting">Clear</button>
           </div>
           <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write your message"></div>
+          <datalist id="compose-recipient-suggestions"></datalist>
         </section>
       </form>
     </article>

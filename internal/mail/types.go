@@ -41,6 +41,8 @@ type Message struct {
 	UID         uint32           `json:"uid"`
 	From        string           `json:"from"`
 	To          []string         `json:"to"`
+	CC          []string         `json:"cc,omitempty"`
+	BCC         []string         `json:"bcc,omitempty"`
 	Subject     string           `json:"subject"`
 	Date        time.Time        `json:"date"`
 	Seen        bool             `json:"seen"`
@@ -50,7 +52,22 @@ type Message struct {
 	BodyHTML    string           `json:"body_html,omitempty"`
 	Attachments []AttachmentMeta `json:"attachments"`
 	MessageID   string           `json:"-"`
+	InReplyTo   string           `json:"-"`
 	References  []string         `json:"-"`
+}
+
+type MailboxSnapshot struct {
+	Mailbox     Mailbox
+	UIDNext     uint32
+	UIDValidity uint32
+}
+
+type SyncMessage struct {
+	Mailbox      string
+	UID          uint32
+	Raw          []byte
+	Flags        []string
+	InternalDate time.Time
 }
 
 type AttachmentContent struct {

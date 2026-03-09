@@ -44,6 +44,9 @@ type Handlers struct {
 	captchaVerifier captcha.Verifier
 	updateMgr       *update.Manager
 	resetKey        []byte
+	mailboxCache    *mailboxListCache
+	threadCache     *threadResponseCache
+	readiness       *readinessProbeCache
 }
 
 var mailClientFactory = func(cfg config.Config) mail.Client {
@@ -70,7 +73,11 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 		captchaVerifier: captcha.NewVerifier(cfg),
 		updateMgr:       update.NewManager(cfg),
 		resetKey:        util.Derive32ByteKey(cfg.SessionEncryptKey + "|reset-limiter"),
+		mailboxCache:    newMailboxListCache(),
+		threadCache:     newThreadResponseCache(),
+		readiness:       newReadinessProbeCache(cfg, svc),
 	}
+	h.readiness.prime()
 	r := chi.NewRouter()
 	r.Use(chimw.Recoverer)
 	r.Use(middleware.RequestIDMiddleware)
@@ -89,30 +96,31 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 		util.WriteJSON(w, 200, map[string]string{"status": "ok"})
 	})
 	r.Get("/health/ready", func(w http.ResponseWriter, r *http.Request) {
+		probe, _ := h.readiness.snapshot(r.Context())
 		ready := map[string]any{
-			"checked_at": time.Now().UTC().Format(time.RFC3339),
+			"checked_at": probe.CheckedAt.Format(time.RFC3339),
 			"components": map[string]any{},
 		}
 		comps := ready["components"].(map[string]any)
 
-		sqliteOK := true
-		if _, err := h.svc.SetupStatus(r.Context()); err != nil {
-			sqliteOK = false
-			comps["sqlite"] = map[string]any{"ok": false, "error": err.Error()}
+		readyOK := true
+		if probe.SQLiteErr != nil {
+			readyOK = false
+			comps["sqlite"] = map[string]any{"ok": false, "error": probe.SQLiteErr.Error()}
 		} else {
 			comps["sqlite"] = map[string]any{"ok": true}
 		}
 
-		if err := mail.ProbeIMAP(r.Context(), cfg); err != nil {
-			comps["imap"] = map[string]any{"ok": false, "error": err.Error()}
-			sqliteOK = false
+		if probe.IMAPErr != nil {
+			comps["imap"] = map[string]any{"ok": false, "error": probe.IMAPErr.Error()}
+			readyOK = false
 		} else {
 			comps["imap"] = map[string]any{"ok": true}
 		}
 
-		if err := mail.ProbeSMTP(r.Context(), cfg); err != nil {
-			comps["smtp"] = map[string]any{"ok": false, "error": err.Error()}
-			sqliteOK = false
+		if probe.SMTPError != nil {
+			comps["smtp"] = map[string]any{"ok": false, "error": probe.SMTPError.Error()}
+			readyOK = false
 		} else {
 			comps["smtp"] = map[string]any{"ok": true}
 		}
@@ -138,10 +146,10 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 			"address": resetCaps.SenderAddress,
 		}
 		if publicResetEnabled && !resetSenderOK {
-			sqliteOK = false
+			readyOK = false
 		}
 
-		if sqliteOK {
+		if readyOK {
 			ready["status"] = "ready"
 			util.WriteJSON(w, 200, ready)
 			return
@@ -259,8 +267,10 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Get("/mailboxes", h.V2ListMailboxMappings)
 				r.Get("/threads", h.V2ListThreads)
 				r.Get("/threads/{id}", h.V2GetThread)
+				r.Get("/messages", h.V2ListMessages)
 				r.Get("/messages/{id}", h.V2GetIndexedMessage)
 				r.Get("/messages/{id}/raw", h.V2GetIndexedMessageRaw)
+				r.Get("/recipients/suggest", h.V2SuggestRecipients)
 				r.Get("/search", h.V2Search)
 				r.Get("/saved-searches", h.V2ListSavedSearches)
 				r.Get("/drafts", h.V2ListDrafts)
@@ -1003,75 +1013,87 @@ func (h *Handlers) ListThreadMessages(w http.ResponseWriter, r *http.Request) {
 		scanMailboxes = threadConversationScanMailboxes(mailbox, available)
 	}
 
-	out := make([]mail.MessageSummary, 0, pageSize)
-	matched := 0
-	done := false
-	truncated := false
-	pagesScanned := 0
-	for _, scanMailbox := range scanMailboxes {
-		mailboxExhausted := false
-		for scanPage := 1; scanPage <= threadMessagesMaxPagesPerMB; scanPage++ {
-			if pagesScanned >= threadMessagesMaxScanPages {
-				truncated = true
-				done = false
-				goto finish
-			}
-			pagesScanned++
+	payload, err := h.threadCache.get(r.Context(), mailLogin, scope, mailbox, threadID, page, pageSize, func(ctx context.Context) (threadResponse, error) {
+		out := make([]mail.MessageSummary, 0, pageSize)
+		matched := 0
+		done := false
+		truncated := false
+		pagesScanned := 0
+		for _, scanMailbox := range scanMailboxes {
+			mailboxExhausted := false
+			for scanPage := 1; scanPage <= threadMessagesMaxPagesPerMB; scanPage++ {
+				if pagesScanned >= threadMessagesMaxScanPages {
+					truncated = true
+					done = false
+					goto finish
+				}
+				pagesScanned++
 
-			items, listErr := h.svc.Mail().ListMessages(r.Context(), mailLogin, pass, scanMailbox, scanPage, threadMessagesScanPageSize)
-			if listErr != nil {
-				util.WriteError(w, 502, "imap_error", listErr.Error(), middleware.RequestID(r.Context()))
-				return
-			}
-			if len(items) == 0 {
-				mailboxExhausted = true
-				break
-			}
-			for _, item := range items {
-				candidate := item
-				if strings.TrimSpace(candidate.Mailbox) == "" {
-					candidate.Mailbox = scanMailbox
+				items, listErr := h.svc.Mail().ListMessages(ctx, mailLogin, pass, scanMailbox, scanPage, threadMessagesScanPageSize)
+				if listErr != nil {
+					return threadResponse{}, listErr
 				}
-				if strings.TrimSpace(candidate.ThreadID) == "" {
-					candidate.ThreadID = mail.DeriveThreadID(scanMailbox, candidate.Subject, candidate.From)
+				if len(items) == 0 {
+					mailboxExhausted = true
+					break
 				}
-				if candidate.ThreadID != threadID {
-					continue
+				for _, item := range items {
+					candidate := item
+					if strings.TrimSpace(candidate.Mailbox) == "" {
+						candidate.Mailbox = scanMailbox
+					}
+					if strings.TrimSpace(candidate.ThreadID) == "" {
+						candidate.ThreadID = mail.DeriveThreadID(scanMailbox, candidate.Subject, candidate.From)
+					}
+					if candidate.ThreadID != threadID {
+						continue
+					}
+					if matched < offset {
+						matched++
+						continue
+					}
+					if len(out) < pageSize {
+						out = append(out, candidate)
+						matched++
+						continue
+					}
+					done = true
+					break
 				}
-				if matched < offset {
-					matched++
-					continue
+				if done {
+					break
 				}
-				if len(out) < pageSize {
-					out = append(out, candidate)
-					matched++
-					continue
-				}
-				done = true
-				break
 			}
 			if done {
 				break
 			}
+			if !mailboxExhausted {
+				truncated = true
+			}
 		}
-		if done {
-			break
-		}
-		if !mailboxExhausted {
-			truncated = true
-		}
+	finish:
+		return threadResponse{
+			ThreadID:         threadID,
+			Mailbox:          mailbox,
+			Scope:            scope,
+			MailboxesScanned: append([]string(nil), scanMailboxes...),
+			Truncated:        truncated,
+			Items:            out,
+		}, nil
+	})
+	if err != nil {
+		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
+		return
 	}
-
-finish:
 	util.WriteJSON(w, 200, map[string]any{
-		"thread_id":         threadID,
-		"mailbox":           mailbox,
-		"scope":             scope,
-		"mailboxes_scanned": scanMailboxes,
+		"thread_id":         payload.ThreadID,
+		"mailbox":           payload.Mailbox,
+		"scope":             payload.Scope,
+		"mailboxes_scanned": payload.MailboxesScanned,
 		"page":              page,
 		"page_size":         pageSize,
-		"truncated":         truncated,
-		"items":             out,
+		"truncated":         payload.Truncated,
+		"items":             payload.Items,
 	})
 }
 
@@ -1310,6 +1332,7 @@ func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply st
 			Add: []string{imap.AnsweredFlag},
 		})
 	}
+	h.invalidateMailCaches(mailLogin)
 	util.WriteJSON(w, 200, map[string]any{
 		"status":             "sent",
 		"saved_copy":         sendResult.SavedCopy,
@@ -1344,6 +1367,7 @@ func (h *Handlers) SetMessageFlags(w http.ResponseWriter, r *http.Request) {
 			util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
 			return
 		}
+		h.invalidateMailCaches(mailLogin)
 		util.WriteJSON(w, 200, map[string]string{"status": "ok"})
 		return
 	}
@@ -1351,6 +1375,7 @@ func (h *Handlers) SetMessageFlags(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	h.invalidateMailCaches(mailLogin)
 	util.WriteJSON(w, 200, map[string]string{"status": "ok"})
 }
 
@@ -1374,6 +1399,7 @@ func (h *Handlers) MoveMessage(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	h.invalidateMailCaches(mailLogin)
 	util.WriteJSON(w, 200, map[string]string{"status": "ok"})
 }
 

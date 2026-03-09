@@ -76,7 +76,7 @@ func (h *Handlers) listMailboxesWithSpecialRoles(r *http.Request) ([]mail.Mailbo
 		return nil, nil, "", "", err
 	}
 	mailLogin := service.MailIdentity(u)
-	items, err := h.svc.Mail().ListMailboxes(r.Context(), mailLogin, pass)
+	items, err := h.rawMailboxes(r.Context(), mailLogin, pass)
 	if err != nil {
 		return nil, nil, mailLogin, pass, err
 	}
@@ -89,7 +89,7 @@ func (h *Handlers) listMailboxesWithSpecialRoles(r *http.Request) ([]mail.Mailbo
 
 func (h *Handlers) resolveSessionSpecialMailboxByRole(ctx context.Context, u models.User, pass, role string) (string, error) {
 	mailLogin := service.MailIdentity(u)
-	items, err := h.svc.Mail().ListMailboxes(ctx, mailLogin, pass)
+	items, err := h.rawMailboxes(ctx, mailLogin, pass)
 	if err != nil {
 		return "", err
 	}
@@ -205,6 +205,7 @@ func (h *Handlers) UpsertSpecialMailbox(w http.ResponseWriter, r *http.Request) 
 		util.WriteError(w, 500, "special_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	h.invalidateMailCaches(mailLogin)
 	mappings[role] = actualName
 	items = applySpecialMailboxRoles(items, mappings)
 	responseItems := specialMailboxMappingsForResponse(mappings)

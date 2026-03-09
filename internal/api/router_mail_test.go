@@ -19,9 +19,12 @@ type mailRouterTestClient struct {
 	search            []mail.MessageSummary
 	mailboxes         []mail.Mailbox
 	createdMailboxes  []string
+	listMailboxCalls  int
+	listMessageCalls  int
 }
 
 func (m *mailRouterTestClient) ListMailboxes(ctx context.Context, user, pass string) ([]mail.Mailbox, error) {
+	m.listMailboxCalls++
 	if len(m.mailboxes) > 0 {
 		return m.mailboxes, nil
 	}
@@ -35,6 +38,7 @@ func (m *mailRouterTestClient) CreateMailbox(ctx context.Context, user, pass, ma
 }
 
 func (m *mailRouterTestClient) ListMessages(ctx context.Context, user, pass, mailbox string, page, pageSize int) ([]mail.MessageSummary, error) {
+	m.listMessageCalls++
 	if m.listByMailboxPage != nil {
 		if byPage, ok := m.listByMailboxPage[mailbox]; ok {
 			if items, ok := byPage[page]; ok {
@@ -185,6 +189,45 @@ func TestV1ListMailboxesIncludesRole(t *testing.T) {
 	}
 }
 
+func TestV1ListMailboxesUsesCacheUntilInvalidated(t *testing.T) {
+	client := &mailRouterTestClient{
+		mailboxes: []mail.Mailbox{
+			{Name: "INBOX", Role: "inbox", Unread: 2, Messages: 7},
+			{Name: "Team Sent", Unread: 0, Messages: 0},
+		},
+	}
+	router, _, _ := newSendRouterWithStore(t, client, "account@example.com")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	first := authedV1Get(t, router, "/api/v1/mailboxes", sessionCookie, csrfCookie)
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", first.Code, first.Body.String())
+	}
+	second := authedV1Get(t, router, "/api/v1/mailboxes", sessionCookie, csrfCookie)
+	if second.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", second.Code, second.Body.String())
+	}
+	if client.listMailboxCalls != 1 {
+		t.Fatalf("expected mailbox list to be cached, got %d underlying calls", client.listMailboxCalls)
+	}
+
+	rec := postMailJSON(t, router, "/api/v1/mailboxes/special/sent", sessionCookie, csrfCookie, []byte(`{"mailbox_name":"Team Sent","create_if_missing":false}`))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	if client.listMailboxCalls != 1 {
+		t.Fatalf("expected special mailbox update to reuse cached raw mailboxes, got %d calls", client.listMailboxCalls)
+	}
+
+	afterInvalidate := authedV1Get(t, router, "/api/v1/mailboxes", sessionCookie, csrfCookie)
+	if afterInvalidate.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", afterInvalidate.Code, afterInvalidate.Body.String())
+	}
+	if client.listMailboxCalls != 2 {
+		t.Fatalf("expected mailbox cache invalidation after special mailbox update, got %d calls", client.listMailboxCalls)
+	}
+}
+
 func TestV1ThreadMessagesFiltersAndPaginates(t *testing.T) {
 	threadID := mail.DeriveThreadID("INBOX", "Release Plan", "alice@example.com")
 	otherThreadID := mail.DeriveThreadID("INBOX", "Unrelated", "charlie@example.com")
@@ -250,6 +293,50 @@ func TestV1ThreadMessagesFiltersAndPaginates(t *testing.T) {
 	}
 	if len(payload.Items) != 1 || payload.Items[0].ID != "m3" {
 		t.Fatalf("expected second thread item m3, got %+v", payload.Items)
+	}
+}
+
+func TestV1ThreadMessagesUsesCacheAndInvalidatesOnFlagChange(t *testing.T) {
+	threadID := mail.DeriveThreadID("INBOX", "Release Plan", "alice@example.com")
+	client := &mailRouterTestClient{
+		listByPage: map[int][]mail.MessageSummary{
+			1: {
+				{ID: "m1", Subject: "Release Plan", From: "alice@example.com", ThreadID: threadID},
+			},
+			2: {},
+		},
+	}
+	router := newSendRouter(t, client, "")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	path := "/api/v1/threads/" + url.PathEscape(threadID) + "/messages?mailbox=INBOX&page=1&page_size=10"
+	first := authedV1Get(t, router, path, sessionCookie, csrfCookie)
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", first.Code, first.Body.String())
+	}
+	if client.listMessageCalls != 2 {
+		t.Fatalf("expected initial thread lookup to scan two pages, got %d calls", client.listMessageCalls)
+	}
+
+	second := authedV1Get(t, router, path, sessionCookie, csrfCookie)
+	if second.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", second.Code, second.Body.String())
+	}
+	if client.listMessageCalls != 2 {
+		t.Fatalf("expected cached thread lookup to avoid extra IMAP calls, got %d calls", client.listMessageCalls)
+	}
+
+	flagsRec := postMailJSON(t, router, "/api/v1/messages/m1/flags", sessionCookie, csrfCookie, []byte(`{"add":["\\Seen"]}`))
+	if flagsRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", flagsRec.Code, flagsRec.Body.String())
+	}
+
+	afterInvalidate := authedV1Get(t, router, path, sessionCookie, csrfCookie)
+	if afterInvalidate.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", afterInvalidate.Code, afterInvalidate.Body.String())
+	}
+	if client.listMessageCalls != 4 {
+		t.Fatalf("expected thread cache invalidation after flag update, got %d calls", client.listMessageCalls)
 	}
 }
 

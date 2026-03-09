@@ -69,6 +69,9 @@ type IndexedMessage struct {
 	Mailbox             string    `json:"mailbox"`
 	UID                 uint32    `json:"uid"`
 	ThreadID            string    `json:"thread_id"`
+	MessageIDHeader     string    `json:"message_id_header,omitempty"`
+	InReplyToHeader     string    `json:"in_reply_to_header,omitempty"`
+	ReferencesHeader    string    `json:"references_header,omitempty"`
 	FromValue           string    `json:"from"`
 	ToValue             string    `json:"to"`
 	CCValue             string    `json:"cc,omitempty"`
@@ -103,6 +106,11 @@ type IndexedAttachment struct {
 	SizeBytes   int64     `json:"size_bytes"`
 	InlinePart  bool      `json:"inline_part"`
 	CreatedAt   time.Time `json:"created_at"`
+}
+
+type RecipientSuggestion struct {
+	Email string `json:"email"`
+	Label string `json:"label"`
 }
 
 type UserPreferences struct {

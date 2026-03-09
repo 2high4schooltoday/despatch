@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	stdmail "net/mail"
 	"net/http"
 	"net/url"
 	"os"
@@ -1100,7 +1101,82 @@ func (h *Handlers) V2ListThreads(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 500, "threads_list_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	for i := range items {
+		items[i].ID = mail.UnscopeIndexedThreadID(items[i].ID)
+		items[i].LatestMessage = mail.UnscopeIndexedMessageID(items[i].LatestMessage)
+	}
 	util.WriteJSON(w, 200, map[string]any{"items": items, "page": page, "page_size": pageSize, "total": total})
+}
+
+func (h *Handlers) V2ListMessages(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	if accountID == "" {
+		util.WriteError(w, 400, "bad_request", "account_id is required", middleware.RequestID(r.Context()))
+		return
+	}
+	account, err := h.svc.Store().GetMailAccountByID(r.Context(), u.ID, accountID)
+	if err != nil {
+		util.WriteError(w, 403, "forbidden", "account does not belong to current user", middleware.RequestID(r.Context()))
+		return
+	}
+
+	mailbox := strings.TrimSpace(r.URL.Query().Get("mailbox"))
+	view := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("view")))
+	sortOrder := strings.TrimSpace(r.URL.Query().Get("sort"))
+	page, pageSize := parsePaginationV2(r)
+	offset := (page - 1) * pageSize
+
+	var items []models.IndexedMessage
+	var total int
+	switch view {
+	case "waiting":
+		selfEmails := indexedSelfEmails(r.Context(), h, u, account)
+		sampleLimit := pageSize * page
+		if sampleLimit < 200 {
+			sampleLimit = 200
+		}
+		if sampleLimit > 600 {
+			sampleLimit = 600
+		}
+		recent, _, listErr := h.svc.Store().ListIndexedMessages(r.Context(), accountID, mailbox, "", sortOrder, sampleLimit, 0)
+		if listErr != nil {
+			util.WriteError(w, 500, "messages_list_failed", listErr.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		filtered := filterWaitingIndexedMessages(recent, selfEmails)
+		total = len(filtered)
+		if offset > total {
+			offset = total
+		}
+		end := offset + pageSize
+		if end > total {
+			end = total
+		}
+		if offset < end {
+			items = filtered[offset:end]
+		} else {
+			items = []models.IndexedMessage{}
+		}
+	default:
+		items, total, err = h.svc.Store().ListIndexedMessages(r.Context(), accountID, mailbox, view, sortOrder, pageSize, offset)
+		if err != nil {
+			util.WriteError(w, 500, "messages_list_failed", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+	}
+
+	out := make([]mail.MessageSummary, 0, len(items))
+	for _, item := range items {
+		out = append(out, indexedMessageSummary(item))
+	}
+	util.WriteJSON(w, 200, map[string]any{
+		"items":     out,
+		"page":      page,
+		"page_size": pageSize,
+		"total":     total,
+		"view":      view,
+	})
 }
 
 func (h *Handlers) V2GetThread(w http.ResponseWriter, r *http.Request) {
@@ -1119,6 +1195,10 @@ func (h *Handlers) V2GetThread(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		util.WriteError(w, 500, "thread_get_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
+	}
+	for i := range items {
+		items[i].ID = mail.UnscopeIndexedMessageID(items[i].ID)
+		items[i].ThreadID = mail.UnscopeIndexedThreadID(items[i].ThreadID)
 	}
 	util.WriteJSON(w, 200, map[string]any{"id": threadID, "items": items})
 }
@@ -1144,6 +1224,8 @@ func (h *Handlers) V2GetIndexedMessage(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 500, "message_get_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	msg.ID = mail.UnscopeIndexedMessageID(msg.ID)
+	msg.ThreadID = mail.UnscopeIndexedThreadID(msg.ThreadID)
 	attachments, _ := h.svc.Store().GetIndexedMessageAttachments(r.Context(), accountID, id)
 	util.WriteJSON(w, 200, map[string]any{"message": msg, "attachments": attachments})
 }
@@ -1471,7 +1553,140 @@ func (h *Handlers) V2Search(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 500, "search_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	for i := range items {
+		items[i].ID = mail.UnscopeIndexedMessageID(items[i].ID)
+		items[i].ThreadID = mail.UnscopeIndexedThreadID(items[i].ThreadID)
+	}
 	util.WriteJSON(w, 200, map[string]any{"items": items, "page": page, "page_size": pageSize, "total": total})
+}
+
+func (h *Handlers) V2SuggestRecipients(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
+	if accountID == "" {
+		util.WriteError(w, 400, "bad_request", "account_id is required", middleware.RequestID(r.Context()))
+		return
+	}
+	account, err := h.svc.Store().GetMailAccountByID(r.Context(), u.ID, accountID)
+	if err != nil {
+		util.WriteError(w, 403, "forbidden", "account does not belong to current user", middleware.RequestID(r.Context()))
+		return
+	}
+	selfEmails := indexedSelfEmails(r.Context(), h, u, account)
+	limit := 8
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if parsed, parseErr := strconv.Atoi(raw); parseErr == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	items, err := h.svc.Store().SuggestRecipients(r.Context(), accountID, selfEmails, strings.TrimSpace(r.URL.Query().Get("q")), limit)
+	if err != nil {
+		util.WriteError(w, 500, "recipient_suggest_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	util.WriteJSON(w, 200, map[string]any{"items": items})
+}
+
+func indexedMessageSummary(item models.IndexedMessage) mail.MessageSummary {
+	date := item.DateHeader
+	if date.IsZero() {
+		date = item.InternalDate
+	}
+	return mail.MessageSummary{
+		ID:       mail.UnscopeIndexedMessageID(item.ID),
+		Mailbox:  item.Mailbox,
+		From:     item.FromValue,
+		Subject:  item.Subject,
+		Date:     date,
+		Seen:     item.Seen,
+		Flagged:  item.Flagged,
+		Answered: item.Answered,
+		Preview:  item.Snippet,
+		ThreadID: mail.UnscopeIndexedThreadID(item.ThreadID),
+	}
+}
+
+func indexedSelfEmails(ctx context.Context, h *Handlers, u models.User, account models.MailAccount) []string {
+	values := []string{account.Login, service.MailIdentity(u)}
+	if identities, err := h.svc.Store().ListMailIdentities(ctx, account.ID); err == nil {
+		for _, identity := range identities {
+			values = append(values, identity.FromEmail)
+		}
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		out = append(out, normalized)
+	}
+	return out
+}
+
+func filterWaitingIndexedMessages(items []models.IndexedMessage, selfEmails []string) []models.IndexedMessage {
+	selfSet := map[string]struct{}{}
+	for _, value := range selfEmails {
+		normalized := strings.ToLower(strings.TrimSpace(value))
+		if normalized == "" {
+			continue
+		}
+		selfSet[normalized] = struct{}{}
+	}
+	seenThreads := map[string]struct{}{}
+	out := make([]models.IndexedMessage, 0, len(items))
+	for _, item := range items {
+		threadID := strings.TrimSpace(item.ThreadID)
+		if threadID == "" {
+			threadID = strings.TrimSpace(item.ID)
+		}
+		if threadID == "" {
+			continue
+		}
+		if _, ok := seenThreads[threadID]; ok {
+			continue
+		}
+		seenThreads[threadID] = struct{}{}
+		if item.Answered {
+			continue
+		}
+		sender := indexedPrimaryEmail(item.FromValue)
+		if sender == "" {
+			continue
+		}
+		if _, ok := selfSet[sender]; ok {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func indexedPrimaryEmail(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if parsed, err := stdmail.ParseAddress(raw); err == nil {
+		return strings.ToLower(strings.TrimSpace(parsed.Address))
+	}
+	if parsed, err := stdmail.ParseAddressList(raw); err == nil && len(parsed) > 0 {
+		return strings.ToLower(strings.TrimSpace(parsed[0].Address))
+	}
+	if start := strings.Index(raw, "<"); start >= 0 {
+		if end := strings.Index(raw[start:], ">"); end > 0 {
+			return strings.ToLower(strings.TrimSpace(raw[start+1 : start+end]))
+		}
+	}
+	if strings.Contains(raw, "@") {
+		return strings.ToLower(strings.Trim(strings.TrimSpace(raw), "<>"))
+	}
+	return ""
 }
 
 func (h *Handlers) V2ListSavedSearches(w http.ResponseWriter, r *http.Request) {
@@ -1869,6 +2084,7 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 			_ = h.svc.Mail().UpdateFlags(r.Context(), login, pass, draft.ContextMessageID, mail.FlagPatch{Add: []string{"\\Answered"}})
 		}
 	}
+	h.invalidateMailCaches(mailLogin)
 	util.WriteJSON(w, 200, map[string]any{
 		"status":             "sent",
 		"saved_copy":         result.SavedCopy,
@@ -1893,6 +2109,7 @@ func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSONDecodeError(w, r, err)
 		return
 	}
+	mailLogin := service.MailIdentity(u)
 	recipients := append([]string{}, req.To...)
 	recipients = append(recipients, req.CC...)
 	recipients = append(recipients, req.BCC...)
@@ -1929,6 +2146,7 @@ func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 502, "smtp_error", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	h.invalidateMailCaches(mailLogin)
 	util.WriteJSON(w, 200, map[string]any{"status": "sent"})
 }
 
@@ -3596,7 +3814,10 @@ func mergeDraftPatch(current *models.Draft, patch map[string]any) {
 		current.LastSendError = strings.TrimSpace(v)
 	}
 	if v, ok := patch["scheduled_for"].(string); ok {
-		if t, err := time.Parse(time.RFC3339, strings.TrimSpace(v)); err == nil {
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" {
+			current.ScheduledFor = time.Time{}
+		} else if t, err := time.Parse(time.RFC3339, trimmed); err == nil {
 			current.ScheduledFor = t.UTC()
 		}
 	}

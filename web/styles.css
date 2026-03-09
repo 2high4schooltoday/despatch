@@ -1069,6 +1069,32 @@ a:focus-visible {
   gap: var(--space-2);
 }
 
+.mail-commandbar-meta {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  justify-content: flex-end;
+}
+
+.mail-index-status {
+  color: var(--fg-muted);
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}
+
+.mail-index-status--ok {
+  color: var(--sig-ok);
+}
+
+.mail-index-status--warn {
+  color: var(--sig-accent);
+}
+
+.mail-index-status--error {
+  color: var(--sig-err);
+}
+
 .mail-layout {
   display: grid;
   grid-template-columns: 220px minmax(300px, 1fr) minmax(360px, 1.2fr);
@@ -2181,6 +2207,36 @@ a:focus-visible {
   gap: 2px;
 }
 
+.compose-meta-value--delivery {
+  display: grid;
+  gap: 4px;
+  padding: 4px 0;
+}
+
+.compose-delivery-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.compose-delivery-controls > select,
+.compose-delivery-controls > input {
+  width: auto;
+  min-width: 168px;
+  border: var(--border-w) solid var(--line-2);
+  background: var(--bg-1);
+  color: var(--fg-0);
+  font: inherit;
+  min-height: 28px;
+  padding: 0 8px;
+}
+
+.compose-delivery-controls > input.hidden,
+.compose-delivery-controls > select.hidden {
+  display: none !important;
+}
+
 .compose-from-manual {
   display: block;
 }
@@ -3121,6 +3177,10 @@ button.setting-list-item {
     grid-template-columns: 1fr auto;
   }
 
+  .mail-commandbar-meta {
+    justify-content: flex-start;
+  }
+
   .mail-layout {
     grid-template-columns: 190px minmax(260px, 1fr) minmax(290px, 1fr);
   }
@@ -3334,6 +3394,11 @@ button.setting-list-item {
 
   .compose-meta-toggle {
     min-width: 36px;
+  }
+
+  .compose-delivery-controls > select,
+  .compose-delivery-controls > input {
+    min-width: 100%;
   }
 
   .compose-token-field > input {

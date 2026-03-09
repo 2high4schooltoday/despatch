@@ -4,13 +4,18 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/emersion/go-imap"
 
 	"despatch/internal/config"
 	"despatch/internal/mail"
@@ -21,183 +26,364 @@ import (
 	"despatch/internal/util"
 )
 
+type mailSyncClient interface {
+	ListMailboxSnapshots(ctx context.Context, user, pass string) ([]mail.MailboxSnapshot, error)
+	ListRecentUIDs(ctx context.Context, user, pass, mailbox string, limit int) ([]uint32, error)
+	FetchSyncMessagesByUIDs(ctx context.Context, user, pass, mailbox string, uids []uint32) ([]mail.SyncMessage, error)
+}
+
+var newMailSyncClient = func(cfg config.Config) mailSyncClient {
+	return mail.NewIMAPSMTPClient(cfg)
+}
+
+var (
+	mailSyncLoopInterval  = 10 * time.Second
+	mailSyncBaseInterval  = 60 * time.Second
+	mailSyncAccountJitter = 15 * time.Second
+	mailSyncFailureStep   = 30 * time.Second
+	mailSyncMaxBackoff    = 5 * time.Minute
+	mailSyncBatchSize     = 100
+	mailSyncFullScanLimit = 200
+)
+
+type accountSyncSchedule struct {
+	nextRunAt time.Time
+	failures  int
+}
+
+type syncAccountResult struct {
+	touchedThreadIDs []string
+	fullRebuild      bool
+}
+
 type MailWorkers struct {
-	cfg        config.Config
-	st         *store.Store
-	encryptKey []byte
+	cfg               config.Config
+	st                *store.Store
+	encryptKey        []byte
+	now               func() time.Time
+	syncClientFactory func(config.Config) mailSyncClient
+	scheduleMu        sync.Mutex
+	schedules         map[string]accountSyncSchedule
 }
 
 func StartMailWorkers(ctx context.Context, cfg config.Config, st *store.Store) {
 	w := &MailWorkers{
-		cfg:        cfg,
-		st:         st,
-		encryptKey: util.Derive32ByteKey(cfg.SessionEncryptKey),
+		cfg:               cfg,
+		st:                st,
+		encryptKey:        util.Derive32ByteKey(cfg.SessionEncryptKey),
+		now:               time.Now,
+		syncClientFactory: newMailSyncClient,
+		schedules:         map[string]accountSyncSchedule{},
 	}
 	go w.runSyncLoop(ctx)
 	go w.runScheduledSendLoop(ctx)
 }
 
 func (w *MailWorkers) runSyncLoop(ctx context.Context) {
-	w.syncAllAccounts(ctx)
-	ticker := time.NewTicker(60 * time.Second)
+	w.syncDueAccounts(ctx)
+	ticker := time.NewTicker(mailSyncLoopInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			w.syncAllAccounts(ctx)
+			w.syncDueAccounts(ctx)
 		}
 	}
 }
 
-func (w *MailWorkers) syncAllAccounts(ctx context.Context) {
+func (w *MailWorkers) syncDueAccounts(ctx context.Context) {
 	accounts, err := w.st.ListAllMailAccounts(ctx)
 	if err != nil {
 		log.Printf("mail_sync list_accounts_failed error=%v", err)
 		return
 	}
+	now := w.now().UTC()
 	for _, account := range accounts {
+		if !w.accountSyncDue(account.ID, now) {
+			continue
+		}
 		accountCtx, cancel := context.WithTimeout(ctx, 55*time.Second)
-		err := w.syncAccount(accountCtx, account)
+		_, err := w.syncAccount(accountCtx, account)
 		cancel()
 		if err != nil {
 			log.Printf("mail_sync account=%s status=error error=%v", account.ID, err)
-			_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, time.Now().UTC(), err.Error())
+			_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, w.now().UTC(), err.Error())
+			w.recordAccountSyncFailure(account.ID, now)
 			continue
 		}
-		_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, time.Now().UTC(), "")
+		_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, w.now().UTC(), "")
+		w.recordAccountSyncSuccess(account.ID, now)
 	}
 }
 
-func (w *MailWorkers) syncAccount(ctx context.Context, account models.MailAccount) error {
+func (w *MailWorkers) syncAccount(ctx context.Context, account models.MailAccount) (syncAccountResult, error) {
 	if strings.TrimSpace(account.SecretEnc) == "" || strings.TrimSpace(account.Login) == "" {
-		return errors.New("missing account credentials")
+		return syncAccountResult{}, errors.New("missing account credentials")
 	}
 	pass, err := util.DecryptString(w.encryptKey, account.SecretEnc)
 	if err != nil {
-		return err
+		return syncAccountResult{}, err
 	}
-	cli := mail.NewIMAPSMTPClient(w.accountMailConfig(account))
-	mailboxes, err := cli.ListMailboxes(ctx, account.Login, pass)
+	cli := w.syncClientFactory(w.accountMailConfig(account))
+	snapshots, err := cli.ListMailboxSnapshots(ctx, account.Login, pass)
 	if err != nil {
-		return err
+		return syncAccountResult{}, err
 	}
-	for _, mailbox := range mailboxes {
-		name := strings.TrimSpace(mailbox.Name)
+	touchedThreadIDs := map[string]struct{}{}
+	fullRebuild := false
+	for _, snapshot := range snapshots {
+		name := strings.TrimSpace(snapshot.Mailbox.Name)
 		if name == "" {
 			continue
 		}
-		summaries, err := cli.ListMessages(ctx, account.Login, pass, name, 1, 200)
-		if err != nil {
-			log.Printf("mail_sync account=%s mailbox=%s list_messages_failed error=%v", account.ID, name, err)
-			continue
+		if err := w.syncMailbox(ctx, cli, account, pass, snapshot, touchedThreadIDs, &fullRebuild); err != nil {
+			return syncAccountResult{}, err
 		}
-		for _, summary := range summaries {
-			msg, err := cli.GetMessage(ctx, account.Login, pass, summary.ID)
-			if err != nil {
-				log.Printf("mail_sync account=%s message=%s get_failed error=%v", account.ID, summary.ID, err)
-				continue
-			}
-			scopedMessageID := mail.NormalizeIndexedMessageID(account.ID, summary.ID)
-			threadID := deriveThreadID(name, msg.Subject, msg.From)
-			now := time.Now().UTC()
-			bodyText := strings.TrimSpace(msg.Body)
-			bodyHTMLSanitized := ""
-			rawSource := bodyText
-			fromValue := firstNonEmptyString(msg.From, summary.From)
-			toValue := strings.Join(msg.To, ", ")
-			subject := firstNonEmptyString(msg.Subject, summary.Subject)
-			snippetValue := snippet(bodyText, 180)
-			dkimStatus := "unknown"
-			spfStatus := "unknown"
-			dmarcStatus := "unknown"
-			phishingScore := 0.0
-			remoteImagesBlocked := true
-			indexedAttachments := convertMessageAttachments(account.ID, scopedMessageID, msg.Attachments, now)
-			hasAttachments := len(indexedAttachments) > 0
+	}
 
-			if w.cfg.MailSecEnabled {
-				rawMessage, rawErr := cli.GetRawMessage(ctx, account.Login, pass, summary.ID)
-				if rawErr != nil {
-					log.Printf("mail_sync account=%s message=%s mailsec_raw_failed error=%v", account.ID, summary.ID, rawErr)
-				} else {
-					analysis, analysisErr := w.parseAndClassifyWithMailSec(ctx, account.ID, scopedMessageID, rawMessage, now)
-					if analysisErr != nil {
-						log.Printf("mail_sync account=%s message=%s mailsec_parse_failed error=%v", account.ID, summary.ID, analysisErr)
-					} else {
-						if v := strings.TrimSpace(analysis.Subject); v != "" {
-							subject = v
-						}
-						if v := strings.TrimSpace(analysis.FromValue); v != "" {
-							fromValue = v
-						}
-						if v := strings.TrimSpace(analysis.ToValue); v != "" {
-							toValue = v
-						}
-						if v := strings.TrimSpace(analysis.BodyText); v != "" {
-							bodyText = v
-						}
-						if v := strings.TrimSpace(analysis.Snippet); v != "" {
-							snippetValue = v
-						} else {
-							snippetValue = snippet(bodyText, 180)
-						}
-						bodyHTMLSanitized = analysis.BodyHTMLSanitized
-						rawSource = analysis.RawSource
-						dkimStatus = analysis.DKIMStatus
-						spfStatus = analysis.SPFStatus
-						dmarcStatus = analysis.DMARCStatus
-						phishingScore = analysis.PhishingScore
-						remoteImagesBlocked = analysis.RemoteImagesBlocked
-						if len(analysis.Attachments) > 0 {
-							indexedAttachments = analysis.Attachments
-						}
-						hasAttachments = hasAttachments || analysis.HasAttachments || len(indexedAttachments) > 0
-						threadID = deriveThreadID(firstNonEmptyString(msg.Mailbox, name), subject, fromValue)
-					}
-				}
-			}
-			scopedThreadID := mail.NormalizeIndexedThreadID(account.ID, threadID)
+	if fullRebuild {
+		if err := w.st.RebuildThreadIndex(ctx, account.ID); err != nil {
+			return syncAccountResult{}, err
+		}
+	} else {
+		threadIDs := make([]string, 0, len(touchedThreadIDs))
+		for threadID := range touchedThreadIDs {
+			threadIDs = append(threadIDs, threadID)
+		}
+		if err := w.st.RefreshThreadIndex(ctx, account.ID, threadIDs); err != nil {
+			return syncAccountResult{}, err
+		}
+	}
+	threadIDs := make([]string, 0, len(touchedThreadIDs))
+	for threadID := range touchedThreadIDs {
+		threadIDs = append(threadIDs, threadID)
+	}
+	return syncAccountResult{touchedThreadIDs: threadIDs, fullRebuild: fullRebuild}, nil
+}
 
-			indexed := models.IndexedMessage{
-				ID:                  scopedMessageID,
-				AccountID:           account.ID,
-				Mailbox:             firstNonEmptyString(msg.Mailbox, name),
-				UID:                 msg.UID,
-				ThreadID:            scopedThreadID,
-				FromValue:           fromValue,
-				ToValue:             toValue,
-				Subject:             subject,
-				Snippet:             snippetValue,
-				BodyText:            bodyText,
-				BodyHTMLSanitized:   bodyHTMLSanitized,
-				RawSource:           rawSource,
-				Seen:                summary.Seen,
-				Flagged:             false,
-				Answered:            false,
-				Draft:               false,
-				HasAttachments:      hasAttachments,
-				Importance:          0,
-				DKIMStatus:          dkimStatus,
-				SPFStatus:           spfStatus,
-				DMARCStatus:         dmarcStatus,
-				PhishingScore:       phishingScore,
-				RemoteImagesBlocked: remoteImagesBlocked,
-				RemoteImagesAllowed: false,
-				DateHeader:          chooseTime(msg.Date, summary.Date, now),
-				InternalDate:        chooseTime(summary.Date, msg.Date, now),
-			}
-			if _, err := w.st.UpsertIndexedMessage(ctx, indexed); err != nil {
-				log.Printf("mail_sync account=%s message=%s index_upsert_failed error=%v", account.ID, summary.ID, err)
-				continue
-			}
-			if err := w.st.ReplaceIndexedAttachments(ctx, account.ID, scopedMessageID, indexedAttachments); err != nil {
-				log.Printf("mail_sync account=%s message=%s attachments_upsert_failed error=%v", account.ID, summary.ID, err)
+func (w *MailWorkers) syncMailbox(ctx context.Context, cli mailSyncClient, account models.MailAccount, pass string, snapshot mail.MailboxSnapshot, touchedThreadIDs map[string]struct{}, fullRebuild *bool) error {
+	name := strings.TrimSpace(snapshot.Mailbox.Name)
+	now := w.now().UTC()
+	state, err := w.st.GetSyncState(ctx, account.ID, name)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+
+	fullSync := errors.Is(err, store.ErrNotFound) || state.UIDValidity == 0
+	resetSync := false
+	if !fullSync && snapshot.UIDValidity != 0 && snapshot.UIDValidity != state.UIDValidity {
+		fullSync = true
+		resetSync = true
+	}
+	if !fullSync && snapshot.UIDNext < state.UIDNext {
+		fullSync = true
+		resetSync = true
+	}
+
+	syncState := state
+	syncState.AccountID = account.ID
+	syncState.Mailbox = name
+	syncState.UIDValidity = snapshot.UIDValidity
+	syncState.UIDNext = snapshot.UIDNext
+	syncState.LastError = ""
+
+	if !fullSync && snapshot.UIDNext == state.UIDNext {
+		syncState.LastDeltaSyncAt = now
+		_, upsertErr := w.st.UpsertSyncState(ctx, syncState)
+		return upsertErr
+	}
+
+	if resetSync {
+		if err := w.st.DeleteIndexedMessagesByMailbox(ctx, account.ID, name); err != nil {
+			return err
+		}
+	}
+
+	var uids []uint32
+	if fullSync {
+		uids, err = cli.ListRecentUIDs(ctx, account.Login, pass, name, mailSyncFullScanLimit)
+		if err != nil {
+			return err
+		}
+		*fullRebuild = true
+	} else {
+		uids = uidRange(state.UIDNext, snapshot.UIDNext)
+	}
+	if err := w.syncMailboxUIDs(ctx, cli, account, pass, name, uids, touchedThreadIDs); err != nil {
+		return err
+	}
+	if fullSync {
+		syncState.LastFullSyncAt = now
+	}
+	syncState.LastDeltaSyncAt = now
+	_, err = w.st.UpsertSyncState(ctx, syncState)
+	return err
+}
+
+func (w *MailWorkers) syncMailboxUIDs(ctx context.Context, cli mailSyncClient, account models.MailAccount, pass, mailbox string, uids []uint32, touchedThreadIDs map[string]struct{}) error {
+	for start := 0; start < len(uids); start += maxInt(mailSyncBatchSize, 1) {
+		end := start + maxInt(mailSyncBatchSize, 1)
+		if end > len(uids) {
+			end = len(uids)
+		}
+		items, err := cli.FetchSyncMessagesByUIDs(ctx, account.Login, pass, mailbox, uids[start:end])
+		if err != nil {
+			return err
+		}
+		sort.Slice(items, func(i, j int) bool { return items[i].UID < items[j].UID })
+		for _, item := range items {
+			if err := w.upsertSyncMessage(ctx, account, mailbox, item, touchedThreadIDs); err != nil {
+				log.Printf("mail_sync account=%s mailbox=%s uid=%d message_upsert_failed error=%v", account.ID, mailbox, item.UID, err)
 			}
 		}
 	}
-	return w.st.RebuildThreadIndex(ctx, account.ID)
+	return nil
+}
+
+func (w *MailWorkers) upsertSyncMessage(ctx context.Context, account models.MailAccount, mailbox string, item mail.SyncMessage, touchedThreadIDs map[string]struct{}) error {
+	now := w.now().UTC()
+	msg, err := mail.ParseRawMessage(item.Raw, mailbox, item.UID)
+	if err != nil {
+		return err
+	}
+	messageID := mail.EncodeMessageID(mailbox, item.UID)
+	scopedMessageID := mail.NormalizeIndexedMessageID(account.ID, messageID)
+	bodyText := strings.TrimSpace(msg.Body)
+	bodyHTMLSanitized := ""
+	rawSource := bodyText
+	fromValue := strings.TrimSpace(msg.From)
+	toValue := strings.Join(msg.To, ", ")
+	ccValue := strings.Join(msg.CC, ", ")
+	bccValue := strings.Join(msg.BCC, ", ")
+	subject := strings.TrimSpace(msg.Subject)
+	snippetValue := snippet(bodyText, 180)
+	dkimStatus := "unknown"
+	spfStatus := "unknown"
+	dmarcStatus := "unknown"
+	phishingScore := 0.0
+	remoteImagesBlocked := true
+	indexedAttachments := convertMessageAttachments(account.ID, scopedMessageID, msg.Attachments, now)
+	hasAttachments := len(indexedAttachments) > 0
+	threadID := w.resolveIndexedThreadID(ctx, account.ID, msg, subject, fromValue)
+
+	if w.cfg.MailSecEnabled {
+		analysis, analysisErr := w.parseAndClassifyWithMailSec(ctx, account.ID, scopedMessageID, item.Raw, now)
+		if analysisErr != nil {
+			log.Printf("mail_sync account=%s message=%s mailsec_parse_failed error=%v", account.ID, messageID, analysisErr)
+		} else {
+			if v := strings.TrimSpace(analysis.Subject); v != "" {
+				subject = v
+			}
+			if v := strings.TrimSpace(analysis.FromValue); v != "" {
+				fromValue = v
+			}
+			if v := strings.TrimSpace(analysis.ToValue); v != "" {
+				toValue = v
+			}
+			if v := strings.TrimSpace(analysis.BodyText); v != "" {
+				bodyText = v
+			}
+			if v := strings.TrimSpace(analysis.Snippet); v != "" {
+				snippetValue = v
+			} else {
+				snippetValue = snippet(bodyText, 180)
+			}
+			bodyHTMLSanitized = analysis.BodyHTMLSanitized
+			rawSource = analysis.RawSource
+			dkimStatus = analysis.DKIMStatus
+			spfStatus = analysis.SPFStatus
+			dmarcStatus = analysis.DMARCStatus
+			phishingScore = analysis.PhishingScore
+			remoteImagesBlocked = analysis.RemoteImagesBlocked
+			if len(analysis.Attachments) > 0 {
+				indexedAttachments = analysis.Attachments
+			}
+			hasAttachments = hasAttachments || analysis.HasAttachments || len(indexedAttachments) > 0
+			threadID = w.resolveIndexedThreadID(ctx, account.ID, msg, subject, fromValue)
+		}
+	}
+
+	scopedThreadID := mail.NormalizeIndexedThreadID(account.ID, threadID)
+	indexed := models.IndexedMessage{
+		ID:                  scopedMessageID,
+		AccountID:           account.ID,
+		Mailbox:             firstNonEmptyString(msg.Mailbox, mailbox),
+		UID:                 msg.UID,
+		ThreadID:            scopedThreadID,
+		MessageIDHeader:     mail.NormalizeMessageIDHeader(msg.MessageID),
+		InReplyToHeader:     mail.NormalizeMessageIDHeader(msg.InReplyTo),
+		ReferencesHeader:    mail.FormatMessageIDList(msg.References),
+		FromValue:           fromValue,
+		ToValue:             toValue,
+		CCValue:             ccValue,
+		BCCValue:            bccValue,
+		Subject:             subject,
+		Snippet:             snippetValue,
+		BodyText:            bodyText,
+		BodyHTMLSanitized:   bodyHTMLSanitized,
+		RawSource:           rawSource,
+		Seen:                hasIMAPFlag(item.Flags, imap.SeenFlag),
+		Flagged:             hasIMAPFlag(item.Flags, imap.FlaggedFlag),
+		Answered:            hasIMAPFlag(item.Flags, imap.AnsweredFlag),
+		Draft:               hasIMAPFlag(item.Flags, imap.DraftFlag),
+		HasAttachments:      hasAttachments,
+		Importance:          0,
+		DKIMStatus:          dkimStatus,
+		SPFStatus:           spfStatus,
+		DMARCStatus:         dmarcStatus,
+		PhishingScore:       phishingScore,
+		RemoteImagesBlocked: remoteImagesBlocked,
+		RemoteImagesAllowed: false,
+		DateHeader:          chooseTime(msg.Date, item.InternalDate, now),
+		InternalDate:        chooseTime(item.InternalDate, msg.Date, now),
+	}
+	if _, err := w.st.UpsertIndexedMessage(ctx, indexed); err != nil {
+		return err
+	}
+	if err := w.st.ReplaceIndexedAttachments(ctx, account.ID, scopedMessageID, indexedAttachments); err != nil {
+		return err
+	}
+	touchedThreadIDs[scopedThreadID] = struct{}{}
+	return nil
+}
+
+func (w *MailWorkers) resolveIndexedThreadID(ctx context.Context, accountID string, msg mail.Message, subject, from string) string {
+	normalizedRefs := mail.NormalizeMessageIDHeaders(msg.References)
+	lookupHeaders := append([]string{}, normalizedRefs...)
+	if inReplyTo := mail.NormalizeMessageIDHeader(msg.InReplyTo); inReplyTo != "" {
+		lookupHeaders = append(lookupHeaders, inReplyTo)
+	}
+	if threadID, err := w.st.FindIndexedThreadIDByMessageHeaders(ctx, accountID, lookupHeaders); err == nil && strings.TrimSpace(threadID) != "" {
+		return threadID
+	}
+	return mail.DeriveIndexedThreadID(msg.MessageID, msg.InReplyTo, normalizedRefs, subject, from)
+}
+
+func (w *MailWorkers) accountSyncDue(accountID string, now time.Time) bool {
+	w.scheduleMu.Lock()
+	defer w.scheduleMu.Unlock()
+	state, ok := w.schedules[accountID]
+	return !ok || state.nextRunAt.IsZero() || !now.Before(state.nextRunAt)
+}
+
+func (w *MailWorkers) recordAccountSyncSuccess(accountID string, now time.Time) {
+	w.scheduleMu.Lock()
+	defer w.scheduleMu.Unlock()
+	w.schedules[accountID] = accountSyncSchedule{
+		nextRunAt: now.Add(mailSyncBaseInterval + accountSyncJitter(accountID)),
+		failures:  0,
+	}
+}
+
+func (w *MailWorkers) recordAccountSyncFailure(accountID string, now time.Time) {
+	w.scheduleMu.Lock()
+	defer w.scheduleMu.Unlock()
+	state := w.schedules[accountID]
+	state.failures++
+	state.nextRunAt = now.Add(accountSyncFailureDelay(state.failures) + accountSyncJitter(accountID))
+	w.schedules[accountID] = state
 }
 
 func (w *MailWorkers) runScheduledSendLoop(ctx context.Context) {
@@ -371,6 +557,71 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func hasIMAPFlag(flags []string, target string) bool {
+	for _, flag := range flags {
+		if strings.EqualFold(strings.TrimSpace(flag), strings.TrimSpace(target)) {
+			return true
+		}
+	}
+	return false
+}
+
+func uidRange(startInclusive, endExclusive uint32) []uint32 {
+	if endExclusive <= startInclusive {
+		return []uint32{}
+	}
+	out := make([]uint32, 0, endExclusive-startInclusive)
+	for uid := startInclusive; uid < endExclusive; uid++ {
+		out = append(out, uid)
+	}
+	return out
+}
+
+func accountSyncJitter(accountID string) time.Duration {
+	if mailSyncAccountJitter <= 0 {
+		return 0
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(accountID)))
+	max := uint64(mailSyncAccountJitter)
+	if max == 0 {
+		return 0
+	}
+	return time.Duration(binary.BigEndian.Uint64(sum[:8]) % max)
+}
+
+func accountSyncFailureDelay(failures int) time.Duration {
+	if failures <= 0 {
+		return mailSyncBaseInterval
+	}
+	delay := mailSyncBaseInterval
+	step := mailSyncFailureStep
+	for i := 1; i < failures; i++ {
+		if step > mailSyncMaxBackoff-delay {
+			return mailSyncMaxBackoff
+		}
+		delay += step
+		if step >= mailSyncMaxBackoff/2 {
+			step = mailSyncMaxBackoff
+		} else {
+			step *= 2
+		}
+		if delay >= mailSyncMaxBackoff {
+			return mailSyncMaxBackoff
+		}
+	}
+	if delay > mailSyncMaxBackoff {
+		return mailSyncMaxBackoff
+	}
+	return delay
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 type mailsecMessageAnalysis struct {

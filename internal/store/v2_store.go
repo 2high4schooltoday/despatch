@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	stdmail "net/mail"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,14 @@ import (
 	"despatch/internal/mail"
 	"despatch/internal/models"
 )
+
+const indexedMessageSelectColumns = `id,account_id,mailbox,uid,thread_id,message_id_header,in_reply_to_header,references_header,from_value,to_value,cc_value,bcc_value,subject,snippet,body_text,body_html_sanitized,raw_source,seen,flagged,answered,draft,has_attachments,importance,dkim_status,spf_status,dmarc_status,phishing_score,remote_images_blocked,remote_images_allowed,date_header,internal_date`
+
+type recipientScore struct {
+	models.RecipientSuggestion
+	Score  int
+	LastAt time.Time
+}
 
 func indexedMessageIDCandidates(accountID, id string) []string {
 	id = strings.TrimSpace(id)
@@ -1108,6 +1117,35 @@ func (s *Store) UpsertIndexedMessage(ctx context.Context, in models.IndexedMessa
 	if in.InternalDate.IsZero() {
 		in.InternalDate = in.DateHeader
 	}
+	in.MessageIDHeader = mail.NormalizeMessageIDHeader(in.MessageIDHeader)
+	in.InReplyToHeader = mail.NormalizeMessageIDHeader(in.InReplyToHeader)
+	in.ReferencesHeader = mail.FormatMessageIDList(mail.ParseMessageIDList(in.ReferencesHeader))
+	participants := []string{}
+	if fromValue := strings.TrimSpace(in.FromValue); fromValue != "" {
+		participants = append(participants, fromValue)
+	}
+	participantsJSON, _ := json.Marshal(participants)
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO thread_index(
+		  id,account_id,mailbox,subject_norm,participants_json,message_count,unread_count,has_attachments,has_flagged,importance,latest_message_id,latest_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(id) DO NOTHING`,
+		in.ThreadID,
+		in.AccountID,
+		in.Mailbox,
+		firstNonEmptyString(strings.TrimSpace(in.Subject), "(no subject)"),
+		string(participantsJSON),
+		1,
+		boolToInt(!in.Seen),
+		boolToInt(in.HasAttachments),
+		boolToInt(in.Flagged),
+		in.Importance,
+		in.ID,
+		in.InternalDate,
+		now,
+	); err != nil {
+		return models.IndexedMessage{}, err
+	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO message_index(
 		  id,account_id,mailbox,uid,thread_id,message_id_header,in_reply_to_header,references_header,
@@ -1119,6 +1157,9 @@ func (s *Store) UpsertIndexedMessage(ctx context.Context, in models.IndexedMessa
 		  mailbox=excluded.mailbox,
 		  uid=excluded.uid,
 		  thread_id=excluded.thread_id,
+		  message_id_header=excluded.message_id_header,
+		  in_reply_to_header=excluded.in_reply_to_header,
+		  references_header=excluded.references_header,
 		  from_value=excluded.from_value,
 		  to_value=excluded.to_value,
 		  cc_value=excluded.cc_value,
@@ -1148,9 +1189,9 @@ func (s *Store) UpsertIndexedMessage(ctx context.Context, in models.IndexedMessa
 		in.Mailbox,
 		in.UID,
 		in.ThreadID,
-		"",
-		"",
-		"",
+		in.MessageIDHeader,
+		in.InReplyToHeader,
+		in.ReferencesHeader,
 		in.FromValue,
 		in.ToValue,
 		in.CCValue,
@@ -1268,8 +1309,7 @@ func (s *Store) RebuildThreadIndex(ctx context.Context, accountID string) error 
 		}
 		scopedMessageID := mail.NormalizeIndexedMessageID(accountID, id)
 		scopedThreadID := mail.NormalizeIndexedThreadID(accountID, threadID)
-		key := mailbox + "\x00" + scopedThreadID
-		agg := threads[key]
+		agg := threads[scopedThreadID]
 		if agg == nil {
 			agg = &threadAgg{
 				ID:           scopedThreadID,
@@ -1278,7 +1318,7 @@ func (s *Store) RebuildThreadIndex(ctx context.Context, accountID string) error 
 				SubjectNorm:  firstNonEmptyString(strings.TrimSpace(subject), "(no subject)"),
 				Participants: map[string]struct{}{},
 			}
-			threads[key] = agg
+			threads[scopedThreadID] = agg
 		}
 		agg.MessageCount++
 		if seenInt == 0 {
@@ -1310,9 +1350,6 @@ func (s *Store) RebuildThreadIndex(ctx context.Context, accountID string) error 
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM thread_index WHERE account_id=?`, accountID); err != nil {
-		return err
-	}
 	now := time.Now().UTC()
 	for _, agg := range threads {
 		participants := make([]string, 0, len(agg.Participants))
@@ -1324,7 +1361,20 @@ func (s *Store) RebuildThreadIndex(ctx context.Context, accountID string) error 
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO thread_index(
 			  id,account_id,mailbox,subject_norm,participants_json,message_count,unread_count,has_attachments,has_flagged,importance,latest_message_id,latest_at,updated_at
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(id) DO UPDATE SET
+			  account_id=excluded.account_id,
+			  mailbox=excluded.mailbox,
+			  subject_norm=excluded.subject_norm,
+			  participants_json=excluded.participants_json,
+			  message_count=excluded.message_count,
+			  unread_count=excluded.unread_count,
+			  has_attachments=excluded.has_attachments,
+			  has_flagged=excluded.has_flagged,
+			  importance=excluded.importance,
+			  latest_message_id=excluded.latest_message_id,
+			  latest_at=excluded.latest_at,
+			  updated_at=excluded.updated_at`,
 			agg.ID,
 			agg.AccountID,
 			agg.Mailbox,
@@ -1342,6 +1392,28 @@ func (s *Store) RebuildThreadIndex(ctx context.Context, accountID string) error 
 			return err
 		}
 	}
+	if len(threads) == 0 {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM thread_index WHERE account_id=?`, accountID); err != nil {
+			return err
+		}
+		return tx.Commit()
+	}
+	threadIDs := make([]string, 0, len(threads))
+	for threadID := range threads {
+		threadIDs = append(threadIDs, threadID)
+	}
+	sort.Strings(threadIDs)
+	deleteArgs := make([]any, 0, len(threadIDs)+1)
+	deleteArgs = append(deleteArgs, accountID)
+	for _, threadID := range threadIDs {
+		deleteArgs = append(deleteArgs, threadID)
+	}
+	if _, err := tx.ExecContext(ctx,
+		fmt.Sprintf(`DELETE FROM thread_index WHERE account_id=? AND id NOT IN (%s)`, placeholders(len(threadIDs))),
+		deleteArgs...,
+	); err != nil {
+		return err
+	}
 	return tx.Commit()
 }
 
@@ -1349,7 +1421,13 @@ func (s *Store) ListThreads(ctx context.Context, accountID, mailbox, sort string
 	where := []string{"account_id=?"}
 	args := []any{accountID}
 	if strings.TrimSpace(mailbox) != "" {
-		where = append(where, "mailbox=?")
+		where = append(where, `EXISTS (
+			SELECT 1
+			FROM message_index mi
+			WHERE mi.account_id=thread_index.account_id
+			  AND mi.thread_id=thread_index.id
+			  AND mi.mailbox=?
+		)`)
 		args = append(args, mailbox)
 	}
 	whereSQL := strings.Join(where, " AND ")
@@ -1424,11 +1502,11 @@ func (s *Store) ListMessagesByThread(ctx context.Context, accountID, threadID st
 	}
 	for i, candidate := range candidates {
 		rows, err := s.db.QueryContext(ctx,
-			`SELECT id,account_id,mailbox,uid,thread_id,from_value,to_value,cc_value,bcc_value,subject,snippet,body_text,body_html_sanitized,raw_source,seen,flagged,answered,draft,has_attachments,importance,dkim_status,spf_status,dmarc_status,phishing_score,remote_images_blocked,remote_images_allowed,date_header,internal_date
+			fmt.Sprintf(`SELECT %s
 			 FROM message_index
 			 WHERE account_id=? AND thread_id=?
 			 ORDER BY date_header DESC
-			 LIMIT ? OFFSET ?`,
+			 LIMIT ? OFFSET ?`, indexedMessageSelectColumns),
 			accountID, candidate, limit, offset,
 		)
 		if err != nil {
@@ -1462,9 +1540,9 @@ func (s *Store) GetIndexedMessageByID(ctx context.Context, accountID, id string)
 	}
 	for _, candidate := range candidates {
 		row := s.db.QueryRowContext(ctx,
-			`SELECT id,account_id,mailbox,uid,thread_id,from_value,to_value,cc_value,bcc_value,subject,snippet,body_text,body_html_sanitized,raw_source,seen,flagged,answered,draft,has_attachments,importance,dkim_status,spf_status,dmarc_status,phishing_score,remote_images_blocked,remote_images_allowed,date_header,internal_date
+			fmt.Sprintf(`SELECT %s
 			 FROM message_index
-			 WHERE account_id=? AND id=?`,
+			 WHERE account_id=? AND id=?`, indexedMessageSelectColumns),
 			accountID, candidate,
 		)
 		item, err := scanIndexedMessage(row)
@@ -1477,6 +1555,69 @@ func (s *Store) GetIndexedMessageByID(ctx context.Context, accountID, id string)
 		return item, nil
 	}
 	return models.IndexedMessage{}, ErrNotFound
+}
+
+func (s *Store) ListIndexedMessages(ctx context.Context, accountID, mailbox, view, sort string, limit, offset int) ([]models.IndexedMessage, int, error) {
+	limit = clampLimit(limit)
+	offset = clampOffset(offset)
+
+	where := []string{"account_id=?"}
+	args := []any{accountID}
+	if strings.TrimSpace(mailbox) != "" {
+		where = append(where, "mailbox=?")
+		args = append(args, mailbox)
+	}
+	switch strings.ToLower(strings.TrimSpace(view)) {
+	case "unread":
+		where = append(where, "seen=0")
+	case "flagged":
+		where = append(where, "flagged=1")
+	case "attachments":
+		where = append(where, "has_attachments=1")
+	}
+	whereSQL := strings.Join(where, " AND ")
+
+	var total int
+	if err := s.db.QueryRowContext(ctx, fmt.Sprintf(`SELECT COUNT(1) FROM message_index WHERE %s`, whereSQL), args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	orderBy := "date_header DESC"
+	switch strings.ToLower(strings.TrimSpace(sort)) {
+	case "oldest":
+		orderBy = "date_header ASC"
+	case "subject":
+		orderBy = "subject ASC, date_header DESC"
+	case "sender":
+		orderBy = "from_value ASC, date_header DESC"
+	}
+
+	query := fmt.Sprintf(
+		`SELECT %s
+		 FROM message_index
+		 WHERE %s
+		 ORDER BY %s
+		 LIMIT ? OFFSET ?`,
+		indexedMessageSelectColumns,
+		whereSQL,
+		orderBy,
+	)
+	listArgs := append(append([]any{}, args...), limit, offset)
+	rows, err := s.db.QueryContext(ctx, query, listArgs...)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	out := make([]models.IndexedMessage, 0, limit)
+	for rows.Next() {
+		item, err := scanIndexedMessage(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		out = append(out, item)
+	}
+	return out, total, rows.Err()
 }
 
 func (s *Store) GetIndexedMessageAttachments(ctx context.Context, accountID, messageID string) ([]models.IndexedAttachment, error) {
@@ -1550,7 +1691,7 @@ func (s *Store) SearchIndexedMessages(ctx context.Context, accountID, mailbox, q
 		return nil, 0, err
 	}
 
-	listQuery := `SELECT m.id,m.account_id,m.mailbox,m.uid,m.thread_id,m.from_value,m.to_value,m.cc_value,m.bcc_value,m.subject,m.snippet,m.body_text,m.body_html_sanitized,m.raw_source,m.seen,m.flagged,m.answered,m.draft,m.has_attachments,m.importance,m.dkim_status,m.spf_status,m.dmarc_status,m.phishing_score,m.remote_images_blocked,m.remote_images_allowed,m.date_header,m.internal_date
+	listQuery := `SELECT m.id,m.account_id,m.mailbox,m.uid,m.thread_id,m.message_id_header,m.in_reply_to_header,m.references_header,m.from_value,m.to_value,m.cc_value,m.bcc_value,m.subject,m.snippet,m.body_text,m.body_html_sanitized,m.raw_source,m.seen,m.flagged,m.answered,m.draft,m.has_attachments,m.importance,m.dkim_status,m.spf_status,m.dmarc_status,m.phishing_score,m.remote_images_blocked,m.remote_images_allowed,m.date_header,m.internal_date
 		FROM message_search_fts f
 		JOIN message_index m ON m.id = f.message_id
 		WHERE f.account_id=?`
@@ -1578,6 +1719,109 @@ func (s *Store) SearchIndexedMessages(ctx context.Context, accountID, mailbox, q
 		out = append(out, item)
 	}
 	return out, total, rows.Err()
+}
+
+func (s *Store) SuggestRecipients(ctx context.Context, accountID string, selfEmails []string, query string, limit int) ([]models.RecipientSuggestion, error) {
+	if limit <= 0 {
+		limit = 8
+	}
+	if limit > 25 {
+		limit = 25
+	}
+	sampleLimit := limit * 40
+	if sampleLimit < 200 {
+		sampleLimit = 200
+	}
+	if sampleLimit > 600 {
+		sampleLimit = 600
+	}
+
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT from_value,to_value,cc_value,bcc_value,internal_date
+		 FROM message_index
+		 WHERE account_id=?
+		 ORDER BY internal_date DESC
+		 LIMIT ?`,
+		accountID,
+		sampleLimit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	selfSet := map[string]struct{}{}
+	for _, value := range selfEmails {
+		email := normalizeSuggestionEmail(value)
+		if email == "" {
+			continue
+		}
+		selfSet[email] = struct{}{}
+	}
+	suggestions := map[string]recipientScore{}
+	index := 0
+	for rows.Next() {
+		var fromValue string
+		var toValue string
+		var ccValue string
+		var bccValue string
+		var internalDate time.Time
+		if err := rows.Scan(&fromValue, &toValue, &ccValue, &bccValue, &internalDate); err != nil {
+			return nil, err
+		}
+		recencyWeight := sampleLimit - index
+		index++
+
+		sender, senderOK := firstLooseAddress(fromValue)
+		selfAuthored := senderOK
+		if selfAuthored {
+			_, selfAuthored = selfSet[normalizeSuggestionEmail(sender.Address)]
+		}
+		if selfAuthored {
+			for _, addr := range parseAddressListLoose(toValue) {
+				accumulateRecipientSuggestion(suggestions, selfSet, addr, 900+recencyWeight, internalDate)
+			}
+			for _, addr := range parseAddressListLoose(ccValue) {
+				accumulateRecipientSuggestion(suggestions, selfSet, addr, 700+recencyWeight, internalDate)
+			}
+			for _, addr := range parseAddressListLoose(bccValue) {
+				accumulateRecipientSuggestion(suggestions, selfSet, addr, 600+recencyWeight, internalDate)
+			}
+			continue
+		}
+		if senderOK {
+			accumulateRecipientSuggestion(suggestions, selfSet, sender, 300+recencyWeight, internalDate)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	query = strings.ToLower(strings.TrimSpace(query))
+	items := make([]recipientScore, 0, len(suggestions))
+	for _, item := range suggestions {
+		if query != "" && !strings.Contains(strings.ToLower(item.Email), query) && !strings.Contains(strings.ToLower(item.Label), query) {
+			continue
+		}
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Score != items[j].Score {
+			return items[i].Score > items[j].Score
+		}
+		if !items[i].LastAt.Equal(items[j].LastAt) {
+			return items[i].LastAt.After(items[j].LastAt)
+		}
+		return items[i].Email < items[j].Email
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	out := make([]models.RecipientSuggestion, 0, len(items))
+	for _, item := range items {
+		out = append(out, item.RecipientSuggestion)
+	}
+	return out, nil
 }
 
 func (s *Store) SetIndexedMessageSeen(ctx context.Context, accountID, id string, seen bool) error {
@@ -1648,6 +1892,38 @@ func (s *Store) SetIndexedMessageRemoteImagesAllowed(ctx context.Context, accoun
 		}
 	}
 	return ErrNotFound
+}
+
+func (s *Store) FindIndexedThreadIDByMessageHeaders(ctx context.Context, accountID string, messageIDs []string) (string, error) {
+	normalized := mail.NormalizeMessageIDHeaders(messageIDs)
+	if len(normalized) == 0 {
+		return "", ErrNotFound
+	}
+	args := make([]any, 0, len(normalized)+1)
+	args = append(args, accountID)
+	for _, item := range normalized {
+		args = append(args, item)
+	}
+	row := s.db.QueryRowContext(
+		ctx,
+		fmt.Sprintf(
+			`SELECT thread_id
+			 FROM message_index
+			 WHERE account_id=? AND message_id_header IN (%s)
+			 ORDER BY internal_date ASC
+			 LIMIT 1`,
+			placeholders(len(normalized)),
+		),
+		args...,
+	)
+	var threadID string
+	if err := row.Scan(&threadID); err != nil {
+		if err == sql.ErrNoRows {
+			return "", ErrNotFound
+		}
+		return "", err
+	}
+	return threadID, nil
 }
 
 func (s *Store) ListSieveScripts(ctx context.Context, accountID string) ([]models.SieveScript, error) {
@@ -2538,6 +2814,98 @@ func (s *Store) updateIndexedMessageBool(ctx context.Context, accountID, id, col
 	return ErrNotFound
 }
 
+func normalizeSuggestionEmail(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func firstLooseAddress(raw string) (stdmail.Address, bool) {
+	items := parseAddressListLoose(raw)
+	if len(items) == 0 {
+		return stdmail.Address{}, false
+	}
+	return items[0], true
+}
+
+func parseAddressListLoose(raw string) []stdmail.Address {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if parsed, err := stdmail.ParseAddressList(raw); err == nil {
+		items := make([]stdmail.Address, 0, len(parsed))
+		for _, item := range parsed {
+			if item == nil {
+				continue
+			}
+			items = append(items, *item)
+		}
+		return dedupeLooseAddresses(items)
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n'
+	})
+	out := make([]stdmail.Address, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		addr, err := stdmail.ParseAddress(part)
+		if err == nil {
+			out = append(out, *addr)
+			continue
+		}
+		email := strings.Trim(strings.TrimSpace(part), "<>")
+		if !strings.Contains(email, "@") {
+			continue
+		}
+		out = append(out, stdmail.Address{Address: email})
+	}
+	return dedupeLooseAddresses(out)
+}
+
+func dedupeLooseAddresses(items []stdmail.Address) []stdmail.Address {
+	seen := map[string]struct{}{}
+	out := make([]stdmail.Address, 0, len(items))
+	for _, item := range items {
+		email := normalizeSuggestionEmail(item.Address)
+		if email == "" {
+			continue
+		}
+		if _, ok := seen[email]; ok {
+			continue
+		}
+		seen[email] = struct{}{}
+		item.Address = email
+		out = append(out, item)
+	}
+	return out
+}
+
+func accumulateRecipientSuggestion(items map[string]recipientScore, selfSet map[string]struct{}, addr stdmail.Address, score int, lastAt time.Time) {
+	email := normalizeSuggestionEmail(addr.Address)
+	if email == "" {
+		return
+	}
+	if _, ok := selfSet[email]; ok {
+		return
+	}
+	current := items[email]
+	current.Email = email
+	current.Score += score
+	if current.Label == "" || (current.Label == current.Email && strings.TrimSpace(addr.Name) != "") {
+		if strings.TrimSpace(addr.Name) != "" {
+			current.Label = (&stdmail.Address{Name: strings.TrimSpace(addr.Name), Address: email}).String()
+		} else {
+			current.Label = email
+		}
+	}
+	if current.LastAt.IsZero() || lastAt.After(current.LastAt) {
+		current.LastAt = lastAt
+	}
+	items[email] = current
+}
+
 func scanMailAccount(scanner interface{ Scan(dest ...any) error }) (models.MailAccount, error) {
 	var item models.MailAccount
 	var imapTLS, imapStartTLS, smtpTLS, smtpStartTLS, isDefault int
@@ -2689,6 +3057,9 @@ func scanIndexedMessage(scanner interface{ Scan(dest ...any) error }) (models.In
 		&item.Mailbox,
 		&item.UID,
 		&item.ThreadID,
+		&item.MessageIDHeader,
+		&item.InReplyToHeader,
+		&item.ReferencesHeader,
 		&item.FromValue,
 		&item.ToValue,
 		&item.CCValue,
