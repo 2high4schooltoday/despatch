@@ -45,6 +45,14 @@ func (m pamLoginTestDespatch) CreateMailbox(ctx context.Context, user, pass, mai
 	return nil
 }
 
+func (m pamLoginTestDespatch) RenameMailbox(ctx context.Context, user, pass, mailbox, newMailbox string) error {
+	return nil
+}
+
+func (m pamLoginTestDespatch) DeleteMailbox(ctx context.Context, user, pass, mailbox string) error {
+	return nil
+}
+
 func (m pamLoginTestDespatch) ListMessages(ctx context.Context, user, pass, mailbox string, page, pageSize int) ([]mail.MessageSummary, error) {
 	return nil, nil
 }

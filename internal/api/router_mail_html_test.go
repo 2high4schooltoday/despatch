@@ -29,6 +29,14 @@ func (m *mailHTMLRouterTestClient) CreateMailbox(ctx context.Context, user, pass
 	return nil
 }
 
+func (m *mailHTMLRouterTestClient) RenameMailbox(ctx context.Context, user, pass, mailbox, newMailbox string) error {
+	return nil
+}
+
+func (m *mailHTMLRouterTestClient) DeleteMailbox(ctx context.Context, user, pass, mailbox string) error {
+	return nil
+}
+
 func (m *mailHTMLRouterTestClient) ListMessages(ctx context.Context, user, pass, mailbox string, page, pageSize int) ([]mail.MessageSummary, error) {
 	return []mail.MessageSummary{}, nil
 }

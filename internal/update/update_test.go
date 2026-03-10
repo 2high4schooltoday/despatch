@@ -1632,3 +1632,197 @@ func TestNormalizeRuntimeTreePermissionsMakesDeployedTreeReadable(t *testing.T) 
 	assertMode(plainFile, 0o644)
 	assertMode(execFile, 0o755)
 }
+
+func TestMovePathWithCrossDeviceFallbackMovesRegularFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	src := filepath.Join(root, "src.txt")
+	dst := filepath.Join(root, "backup", "src.txt")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("mkdir backup dir: %v", err)
+	}
+	if err := os.WriteFile(src, []byte("hello\n"), 0o640); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	if err := movePathWithCrossDeviceFallback(src, dst); err != nil {
+		t.Fatalf("movePathWithCrossDeviceFallback: %v", err)
+	}
+
+	if _, err := os.Stat(src); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected src to be gone, stat err=%v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("read dst: %v", err)
+	}
+	if string(got) != "hello\n" {
+		t.Fatalf("unexpected dst contents %q", got)
+	}
+}
+
+func TestMovePathWithCrossDeviceFallbackMovesDirectory(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	src := filepath.Join(root, "srcdir")
+	dst := filepath.Join(root, "backup", "srcdir")
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		t.Fatalf("mkdir backup dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(src, "nested"), 0o750); err != nil {
+		t.Fatalf("mkdir srcdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "nested", "data.txt"), []byte("ok\n"), 0o640); err != nil {
+		t.Fatalf("write nested file: %v", err)
+	}
+
+	if err := movePathWithCrossDeviceFallback(src, dst); err != nil {
+		t.Fatalf("movePathWithCrossDeviceFallback dir: %v", err)
+	}
+
+	if _, err := os.Stat(src); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected src dir to be gone, stat err=%v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "nested", "data.txt"))
+	if err != nil {
+		t.Fatalf("read moved nested file: %v", err)
+	}
+	if string(got) != "ok\n" {
+		t.Fatalf("unexpected moved nested contents %q", got)
+	}
+}
+
+func TestMovePathWithCrossDeviceFallbackMissingSourceIsNoop(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	src := filepath.Join(root, "missing.txt")
+	dst := filepath.Join(root, "backup", "missing.txt")
+	if err := movePathWithCrossDeviceFallback(src, dst); err != nil {
+		t.Fatalf("expected missing source to be ignored, got %v", err)
+	}
+}
+
+func TestMovePathWithCrossDeviceFallbackMissingDestinationParentReturnsError(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	src := filepath.Join(root, "src.txt")
+	dst := filepath.Join(root, "missing-parent", "src.txt")
+	if err := os.WriteFile(src, []byte("hello\n"), 0o640); err != nil {
+		t.Fatalf("write src: %v", err)
+	}
+
+	if err := movePathWithCrossDeviceFallback(src, dst); err == nil {
+		t.Fatal("expected movePathWithCrossDeviceFallback to fail when destination parent is missing")
+	}
+}
+
+func TestApplyReleaseTreatsBackupArchiveFailureAsWarning(t *testing.T) {
+	base := t.TempDir()
+	unitDir := filepath.Join(base, "units")
+	writeUpdaterUnitFiles(t, unitDir)
+	installFakeSystemctl(t, "loaded", "active", "loaded", "inactive")
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/repos/2high4schooltoday/despatch/releases/tags/v9.9.9", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"tag_name":"v9.9.9","name":"v9.9.9","published_at":"2026-03-10T00:00:00Z","html_url":"https://example.test/release","assets":[]}`))
+	})
+	mux.HandleFunc("/health/live", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/api/v1/setup/status", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	cfg := config.Config{
+		UpdateEnabled:          true,
+		UpdateRepoOwner:        "2high4schooltoday",
+		UpdateRepoName:         "despatch",
+		UpdateCheckIntervalMin: 60,
+		UpdateHTTPTimeoutSec:   10,
+		UpdateBackupKeep:       3,
+		UpdateBaseDir:          filepath.Join(base, "update"),
+		UpdateInstallDir:       filepath.Join(base, "install"),
+		UpdateServiceName:      "despatch",
+		UpdateSystemdUnitDir:   unitDir,
+		ListenAddr:             strings.TrimPrefix(srv.URL, "http://"),
+	}
+	mgr := NewManager(cfg)
+	mgr.gh.baseURL = srv.URL
+
+	writeTree := func(root, version string) {
+		t.Helper()
+		for _, name := range []string{"despatch", "despatch-pam-reset-helper", "despatch-update-worker"} {
+			if err := os.MkdirAll(filepath.Dir(filepath.Join(root, name)), 0o755); err != nil {
+				t.Fatalf("mkdir %s parent: %v", name, err)
+			}
+			if err := os.WriteFile(filepath.Join(root, name), []byte(version+"-"+name+"\n"), 0o755); err != nil {
+				t.Fatalf("write %s: %v", name, err)
+			}
+		}
+		for _, name := range []string{"web", "migrations", "deploy"} {
+			dir := filepath.Join(root, name)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatalf("mkdir %s: %v", name, err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, "version.txt"), []byte(version+"-"+name+"\n"), 0o644); err != nil {
+				t.Fatalf("write %s marker: %v", name, err)
+			}
+		}
+		deployDir := filepath.Join(root, "deploy")
+		serviceUnit := fmt.Sprintf("[Service]\nExecStart=%s\n", filepath.Join(cfg.UpdateInstallDir, "despatch-update-worker"))
+		if err := os.WriteFile(filepath.Join(deployDir, "despatch-updater.service"), []byte(serviceUnit), 0o644); err != nil {
+			t.Fatalf("write deploy updater service: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(deployDir, "despatch-updater.path"), []byte("[Path]\nUnit=despatch-updater.service\n"), 0o644); err != nil {
+			t.Fatalf("write deploy updater path: %v", err)
+		}
+	}
+
+	writeTree(cfg.UpdateInstallDir, "old")
+	writeTree(preparedPayloadDir(cfg, "v9.9.9"), "new")
+
+	if err := os.MkdirAll(cfg.UpdateBaseDir, 0o750); err != nil {
+		t.Fatalf("mkdir update base: %v", err)
+	}
+	if err := os.WriteFile(backupsDir(cfg), []byte("block backup dir creation"), 0o640); err != nil {
+		t.Fatalf("write backup blocker: %v", err)
+	}
+
+	toVersion, rolledBack, err := mgr.applyRelease(context.Background(), ApplyRequest{
+		RequestID:     "req-backup-warning",
+		TargetVersion: "v9.9.9",
+	})
+	if err != nil {
+		t.Fatalf("applyRelease: %v", err)
+	}
+	if rolledBack {
+		t.Fatalf("expected no rollback when backup archive fails")
+	}
+	if toVersion != "v9.9.9" {
+		t.Fatalf("expected toVersion v9.9.9, got %q", toVersion)
+	}
+
+	assertContains := func(path, want string) {
+		t.Helper()
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		if !strings.Contains(string(got), want) {
+			t.Fatalf("expected %s to contain %q, got %q", path, want, string(got))
+		}
+	}
+
+	assertContains(filepath.Join(cfg.UpdateInstallDir, "despatch"), "new-despatch")
+	assertContains(filepath.Join(cfg.UpdateInstallDir, "web", "version.txt"), "new-web")
+	if _, err := os.Stat(filepath.Join(cfg.UpdateInstallDir, ".prev-despatch-req-backup-warning")); err != nil {
+		t.Fatalf("expected previous binary to remain for later cleanup when backup archive fails, stat err=%v", err)
+	}
+}

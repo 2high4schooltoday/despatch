@@ -147,14 +147,6 @@ func isBlockedRemoteImageIP(ip net.IP) bool {
 }
 
 func rewriteMessageHTML(messageID, rawHTML string, attachments []mail.AttachmentMeta) string {
-	if strings.TrimSpace(rawHTML) == "" {
-		return ""
-	}
-	doc, err := html.Parse(strings.NewReader(rawHTML))
-	if err != nil {
-		return rawHTML
-	}
-
 	cidTargets := map[string]string{}
 	for _, item := range attachments {
 		key := normalizeCIDToken(item.ContentID)
@@ -165,6 +157,45 @@ func rewriteMessageHTML(messageID, rawHTML string, attachments []mail.Attachment
 			continue
 		}
 		cidTargets[key] = "/api/v1/attachments/" + url.PathEscape(item.ID)
+	}
+	return rewriteHTMLImageSources(rawHTML, func(raw string) string {
+		return rewriteImageSource(messageID, raw, cidTargets)
+	}, func(raw string) string {
+		return rewriteImageSourceSet(messageID, raw, cidTargets)
+	})
+}
+
+func rewriteIndexedMessageHTML(accountID, messageID, rawHTML string, attachments []mail.AttachmentMeta) string {
+	cidTargets := map[string]string{}
+	for _, item := range attachments {
+		key := normalizeCIDToken(item.ContentID)
+		if key == "" {
+			continue
+		}
+		if _, exists := cidTargets[key]; exists {
+			continue
+		}
+		cidTargets[key] = fmt.Sprintf(
+			"/api/v2/messages/%s/attachments/%s?account_id=%s",
+			url.PathEscape(messageID),
+			url.PathEscape(item.ID),
+			url.QueryEscape(accountID),
+		)
+	}
+	return rewriteHTMLImageSources(rawHTML, func(raw string) string {
+		return rewriteImageSource(messageID, raw, cidTargets)
+	}, func(raw string) string {
+		return rewriteImageSourceSet(messageID, raw, cidTargets)
+	})
+}
+
+func rewriteHTMLImageSources(rawHTML string, rewriteSource func(string) string, rewriteSourceSet func(string) string) string {
+	if strings.TrimSpace(rawHTML) == "" {
+		return ""
+	}
+	doc, err := html.Parse(strings.NewReader(rawHTML))
+	if err != nil {
+		return rawHTML
 	}
 
 	walkHTMLNodes(doc, func(node *html.Node) {
@@ -179,9 +210,9 @@ func rewriteMessageHTML(messageID, rawHTML string, attachments []mail.Attachment
 			key := strings.ToLower(strings.TrimSpace(attr.Key))
 			switch key {
 			case "src":
-				node.Attr[i].Val = rewriteImageSource(messageID, attr.Val, cidTargets)
+				node.Attr[i].Val = rewriteSource(attr.Val)
 			case "srcset":
-				node.Attr[i].Val = rewriteImageSourceSet(messageID, attr.Val, cidTargets)
+				node.Attr[i].Val = rewriteSourceSet(attr.Val)
 			}
 		}
 	})

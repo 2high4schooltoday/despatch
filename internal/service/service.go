@@ -403,6 +403,13 @@ func (s *Service) SessionMailPassword(sess models.Session) (string, error) {
 }
 
 func MailIdentity(u models.User) string {
+	if email := strings.TrimSpace(u.Email); email != "" {
+		return email
+	}
+	return MailAuthLogin(u)
+}
+
+func MailAuthLogin(u models.User) string {
 	if u.MailLogin != nil {
 		if login := strings.TrimSpace(*u.MailLogin); login != "" {
 			return login

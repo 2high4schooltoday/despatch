@@ -1036,16 +1036,32 @@ fn apply_release(cfg: &Config, req: &ApplyRequest) -> Result<ApplyResult, Worker
         Utc::now().format("%Y%m%dT%H%M%S"),
         sanitize_path_token(&run_id)
     ));
-    fs::create_dir_all(&backup_dest)?;
-    move_if_exists(&prev_bin, &backup_dest.join("despatch"))?;
-    move_if_exists(&prev_pam, &backup_dest.join("despatch-pam-reset-helper"))?;
-    move_if_exists(&prev_worker, &backup_dest.join("despatch-update-worker"))?;
-    move_if_exists(&prev_web, &backup_dest.join("web"))?;
-    move_if_exists(&prev_mig, &backup_dest.join("migrations"))?;
-    move_if_exists(&prev_deploy, &backup_dest.join("deploy"))?;
-    move_if_exists(&prev_mailsec, &backup_dest.join("despatch-mailsec-service"))?;
+    if let Err(err) = fs::create_dir_all(&backup_dest) {
+        eprintln!(
+            "update backup warning: mkdir {} failed: {}",
+            backup_dest.display(),
+            err
+        );
+        return Ok(ApplyResult {
+            to_version: release.tag_name.trim().to_string(),
+            rolled_back: false,
+        });
+    }
+    archive_previous_path(&prev_bin, &backup_dest.join("despatch"));
+    archive_previous_path(&prev_pam, &backup_dest.join("despatch-pam-reset-helper"));
+    archive_previous_path(&prev_worker, &backup_dest.join("despatch-update-worker"));
+    archive_previous_path(&prev_web, &backup_dest.join("web"));
+    archive_previous_path(&prev_mig, &backup_dest.join("migrations"));
+    archive_previous_path(&prev_deploy, &backup_dest.join("deploy"));
+    archive_previous_path(&prev_mailsec, &backup_dest.join("despatch-mailsec-service"));
 
-    trim_backups(&backups_dir(cfg), cfg.update_backup_keep)?;
+    if let Err(err) = trim_backups(&backups_dir(cfg), cfg.update_backup_keep) {
+        eprintln!(
+            "update backup warning: trim {} failed: {}",
+            backups_dir(cfg).display(),
+            err
+        );
+    }
 
     Ok(ApplyResult {
         to_version: release.tag_name.trim().to_string(),
@@ -1697,8 +1713,54 @@ fn move_if_exists(from: &Path, to: &Path) -> Result<(), WorkerError> {
     if !from.exists() {
         return Ok(());
     }
-    fs::rename(from, to)?;
-    Ok(())
+    move_path_with_cross_device_fallback(from, to)
+}
+
+fn archive_previous_path(from: &Path, to: &Path) {
+    if let Err(err) = move_if_exists(from, to) {
+        eprintln!(
+            "update backup warning: archive {} -> {} failed: {}",
+            from.display(),
+            to.display(),
+            err
+        );
+    }
+}
+
+fn move_path_with_cross_device_fallback(from: &Path, to: &Path) -> Result<(), WorkerError> {
+    match fs::rename(from, to) {
+        Ok(()) => return Ok(()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => match fs::metadata(from) {
+            Ok(_) => return Err(WorkerError::Io(err)),
+            Err(meta_err) if meta_err.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(meta_err) => return Err(WorkerError::Io(meta_err)),
+        },
+        Err(err) if !is_cross_device_link(&err) => return Err(WorkerError::Io(err)),
+        Err(_) => {}
+    }
+
+    let metadata = match fs::metadata(from) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(WorkerError::Io(err)),
+    };
+    if metadata.is_dir() {
+        copy_dir(from, to)?;
+        return remove_path(from);
+    }
+    if metadata.is_file() {
+        copy_file(from, to, metadata.permissions().mode())?;
+        fs::remove_file(from)?;
+        return Ok(());
+    }
+    Err(WorkerError::Message(format!(
+        "unsupported path type for backup archive: {}",
+        from.display()
+    )))
+}
+
+fn is_cross_device_link(err: &io::Error) -> bool {
+    err.raw_os_error() == Some(18)
 }
 
 fn trim_backups(base: &Path, keep: usize) -> Result<(), WorkerError> {
@@ -2495,6 +2557,96 @@ mod tests {
         assert_eq!(
             fs::metadata(&exec).expect("stat tool").permissions().mode() & 0o777,
             0o755
+        );
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn move_path_with_cross_device_fallback_moves_regular_file() {
+        let unique = format!(
+            "despatch-update-worker-backup-file-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let base = std::env::temp_dir().join(unique);
+        fs::create_dir_all(base.join("backup")).expect("mkdir backup");
+
+        let src = base.join("src.txt");
+        let dst = base.join("backup").join("src.txt");
+        fs::write(&src, b"hello\n").expect("write src");
+        fs::set_permissions(&src, fs::Permissions::from_mode(0o640)).expect("chmod src");
+
+        move_path_with_cross_device_fallback(&src, &dst).expect("move file");
+
+        assert!(!src.exists(), "expected source file to be removed");
+        assert_eq!(fs::read_to_string(&dst).expect("read dst"), "hello\n");
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn move_path_with_cross_device_fallback_moves_directory() {
+        let unique = format!(
+            "despatch-update-worker-backup-dir-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let base = std::env::temp_dir().join(unique);
+        let src = base.join("srcdir");
+        let nested = src.join("nested");
+        let dst = base.join("backup").join("srcdir");
+        fs::create_dir_all(base.join("backup")).expect("mkdir backup");
+        fs::create_dir_all(&nested).expect("mkdir nested");
+        fs::write(nested.join("data.txt"), b"ok\n").expect("write nested");
+
+        move_path_with_cross_device_fallback(&src, &dst).expect("move directory");
+
+        assert!(!src.exists(), "expected source directory to be removed");
+        assert_eq!(
+            fs::read_to_string(dst.join("nested").join("data.txt")).expect("read dst nested"),
+            "ok\n"
+        );
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn move_path_with_cross_device_fallback_missing_source_is_noop() {
+        let unique = format!(
+            "despatch-update-worker-backup-missing-src-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let base = std::env::temp_dir().join(unique);
+        let src = base.join("missing.txt");
+        let dst = base.join("backup").join("missing.txt");
+
+        move_path_with_cross_device_fallback(&src, &dst).expect("missing source should be ignored");
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn move_path_with_cross_device_fallback_missing_destination_parent_returns_error() {
+        let unique = format!(
+            "despatch-update-worker-backup-missing-parent-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let base = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&base).expect("mkdir base");
+
+        let src = base.join("src.txt");
+        let dst = base.join("missing-parent").join("src.txt");
+        fs::write(&src, b"hello\n").expect("write src");
+
+        let err = move_path_with_cross_device_fallback(&src, &dst)
+            .expect_err("missing destination parent should fail");
+        assert!(
+            err.to_string().contains("No such file")
+                || err.to_string().contains("entity not found"),
+            "unexpected error: {err}"
         );
 
         let _ = fs::remove_dir_all(base);

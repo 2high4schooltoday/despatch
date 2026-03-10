@@ -265,7 +265,7 @@ func (w *MailWorkers) upsertSyncMessage(ctx context.Context, account models.Mail
 	remoteImagesBlocked := true
 	indexedAttachments := convertMessageAttachments(account.ID, scopedMessageID, msg.Attachments, now)
 	hasAttachments := len(indexedAttachments) > 0
-	threadID := w.resolveIndexedThreadID(ctx, account.ID, msg, subject, fromValue)
+	threadID := ""
 
 	if w.cfg.MailSecEnabled {
 		analysis, analysisErr := w.parseAndClassifyWithMailSec(ctx, account.ID, scopedMessageID, item.Raw, now)
@@ -300,9 +300,14 @@ func (w *MailWorkers) upsertSyncMessage(ctx context.Context, account models.Mail
 				indexedAttachments = analysis.Attachments
 			}
 			hasAttachments = hasAttachments || analysis.HasAttachments || len(indexedAttachments) > 0
-			threadID = w.resolveIndexedThreadID(ctx, account.ID, msg, subject, fromValue)
 		}
 	}
+	fromValue = mail.DecodeAddressListValue(fromValue)
+	toValue = mail.DecodeAddressListValue(toValue)
+	ccValue = mail.DecodeAddressListValue(ccValue)
+	bccValue = mail.DecodeAddressListValue(bccValue)
+	subject = mail.DecodeHeaderText(subject)
+	threadID = w.resolveIndexedThreadID(ctx, account.ID, msg, subject, fromValue)
 
 	scopedThreadID := mail.NormalizeIndexedThreadID(account.ID, threadID)
 	indexed := models.IndexedMessage{

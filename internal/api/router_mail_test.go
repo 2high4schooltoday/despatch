@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -19,6 +20,11 @@ type mailRouterTestClient struct {
 	search            []mail.MessageSummary
 	mailboxes         []mail.Mailbox
 	createdMailboxes  []string
+	renamedMailboxes  [][2]string
+	deletedMailboxes  []string
+	createMailboxErr  error
+	renameMailboxErr  error
+	deleteMailboxErr  error
 	listMailboxCalls  int
 	listMessageCalls  int
 }
@@ -32,8 +38,41 @@ func (m *mailRouterTestClient) ListMailboxes(ctx context.Context, user, pass str
 }
 
 func (m *mailRouterTestClient) CreateMailbox(ctx context.Context, user, pass, mailbox string) error {
+	if m.createMailboxErr != nil {
+		return m.createMailboxErr
+	}
 	m.createdMailboxes = append(m.createdMailboxes, mailbox)
 	m.mailboxes = append(m.mailboxes, mail.Mailbox{Name: mailbox})
+	return nil
+}
+
+func (m *mailRouterTestClient) RenameMailbox(ctx context.Context, user, pass, mailbox, newMailbox string) error {
+	if m.renameMailboxErr != nil {
+		return m.renameMailboxErr
+	}
+	m.renamedMailboxes = append(m.renamedMailboxes, [2]string{mailbox, newMailbox})
+	for i := range m.mailboxes {
+		if strings.EqualFold(strings.TrimSpace(m.mailboxes[i].Name), strings.TrimSpace(mailbox)) {
+			m.mailboxes[i].Name = newMailbox
+			break
+		}
+	}
+	return nil
+}
+
+func (m *mailRouterTestClient) DeleteMailbox(ctx context.Context, user, pass, mailbox string) error {
+	if m.deleteMailboxErr != nil {
+		return m.deleteMailboxErr
+	}
+	m.deletedMailboxes = append(m.deletedMailboxes, mailbox)
+	filtered := m.mailboxes[:0]
+	for _, item := range m.mailboxes {
+		if strings.EqualFold(strings.TrimSpace(item.Name), strings.TrimSpace(mailbox)) {
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	m.mailboxes = filtered
 	return nil
 }
 
@@ -91,6 +130,18 @@ func (m *mailRouterTestClient) GetAttachmentStream(ctx context.Context, user, pa
 func authedV1Get(t *testing.T, router http.Handler, path string, sessionCookie, csrfCookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.AddCookie(sessionCookie)
+	req.AddCookie(csrfCookie)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	return rec
+}
+
+func authedV1JSON(t *testing.T, router http.Handler, method, path string, sessionCookie, csrfCookie *http.Cookie, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", csrfCookie.Value)
 	req.AddCookie(sessionCookie)
 	req.AddCookie(csrfCookie)
 	rec := httptest.NewRecorder()
@@ -168,6 +219,7 @@ func TestV1ListMailboxesIncludesRole(t *testing.T) {
 			{Name: "INBOX", Role: "inbox", Unread: 2, Messages: 7},
 			{Name: "Sent Messages", Role: "sent", Unread: 0, Messages: 4},
 			{Name: "Deleted Messages", Role: "trash", Unread: 0, Messages: 1},
+			{Name: "Projects", Unread: 0, Messages: 0},
 		},
 	}, "")
 	sessionCookie, csrfCookie := loginForSend(t, router)
@@ -181,11 +233,17 @@ func TestV1ListMailboxesIncludesRole(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode mailboxes payload: %v body=%s", err, rec.Body.String())
 	}
-	if len(payload) != 3 {
-		t.Fatalf("expected 3 mailboxes, got %+v", payload)
+	if len(payload) != 4 {
+		t.Fatalf("expected 4 mailboxes, got %+v", payload)
 	}
 	if payload[1].Role != "sent" || payload[2].Role != "trash" {
 		t.Fatalf("expected roles in payload, got %+v", payload)
+	}
+	if payload[0].CanRename || payload[0].CanDelete {
+		t.Fatalf("expected inbox capabilities disabled, got %+v", payload[0])
+	}
+	if !payload[3].CanRename || !payload[3].CanDelete {
+		t.Fatalf("expected custom folder capabilities enabled, got %+v", payload[3])
 	}
 }
 
@@ -225,6 +283,97 @@ func TestV1ListMailboxesUsesCacheUntilInvalidated(t *testing.T) {
 	}
 	if client.listMailboxCalls != 2 {
 		t.Fatalf("expected mailbox cache invalidation after special mailbox update, got %d calls", client.listMailboxCalls)
+	}
+}
+
+func TestV1CreateMailboxReturns201AndInvalidatesCache(t *testing.T) {
+	client := &mailRouterTestClient{
+		mailboxes: []mail.Mailbox{
+			{Name: "INBOX", Role: "inbox", Unread: 2, Messages: 7},
+		},
+	}
+	router, _, _ := newSendRouterWithStore(t, client, "account@example.com")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	first := authedV1Get(t, router, "/api/v1/mailboxes", sessionCookie, csrfCookie)
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected initial 200, got %d body=%s", first.Code, first.Body.String())
+	}
+
+	create := authedV1JSON(t, router, http.MethodPost, "/api/v1/mailboxes", sessionCookie, csrfCookie, []byte(`{"mailbox_name":"Projects"}`))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("expected create 201, got %d body=%s", create.Code, create.Body.String())
+	}
+	if len(client.createdMailboxes) != 1 || client.createdMailboxes[0] != "Projects" {
+		t.Fatalf("expected Projects mailbox creation, got %+v", client.createdMailboxes)
+	}
+	if client.listMailboxCalls != 2 {
+		t.Fatalf("expected create to invalidate and reload cached mailboxes, got %d calls", client.listMailboxCalls)
+	}
+
+	after := authedV1Get(t, router, "/api/v1/mailboxes", sessionCookie, csrfCookie)
+	if after.Code != http.StatusOK {
+		t.Fatalf("expected follow-up 200, got %d body=%s", after.Code, after.Body.String())
+	}
+	if client.listMailboxCalls != 2 {
+		t.Fatalf("expected follow-up list to use refreshed cache, got %d calls", client.listMailboxCalls)
+	}
+}
+
+func TestV1RenameMailboxSuccess(t *testing.T) {
+	client := &mailRouterTestClient{
+		mailboxes: []mail.Mailbox{
+			{Name: "INBOX", Role: "inbox", Unread: 1, Messages: 5},
+			{Name: "Projects", Unread: 0, Messages: 0},
+		},
+	}
+	router := newSendRouter(t, client, "")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	rename := authedV1JSON(t, router, http.MethodPatch, "/api/v1/mailboxes", sessionCookie, csrfCookie, []byte(`{"mailbox_name":"Projects","new_mailbox_name":"Projects/2026"}`))
+	if rename.Code != http.StatusOK {
+		t.Fatalf("expected rename 200, got %d body=%s", rename.Code, rename.Body.String())
+	}
+	if len(client.renamedMailboxes) != 1 || client.renamedMailboxes[0][0] != "Projects" || client.renamedMailboxes[0][1] != "Projects/2026" {
+		t.Fatalf("expected rename call, got %+v", client.renamedMailboxes)
+	}
+}
+
+func TestV1RenameMailboxRejectsProtected(t *testing.T) {
+	client := &mailRouterTestClient{
+		mailboxes: []mail.Mailbox{
+			{Name: "INBOX", Role: "inbox", Unread: 1, Messages: 5},
+			{Name: "Sent", Role: "sent", Unread: 0, Messages: 0},
+		},
+	}
+	router := newSendRouter(t, client, "")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	rename := authedV1JSON(t, router, http.MethodPatch, "/api/v1/mailboxes", sessionCookie, csrfCookie, []byte(`{"mailbox_name":"Sent","new_mailbox_name":"Sent Archive"}`))
+	if rename.Code != http.StatusBadRequest {
+		t.Fatalf("expected rename 400, got %d body=%s", rename.Code, rename.Body.String())
+	}
+	if !strings.Contains(rename.Body.String(), "mailbox_protected") {
+		t.Fatalf("expected mailbox_protected error, got body=%s", rename.Body.String())
+	}
+}
+
+func TestV1DeleteMailboxRejectsNonEmpty(t *testing.T) {
+	client := &mailRouterTestClient{
+		mailboxes: []mail.Mailbox{
+			{Name: "INBOX", Role: "inbox", Unread: 1, Messages: 5},
+			{Name: "Projects", Unread: 0, Messages: 2},
+		},
+	}
+	router := newSendRouter(t, client, "")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	del := authedV1JSON(t, router, http.MethodDelete, "/api/v1/mailboxes", sessionCookie, csrfCookie, []byte(`{"mailbox_name":"Projects"}`))
+	if del.Code != http.StatusConflict {
+		t.Fatalf("expected delete 409, got %d body=%s", del.Code, del.Body.String())
+	}
+	if !strings.Contains(del.Body.String(), "mailbox_not_empty") {
+		t.Fatalf("expected mailbox_not_empty error, got body=%s", del.Body.String())
 	}
 }
 

@@ -199,6 +199,9 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.With(middleware.RateLimit(h.limiter, "send", 30, time.Minute, h.cfg.TrustProxy)).Post("/messages/{id}/forward", h.ForwardMessage)
 					r.Post("/messages/{id}/flags", h.SetMessageFlags)
 					r.Post("/messages/{id}/move", h.MoveMessage)
+					r.Post("/mailboxes", h.CreateMailbox)
+					r.Patch("/mailboxes", h.RenameMailbox)
+					r.Delete("/mailboxes", h.DeleteMailbox)
 					r.Post("/mailboxes/special/{role}", h.UpsertSpecialMailbox)
 				})
 
@@ -266,6 +269,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Get("/accounts/{id}/identities", h.V2ListIdentities)
 				r.Get("/mail/session-profile", h.V2GetSessionMailProfile)
 				r.Get("/mailboxes", h.V2ListMailboxMappings)
+				r.Get("/mailboxes/aggregate", h.V2ListAggregateMailboxes)
 				r.Get("/threads", h.V2ListThreads)
 				r.Get("/threads/{id}", h.V2GetThread)
 				r.Get("/messages", h.V2ListMessages)
@@ -294,6 +298,9 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Patch("/accounts/{id}", h.V2UpdateAccount)
 					r.Delete("/accounts/{id}", h.V2DeleteAccount)
 					r.Post("/accounts/{id}/activate", h.V2ActivateAccount)
+					r.Post("/accounts/{id}/mailboxes", h.V2CreateAccountMailbox)
+					r.Patch("/accounts/{id}/mailboxes", h.V2RenameAccountMailbox)
+					r.Delete("/accounts/{id}/mailboxes", h.V2DeleteAccountMailbox)
 					r.Post("/accounts/{id}/mailboxes/special/{role}", h.V2UpsertAccountSpecialMailbox)
 					r.Post("/accounts/{id}/identities", h.V2CreateIdentity)
 					r.Patch("/identities/{id}", h.V2UpdateIdentity)
@@ -874,7 +881,7 @@ func (h *Handlers) ListMessages(w http.ResponseWriter, r *http.Request) {
 		mbox = "INBOX"
 	}
 	page, pageSize := parsePagination(r)
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	items, err := h.svc.Mail().ListMessages(r.Context(), mailLogin, pass, mbox, page, pageSize)
 	if err != nil {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
@@ -891,7 +898,7 @@ func (h *Handlers) GetMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	msg, err := h.svc.Mail().GetMessage(r.Context(), mailLogin, pass, id)
 	if err != nil {
 		util.WriteError(w, 404, "not_found", err.Error(), middleware.RequestID(r.Context()))
@@ -1001,7 +1008,7 @@ func (h *Handlers) ListThreadMessages(w http.ResponseWriter, r *http.Request) {
 		offset = 0
 	}
 
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	scanMailboxes := []string{mailbox}
 	if scope == "conversation" {
 		available, _, _, _, listErr := h.listMailboxesWithSpecialRoles(r)
@@ -1260,7 +1267,7 @@ func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply st
 	}
 	req := decoded.Request
 	originalMessageID := ""
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	sessionPass := ""
 	if strings.TrimSpace(inReply) != "" {
 		sessionPass, err = h.sessionMailPassword(r)
@@ -1323,6 +1330,10 @@ func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply st
 	var sendResult mail.SendResult
 	sendResult, err = h.v2SendWithAccount(r.Context(), u, sendAccountID, req)
 	if err != nil {
+		if isInvalidMessageHeaderError(err) {
+			util.WriteError(w, 400, "invalid_sender_identity", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
 		if errors.Is(err, mail.ErrSMTPSenderRejected) {
 			util.WriteError(w, 422, "smtp_sender_rejected", err.Error(), middleware.RequestID(r.Context()))
 			return
@@ -1361,7 +1372,7 @@ func (h *Handlers) SetMessageFlags(w http.ResponseWriter, r *http.Request) {
 		writeJSONDecodeError(w, r, err)
 		return
 	}
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	if len(req.Add) > 0 || len(req.Remove) > 0 {
 		if err := h.svc.Mail().UpdateFlags(r.Context(), mailLogin, pass, id, mail.FlagPatch{
 			Add:    req.Add,
@@ -1397,7 +1408,7 @@ func (h *Handlers) MoveMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSONDecodeError(w, r, err)
 		return
 	}
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	if err := h.svc.Mail().Move(r.Context(), mailLogin, pass, id, req.Mailbox); err != nil {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
 		return
@@ -1419,7 +1430,7 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 		mailbox = "INBOX"
 	}
 	page, pageSize := parsePagination(r)
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	items, err := h.svc.Mail().Search(r.Context(), mailLogin, pass, mailbox, q, page, pageSize)
 	if err != nil {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
@@ -1436,7 +1447,7 @@ func (h *Handlers) GetAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	meta, stream, err := h.svc.Mail().GetAttachmentStream(r.Context(), mailLogin, pass, id)
 	if err != nil {
 		util.WriteError(w, 404, "not_found", err.Error(), middleware.RequestID(r.Context()))

@@ -923,10 +923,18 @@ func (h *Handlers) V2CreateIdentity(w http.ResponseWriter, r *http.Request) {
 	req.FromEmail = strings.TrimSpace(req.FromEmail)
 	req.ReplyTo = strings.TrimSpace(req.ReplyTo)
 	req.SignatureHTML, req.SignatureText = normalizeSignatureFields(req.SignatureHTML, req.SignatureText)
-	if req.FromEmail == "" {
-		util.WriteError(w, 400, "create_identity_failed", "from_email is required", middleware.RequestID(r.Context()))
+	fromEmail, err := normalizeRequiredMailboxAddress(req.FromEmail, "from_email")
+	if err != nil {
+		util.WriteError(w, 400, "create_identity_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	req.FromEmail = fromEmail
+	replyTo, err := normalizeOptionalMailboxAddress(req.ReplyTo, "reply_to")
+	if err != nil {
+		util.WriteError(w, 400, "create_identity_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	req.ReplyTo = replyTo
 	req.ID = uuid.NewString()
 	req.AccountID = accountID
 	out, err := h.svc.Store().CreateMailIdentity(r.Context(), req)
@@ -962,6 +970,16 @@ func (h *Handlers) V2UpdateIdentity(w http.ResponseWriter, r *http.Request) {
 	req.FromEmail = strings.TrimSpace(req.FromEmail)
 	req.ReplyTo = strings.TrimSpace(req.ReplyTo)
 	req.SignatureHTML, req.SignatureText = normalizeSignatureFields(req.SignatureHTML, req.SignatureText)
+	req.FromEmail, err = normalizeRequiredMailboxAddress(req.FromEmail, "from_email")
+	if err != nil {
+		util.WriteError(w, 400, "update_identity_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	req.ReplyTo, err = normalizeOptionalMailboxAddress(req.ReplyTo, "reply_to")
+	if err != nil {
+		util.WriteError(w, 400, "update_identity_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
 	req.ID = id
 	req.AccountID = current.AccountID
 	if strings.TrimSpace(req.ID) == "" {
@@ -1112,16 +1130,86 @@ func (h *Handlers) V2ListThreads(w http.ResponseWriter, r *http.Request) {
 	util.WriteJSON(w, 200, map[string]any{"items": items, "page": page, "page_size": pageSize, "total": total})
 }
 
+var errIndexedScopeBadRequest = errors.New("indexed_scope_bad_request")
+
+type indexedScopeBadRequestError struct {
+	message string
+}
+
+func (e indexedScopeBadRequestError) Error() string {
+	return e.message
+}
+
+func (e indexedScopeBadRequestError) Unwrap() error {
+	return errIndexedScopeBadRequest
+}
+
+func (h *Handlers) resolveIndexedScopeAccounts(ctx context.Context, u models.User, accountID, accountScope string) ([]models.MailAccount, bool, error) {
+	accountID = strings.TrimSpace(accountID)
+	accountScope = strings.ToLower(strings.TrimSpace(accountScope))
+	if accountScope == "all" {
+		if accountID != "" {
+			return nil, false, indexedScopeBadRequestError{message: "account_id and account_scope=all are mutually exclusive"}
+		}
+		items, err := h.svc.Store().ListMailAccounts(ctx, u.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		return items, true, nil
+	}
+	if accountID == "" {
+		return nil, false, indexedScopeBadRequestError{message: "account_id is required"}
+	}
+	account, err := h.svc.Store().GetMailAccountByID(ctx, u.ID, accountID)
+	if err != nil {
+		return nil, false, err
+	}
+	return []models.MailAccount{account}, false, nil
+}
+
+func indexedScopeAccountIDs(accounts []models.MailAccount) []string {
+	out := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		if trimmed := strings.TrimSpace(account.ID); trimmed != "" {
+			out = append(out, trimmed)
+		}
+	}
+	return out
+}
+
+func (h *Handlers) resolveIndexedMailboxFilters(ctx context.Context, accounts []models.MailAccount, mailboxName string) (map[string][]string, error) {
+	target := strings.TrimSpace(mailboxName)
+	if target == "" {
+		return nil, nil
+	}
+	filters := make(map[string][]string, len(accounts))
+	for _, account := range accounts {
+		items, err := h.listAccountMailboxesWithRolesBestEffort(ctx, account)
+		if err != nil {
+			return nil, err
+		}
+		filters[account.ID] = resolveAggregateMailboxSelection(items, target)
+	}
+	return filters, nil
+}
+
 func (h *Handlers) V2ListMessages(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
-	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
-	if accountID == "" {
-		util.WriteError(w, 400, "bad_request", "account_id is required", middleware.RequestID(r.Context()))
-		return
-	}
-	account, err := h.svc.Store().GetMailAccountByID(r.Context(), u.ID, accountID)
+	accounts, allScope, err := h.resolveIndexedScopeAccounts(
+		r.Context(),
+		u,
+		r.URL.Query().Get("account_id"),
+		r.URL.Query().Get("account_scope"),
+	)
 	if err != nil {
-		util.WriteError(w, 403, "forbidden", "account does not belong to current user", middleware.RequestID(r.Context()))
+		switch {
+		case errors.Is(err, errIndexedScopeBadRequest):
+			util.WriteError(w, 400, "bad_request", err.Error(), middleware.RequestID(r.Context()))
+		case errors.Is(err, store.ErrNotFound):
+			util.WriteError(w, 403, "forbidden", "account does not belong to current user", middleware.RequestID(r.Context()))
+		default:
+			util.WriteError(w, 500, "accounts_list_failed", err.Error(), middleware.RequestID(r.Context()))
+		}
 		return
 	}
 
@@ -1130,12 +1218,18 @@ func (h *Handlers) V2ListMessages(w http.ResponseWriter, r *http.Request) {
 	sortOrder := strings.TrimSpace(r.URL.Query().Get("sort"))
 	page, pageSize := parsePaginationV2(r)
 	offset := (page - 1) * pageSize
+	accountIDs := indexedScopeAccountIDs(accounts)
+	mailboxFilters, err := h.resolveIndexedMailboxFilters(r.Context(), accounts, mailbox)
+	if err != nil {
+		util.WriteError(w, 500, "mailbox_filter_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
 
 	var items []models.IndexedMessage
 	var total int
 	switch view {
 	case "waiting":
-		selfEmails := indexedSelfEmails(r.Context(), h, u, account)
+		selfEmails := indexedAccountsSelfEmails(r.Context(), h, u, accounts)
 		sampleLimit := pageSize * page
 		if sampleLimit < 200 {
 			sampleLimit = 200
@@ -1143,7 +1237,13 @@ func (h *Handlers) V2ListMessages(w http.ResponseWriter, r *http.Request) {
 		if sampleLimit > 600 {
 			sampleLimit = 600
 		}
-		recent, _, listErr := h.svc.Store().ListIndexedMessages(r.Context(), accountID, mailbox, "", sortOrder, sampleLimit, 0)
+		var recent []models.IndexedMessage
+		var listErr error
+		if allScope {
+			recent, _, listErr = h.svc.Store().ListIndexedMessagesByAccounts(r.Context(), accountIDs, mailboxFilters, "", sortOrder, sampleLimit, 0)
+		} else {
+			recent, _, listErr = h.svc.Store().ListIndexedMessages(r.Context(), accountIDs[0], mailbox, "", sortOrder, sampleLimit, 0)
+		}
 		if listErr != nil {
 			util.WriteError(w, 500, "messages_list_failed", listErr.Error(), middleware.RequestID(r.Context()))
 			return
@@ -1163,7 +1263,11 @@ func (h *Handlers) V2ListMessages(w http.ResponseWriter, r *http.Request) {
 			items = []models.IndexedMessage{}
 		}
 	default:
-		items, total, err = h.svc.Store().ListIndexedMessages(r.Context(), accountID, mailbox, view, sortOrder, pageSize, offset)
+		if allScope {
+			items, total, err = h.svc.Store().ListIndexedMessagesByAccounts(r.Context(), accountIDs, mailboxFilters, view, sortOrder, pageSize, offset)
+		} else {
+			items, total, err = h.svc.Store().ListIndexedMessages(r.Context(), accountIDs[0], mailbox, view, sortOrder, pageSize, offset)
+		}
 		if err != nil {
 			util.WriteError(w, 500, "messages_list_failed", err.Error(), middleware.RequestID(r.Context()))
 			return
@@ -1201,8 +1305,7 @@ func (h *Handlers) V2GetThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range items {
-		items[i].ID = mail.UnscopeIndexedMessageID(items[i].ID)
-		items[i].ThreadID = mail.UnscopeIndexedThreadID(items[i].ThreadID)
+		items[i] = presentIndexedMessage(items[i])
 	}
 	util.WriteJSON(w, 200, map[string]any{"id": threadID, "items": items})
 }
@@ -1228,9 +1331,38 @@ func (h *Handlers) V2GetIndexedMessage(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 500, "message_get_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	msg.ID = mail.UnscopeIndexedMessageID(msg.ID)
-	msg.ThreadID = mail.UnscopeIndexedThreadID(msg.ThreadID)
 	attachments, _ := h.svc.Store().GetIndexedMessageAttachments(r.Context(), accountID, id)
+	parsedHTML := ""
+	parsedAttachments := []mail.AttachmentMeta{}
+	if parsed, parseErr := mail.ParseRawMessage([]byte(msg.RawSource), msg.Mailbox, msg.UID); parseErr == nil {
+		if v := strings.TrimSpace(parsed.From); v != "" {
+			msg.FromValue = v
+		}
+		if len(parsed.To) > 0 {
+			msg.ToValue = strings.Join(parsed.To, ", ")
+		}
+		if len(parsed.CC) > 0 {
+			msg.CCValue = strings.Join(parsed.CC, ", ")
+		}
+		if len(parsed.BCC) > 0 {
+			msg.BCCValue = strings.Join(parsed.BCC, ", ")
+		}
+		if v := strings.TrimSpace(parsed.Subject); v != "" {
+			msg.Subject = v
+		}
+		if v := strings.TrimSpace(parsed.Body); v != "" {
+			msg.BodyText = v
+		}
+		parsedHTML = strings.TrimSpace(parsed.BodyHTML)
+		parsedAttachments = parsed.Attachments
+	}
+	msg = presentIndexedMessage(msg)
+	switch {
+	case parsedHTML != "":
+		msg.BodyHTMLSanitized = rewriteIndexedMessageHTML(accountID, msg.ID, parsedHTML, parsedAttachments)
+	case strings.TrimSpace(msg.BodyHTMLSanitized) != "":
+		msg.BodyHTMLSanitized = rewriteIndexedMessageHTML(accountID, msg.ID, msg.BodyHTMLSanitized, parsedAttachments)
+	}
 	util.WriteJSON(w, 200, map[string]any{"message": msg, "attachments": attachments})
 }
 
@@ -1344,10 +1476,29 @@ func (h *Handlers) V2BulkMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	action := strings.ToLower(strings.TrimSpace(req.Action))
-	if _, err := h.svc.Store().GetMailAccountByID(r.Context(), u.ID, req.AccountID); err != nil {
+	account, err := h.svc.Store().GetMailAccountByID(r.Context(), u.ID, req.AccountID)
+	if err != nil {
 		util.WriteError(w, 403, "forbidden", "account does not belong to current user", middleware.RequestID(r.Context()))
 		return
 	}
+	targetMailbox := strings.TrimSpace(req.Mailbox)
+	switch action {
+	case "seen", "unseen", "star", "unstar":
+	case "move":
+		if targetMailbox == "" {
+			util.WriteError(w, 400, "bad_request", "mailbox is required for move", middleware.RequestID(r.Context()))
+			return
+		}
+	default:
+		util.WriteError(w, 400, "bad_request", "unsupported action", middleware.RequestID(r.Context()))
+		return
+	}
+	pass, err := h.accountMailSecret(account)
+	if err != nil {
+		util.WriteError(w, 500, "mail_secret_unavailable", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	client := h.accountMailClient(account)
 	applied := make([]string, 0, len(req.IDs))
 	failed := make([]map[string]string, 0, len(req.IDs))
 
@@ -1356,7 +1507,33 @@ func (h *Handlers) V2BulkMessages(w http.ResponseWriter, r *http.Request) {
 		if id == "" {
 			continue
 		}
-		var err error
+		msg, msgErr := h.svc.Store().GetIndexedMessageByID(r.Context(), req.AccountID, id)
+		if msgErr != nil {
+			code := "action_failed"
+			if errors.Is(msgErr, store.ErrNotFound) {
+				code = "message_not_found"
+			}
+			failed = append(failed, map[string]string{"id": id, "code": code, "message": msgErr.Error()})
+			continue
+		}
+		rawMessageID := mail.UnscopeIndexedMessageID(msg.ID)
+		var mailErr error
+		switch action {
+		case "seen":
+			mailErr = client.UpdateFlags(r.Context(), account.Login, pass, rawMessageID, mail.FlagPatch{Add: []string{"\\Seen"}})
+		case "unseen":
+			mailErr = client.UpdateFlags(r.Context(), account.Login, pass, rawMessageID, mail.FlagPatch{Remove: []string{"\\Seen"}})
+		case "star":
+			mailErr = client.UpdateFlags(r.Context(), account.Login, pass, rawMessageID, mail.FlagPatch{Add: []string{"\\Flagged"}})
+		case "unstar":
+			mailErr = client.UpdateFlags(r.Context(), account.Login, pass, rawMessageID, mail.FlagPatch{Remove: []string{"\\Flagged"}})
+		case "move":
+			mailErr = client.Move(r.Context(), account.Login, pass, rawMessageID, targetMailbox)
+		}
+		if mailErr != nil {
+			failed = append(failed, map[string]string{"id": id, "code": "action_failed", "message": mailErr.Error()})
+			continue
+		}
 		switch action {
 		case "seen":
 			err = h.svc.Store().SetIndexedMessageSeen(r.Context(), req.AccountID, id, true)
@@ -1367,16 +1544,7 @@ func (h *Handlers) V2BulkMessages(w http.ResponseWriter, r *http.Request) {
 		case "unstar":
 			err = h.svc.Store().SetIndexedMessageFlagged(r.Context(), req.AccountID, id, false)
 		case "move":
-			err = h.svc.Store().MoveIndexedMessageMailbox(r.Context(), req.AccountID, id, req.Mailbox)
-		case "archive":
-			err = h.svc.Store().MoveIndexedMessageMailbox(r.Context(), req.AccountID, id, "Archive")
-		case "spam":
-			err = h.svc.Store().MoveIndexedMessageMailbox(r.Context(), req.AccountID, id, "Junk")
-		case "delete":
-			err = h.svc.Store().DeleteIndexedMessage(r.Context(), req.AccountID, id)
-		default:
-			util.WriteError(w, 400, "bad_request", "unsupported action", middleware.RequestID(r.Context()))
-			return
+			err = h.svc.Store().MoveIndexedMessageMailbox(r.Context(), req.AccountID, id, targetMailbox)
 		}
 		if err == nil {
 			applied = append(applied, id)
@@ -1385,6 +1553,8 @@ func (h *Handlers) V2BulkMessages(w http.ResponseWriter, r *http.Request) {
 		code := "action_failed"
 		if errors.Is(err, store.ErrNotFound) {
 			code = "message_not_found"
+		} else {
+			code = "index_update_failed"
 		}
 		failed = append(failed, map[string]string{"id": id, "code": code, "message": err.Error()})
 	}
@@ -1605,32 +1775,45 @@ func (h *Handlers) V2VerifyIndexedMessage(w http.ResponseWriter, r *http.Request
 
 func (h *Handlers) V2Search(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
-	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
-	if accountID == "" {
-		util.WriteError(w, 400, "bad_request", "account_id is required", middleware.RequestID(r.Context()))
-		return
-	}
-	if _, err := h.svc.Store().GetMailAccountByID(r.Context(), u.ID, accountID); err != nil {
-		util.WriteError(w, 403, "forbidden", "account does not belong to current user", middleware.RequestID(r.Context()))
+	accounts, allScope, err := h.resolveIndexedScopeAccounts(
+		r.Context(),
+		u,
+		r.URL.Query().Get("account_id"),
+		r.URL.Query().Get("account_scope"),
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, errIndexedScopeBadRequest):
+			util.WriteError(w, 400, "bad_request", err.Error(), middleware.RequestID(r.Context()))
+		case errors.Is(err, store.ErrNotFound):
+			util.WriteError(w, 403, "forbidden", "account does not belong to current user", middleware.RequestID(r.Context()))
+		default:
+			util.WriteError(w, 500, "accounts_list_failed", err.Error(), middleware.RequestID(r.Context()))
+		}
 		return
 	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	page, pageSize := parsePaginationV2(r)
-	items, total, err := h.svc.Store().SearchIndexedMessages(
-		r.Context(),
-		accountID,
-		strings.TrimSpace(r.URL.Query().Get("mailbox")),
-		q,
-		pageSize,
-		(page-1)*pageSize,
-	)
+	mailbox := strings.TrimSpace(r.URL.Query().Get("mailbox"))
+	accountIDs := indexedScopeAccountIDs(accounts)
+	mailboxFilters, err := h.resolveIndexedMailboxFilters(r.Context(), accounts, mailbox)
+	if err != nil {
+		util.WriteError(w, 500, "mailbox_filter_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	var items []models.IndexedMessage
+	var total int
+	if allScope {
+		items, total, err = h.svc.Store().SearchIndexedMessagesByAccounts(r.Context(), accountIDs, mailboxFilters, q, pageSize, (page-1)*pageSize)
+	} else {
+		items, total, err = h.svc.Store().SearchIndexedMessages(r.Context(), accountIDs[0], mailbox, q, pageSize, (page-1)*pageSize)
+	}
 	if err != nil {
 		util.WriteError(w, 500, "search_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
 	for i := range items {
-		items[i].ID = mail.UnscopeIndexedMessageID(items[i].ID)
-		items[i].ThreadID = mail.UnscopeIndexedThreadID(items[i].ThreadID)
+		items[i] = presentIndexedMessage(items[i])
 	}
 	util.WriteJSON(w, 200, map[string]any{"items": items, "page": page, "page_size": pageSize, "total": total})
 }
@@ -1663,22 +1846,35 @@ func (h *Handlers) V2SuggestRecipients(w http.ResponseWriter, r *http.Request) {
 }
 
 func indexedMessageSummary(item models.IndexedMessage) mail.MessageSummary {
+	item = presentIndexedMessage(item)
 	date := item.DateHeader
 	if date.IsZero() {
 		date = item.InternalDate
 	}
 	return mail.MessageSummary{
-		ID:       mail.UnscopeIndexedMessageID(item.ID),
-		Mailbox:  item.Mailbox,
-		From:     item.FromValue,
-		Subject:  item.Subject,
-		Date:     date,
-		Seen:     item.Seen,
-		Flagged:  item.Flagged,
-		Answered: item.Answered,
-		Preview:  item.Snippet,
-		ThreadID: mail.UnscopeIndexedThreadID(item.ThreadID),
+		ID:        item.ID,
+		AccountID: item.AccountID,
+		Mailbox:   item.Mailbox,
+		From:      item.FromValue,
+		Subject:   item.Subject,
+		Date:      date,
+		Seen:      item.Seen,
+		Flagged:   item.Flagged,
+		Answered:  item.Answered,
+		Preview:   item.Snippet,
+		ThreadID:  item.ThreadID,
 	}
+}
+
+func presentIndexedMessage(item models.IndexedMessage) models.IndexedMessage {
+	item.ID = mail.UnscopeIndexedMessageID(item.ID)
+	item.ThreadID = mail.UnscopeIndexedThreadID(item.ThreadID)
+	item.FromValue = mail.DecodeAddressListValue(item.FromValue)
+	item.ToValue = mail.DecodeAddressListValue(item.ToValue)
+	item.CCValue = mail.DecodeAddressListValue(item.CCValue)
+	item.BCCValue = mail.DecodeAddressListValue(item.BCCValue)
+	item.Subject = mail.DecodeHeaderText(item.Subject)
+	return item
 }
 
 func indexedSelfEmails(ctx context.Context, h *Handlers, u models.User, account models.MailAccount) []string {
@@ -1700,6 +1896,25 @@ func indexedSelfEmails(ctx context.Context, h *Handlers, u models.User, account 
 		}
 		seen[normalized] = struct{}{}
 		out = append(out, normalized)
+	}
+	return out
+}
+
+func indexedAccountsSelfEmails(ctx context.Context, h *Handlers, u models.User, accounts []models.MailAccount) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(accounts)+1)
+	for _, account := range accounts {
+		for _, value := range indexedSelfEmails(ctx, h, u, account) {
+			normalized := strings.ToLower(strings.TrimSpace(value))
+			if normalized == "" {
+				continue
+			}
+			if _, ok := seen[normalized]; ok {
+				continue
+			}
+			seen[normalized] = struct{}{}
+			out = append(out, normalized)
+		}
 	}
 	return out
 }
@@ -2134,7 +2349,7 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 		cryptoJSON = string(b)
 	}
 	replyContext := strings.EqualFold(strings.TrimSpace(draft.ComposeMode), "reply") && strings.TrimSpace(draft.ContextMessageID) != ""
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	mailPass := ""
 	if replyContext && strings.TrimSpace(draft.ContextAccountID) == "" {
 		mailPass, err = h.sessionMailPasswordFromContext(r.Context())
@@ -2167,6 +2382,11 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.v2SendWithAccount(r.Context(), u, sendAccountID, sendReq)
 	if err != nil {
+		if isInvalidMessageHeaderError(err) {
+			_ = h.svc.Store().SetDraftSendState(r.Context(), u.ID, draft.ID, "failed", err.Error())
+			util.WriteError(w, 400, "invalid_sender_identity", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
 		if errors.Is(err, mail.ErrSMTPSenderRejected) {
 			util.WriteError(w, 422, "smtp_sender_rejected", err.Error(), middleware.RequestID(r.Context()))
 			return
@@ -2182,7 +2402,7 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 		} else {
 			pass, passErr := h.sessionMailPasswordFromContext(r.Context())
 			if passErr == nil {
-				login := service.MailIdentity(u)
+				login := service.MailAuthLogin(u)
 				_ = h.svc.Mail().UpdateFlags(r.Context(), login, pass, draft.ContextMessageID, mail.FlagPatch{Add: []string{"\\Answered"}})
 			}
 		}
@@ -2212,7 +2432,7 @@ func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
 		writeJSONDecodeError(w, r, err)
 		return
 	}
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	recipients := append([]string{}, req.To...)
 	recipients = append(recipients, req.CC...)
 	recipients = append(recipients, req.BCC...)
@@ -2242,6 +2462,10 @@ func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := h.v2SendWithAccount(r.Context(), u, strings.TrimSpace(req.AccountID), sendReq); err != nil {
+		if isInvalidMessageHeaderError(err) {
+			util.WriteError(w, 400, "invalid_sender_identity", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
 		if errors.Is(err, mail.ErrSMTPSenderRejected) {
 			util.WriteError(w, 422, "smtp_sender_rejected", err.Error(), middleware.RequestID(r.Context()))
 			return
@@ -3471,7 +3695,7 @@ func (h *Handlers) v2SendWithAccount(ctx context.Context, u models.User, account
 		if err != nil {
 			return mail.SendResult{}, err
 		}
-		login := service.MailIdentity(u)
+		login := service.MailAuthLogin(u)
 		if preferredSent, err := h.resolveSessionSpecialMailboxByRole(ctx, u, pass, "sent"); err == nil {
 			req.SentMailbox = preferredSent
 		}

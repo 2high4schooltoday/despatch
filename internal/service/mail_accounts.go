@@ -14,7 +14,7 @@ func (s *Service) EnsureAuthenticatedMailAccount(ctx context.Context, u models.U
 	if !s.usesPAMAuth() {
 		return nil
 	}
-	login := strings.TrimSpace(MailIdentity(u))
+	login := strings.TrimSpace(MailAuthLogin(u))
 	if login == "" {
 		return nil
 	}

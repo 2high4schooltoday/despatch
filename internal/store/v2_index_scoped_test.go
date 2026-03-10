@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -258,5 +259,238 @@ func TestUpsertIndexedMessageScopesIDsPerAccount(t *testing.T) {
 	}
 	if attachmentsA[0].ID == attachmentsB[0].ID {
 		t.Fatalf("expected account-scoped attachment isolation, got same attachment id")
+	}
+}
+
+func TestListIndexedMessagesByAccountsMergesAndFiltersPerAccount(t *testing.T) {
+	st := newV2ScopedStore(t)
+	ctx := context.Background()
+	user, err := st.CreateUser(ctx, "multi@example.com", "hash", "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	createMailAccountForTest(t, st, user.ID, "acct-a", "a-login")
+	createMailAccountForTest(t, st, user.ID, "acct-b", "b-login")
+
+	seed := func(accountID, messageID, mailbox, subject string, at time.Time) {
+		t.Helper()
+		if _, err := st.UpsertIndexedMessage(ctx, models.IndexedMessage{
+			ID:           messageID,
+			AccountID:    accountID,
+			Mailbox:      mailbox,
+			UID:          uint32(at.Unix() % 1000),
+			ThreadID:     "thread-" + messageID,
+			FromValue:    accountID + "@example.com",
+			ToValue:      "dest@example.com",
+			Subject:      subject,
+			Snippet:      subject,
+			BodyText:     subject,
+			DateHeader:   at,
+			InternalDate: at,
+		}); err != nil {
+			t.Fatalf("upsert %s/%s: %v", accountID, messageID, err)
+		}
+	}
+
+	sharedDate := time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC)
+	seed("acct-a", "shared", "INBOX", "From A", sharedDate)
+	seed("acct-b", "shared", "INBOX", "From B", sharedDate.Add(2*time.Hour))
+	seed("acct-a", "custom-a", "Projects/Alpha", "Alpha notes", sharedDate.Add(time.Hour))
+
+	items, total, err := st.ListIndexedMessagesByAccounts(ctx, []string{"acct-a", "acct-b"}, nil, "", "", 10, 0)
+	if err != nil {
+		t.Fatalf("ListIndexedMessagesByAccounts: %v", err)
+	}
+	if total != 3 || len(items) != 3 {
+		t.Fatalf("expected 3 merged messages, got total=%d len=%d", total, len(items))
+	}
+	if items[0].AccountID != "acct-b" || mail.UnscopeIndexedMessageID(items[0].ID) != "shared" {
+		t.Fatalf("expected latest account B shared message first, got account=%s id=%s", items[0].AccountID, items[0].ID)
+	}
+	if items[1].AccountID != "acct-a" || items[2].AccountID != "acct-a" {
+		t.Fatalf("expected remaining account A messages, got %+v", items)
+	}
+
+	filtered, filteredTotal, err := st.ListIndexedMessagesByAccounts(ctx, []string{"acct-a", "acct-b"}, map[string][]string{
+		"acct-a": {"Projects/Alpha"},
+		"acct-b": {"Projects/Alpha"},
+	}, "", "", 10, 0)
+	if err != nil {
+		t.Fatalf("ListIndexedMessagesByAccounts filtered: %v", err)
+	}
+	if filteredTotal != 1 || len(filtered) != 1 {
+		t.Fatalf("expected one filtered message, got total=%d len=%d", filteredTotal, len(filtered))
+	}
+	if filtered[0].Mailbox != "Projects/Alpha" || filtered[0].AccountID != "acct-a" {
+		t.Fatalf("expected account A custom mailbox result, got %+v", filtered[0])
+	}
+}
+
+func TestSearchIndexedMessagesByAccountsMergesAcrossAccounts(t *testing.T) {
+	st := newV2ScopedStore(t)
+	ctx := context.Background()
+	user, err := st.CreateUser(ctx, "search@example.com", "hash", "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	createMailAccountForTest(t, st, user.ID, "acct-a", "a-login")
+	createMailAccountForTest(t, st, user.ID, "acct-b", "b-login")
+
+	for _, item := range []models.IndexedMessage{
+		{
+			ID:           "alpha-a",
+			AccountID:    "acct-a",
+			Mailbox:      "INBOX",
+			UID:          1,
+			ThreadID:     "thread-a",
+			FromValue:    "a@example.com",
+			ToValue:      "dest@example.com",
+			Subject:      "Alpha launch",
+			Snippet:      "alpha rollout",
+			BodyText:     "alpha rollout",
+			DateHeader:   time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+			InternalDate: time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:           "alpha-b",
+			AccountID:    "acct-b",
+			Mailbox:      "INBOX",
+			UID:          1,
+			ThreadID:     "thread-b",
+			FromValue:    "b@example.com",
+			ToValue:      "dest@example.com",
+			Subject:      "Alpha follow-up",
+			Snippet:      "alpha follow-up",
+			BodyText:     "alpha follow-up",
+			DateHeader:   time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+			InternalDate: time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+		},
+	} {
+		if _, err := st.UpsertIndexedMessage(ctx, item); err != nil {
+			t.Fatalf("upsert indexed message %s: %v", item.ID, err)
+		}
+	}
+
+	items, total, err := st.SearchIndexedMessagesByAccounts(ctx, []string{"acct-a", "acct-b"}, nil, "alpha", 10, 0)
+	if err != nil {
+		t.Fatalf("SearchIndexedMessagesByAccounts: %v", err)
+	}
+	if total != 2 || len(items) != 2 {
+		t.Fatalf("expected two merged search results, got total=%d len=%d", total, len(items))
+	}
+	if items[0].AccountID != "acct-b" || items[1].AccountID != "acct-a" {
+		t.Fatalf("expected search results sorted newest first across accounts, got %+v", items)
+	}
+}
+
+func TestRenameIndexedMailboxUpdatesMessagesAndThreads(t *testing.T) {
+	st := newV2ScopedStore(t)
+	ctx := context.Background()
+	user, err := st.CreateUser(ctx, "rename@example.com", "hash", "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	createMailAccountForTest(t, st, user.ID, "acct-rename", "rename-login")
+
+	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
+	if _, err := st.UpsertIndexedMessage(ctx, models.IndexedMessage{
+		ID:           "rename-msg",
+		AccountID:    "acct-rename",
+		Mailbox:      "Projects",
+		UID:          7,
+		ThreadID:     "rename-thread",
+		FromValue:    "alice@example.com",
+		ToValue:      "rename@example.com",
+		Subject:      "Project update",
+		Snippet:      "Project preview",
+		BodyText:     "Project preview",
+		DateHeader:   now,
+		InternalDate: now,
+	}); err != nil {
+		t.Fatalf("upsert indexed message: %v", err)
+	}
+	if _, err := st.UpsertSyncState(ctx, SyncState{
+		AccountID:   "acct-rename",
+		Mailbox:     "Projects",
+		UIDValidity: 1,
+		UIDNext:     8,
+	}); err != nil {
+		t.Fatalf("upsert sync state: %v", err)
+	}
+
+	threadIDs, err := st.RenameIndexedMailbox(ctx, "acct-rename", "Projects", "Projects/2026")
+	if err != nil {
+		t.Fatalf("RenameIndexedMailbox: %v", err)
+	}
+	if err := st.DeleteSyncState(ctx, "acct-rename", "Projects"); err != nil {
+		t.Fatalf("DeleteSyncState: %v", err)
+	}
+	if err := st.RefreshThreadIndex(ctx, "acct-rename", threadIDs); err != nil {
+		t.Fatalf("RefreshThreadIndex: %v", err)
+	}
+
+	msg, err := st.GetIndexedMessageByID(ctx, "acct-rename", "rename-msg")
+	if err != nil {
+		t.Fatalf("GetIndexedMessageByID: %v", err)
+	}
+	if msg.Mailbox != "Projects/2026" {
+		t.Fatalf("expected renamed mailbox, got %q", msg.Mailbox)
+	}
+	threads, total, err := st.ListThreads(ctx, "acct-rename", "", "", 20, 0)
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if total != 1 || len(threads) != 1 || threads[0].Mailbox != "Projects/2026" {
+		t.Fatalf("expected refreshed thread mailbox, got total=%d threads=%+v", total, threads)
+	}
+	if _, err := st.GetSyncState(ctx, "acct-rename", "Projects"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected old sync state removed, got err=%v", err)
+	}
+}
+
+func TestDeleteIndexedMailboxRemovesMessagesAndThreads(t *testing.T) {
+	st := newV2ScopedStore(t)
+	ctx := context.Background()
+	user, err := st.CreateUser(ctx, "delete@example.com", "hash", "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	createMailAccountForTest(t, st, user.ID, "acct-delete", "delete-login")
+
+	now := time.Date(2026, 3, 10, 13, 0, 0, 0, time.UTC)
+	if _, err := st.UpsertIndexedMessage(ctx, models.IndexedMessage{
+		ID:           "delete-msg",
+		AccountID:    "acct-delete",
+		Mailbox:      "Projects",
+		UID:          3,
+		ThreadID:     "delete-thread",
+		FromValue:    "alice@example.com",
+		ToValue:      "delete@example.com",
+		Subject:      "Cleanup",
+		Snippet:      "cleanup preview",
+		BodyText:     "cleanup preview",
+		DateHeader:   now,
+		InternalDate: now,
+	}); err != nil {
+		t.Fatalf("upsert indexed message: %v", err)
+	}
+
+	threadIDs, err := st.DeleteIndexedMailbox(ctx, "acct-delete", "Projects")
+	if err != nil {
+		t.Fatalf("DeleteIndexedMailbox: %v", err)
+	}
+	if err := st.RefreshThreadIndex(ctx, "acct-delete", threadIDs); err != nil {
+		t.Fatalf("RefreshThreadIndex: %v", err)
+	}
+
+	if _, err := st.GetIndexedMessageByID(ctx, "acct-delete", "delete-msg"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected deleted indexed message, got err=%v", err)
+	}
+	threads, total, err := st.ListThreads(ctx, "acct-delete", "", "", 20, 0)
+	if err != nil {
+		t.Fatalf("ListThreads: %v", err)
+	}
+	if total != 0 || len(threads) != 0 {
+		t.Fatalf("expected deleted thread index rows, got total=%d threads=%+v", total, threads)
 	}
 }

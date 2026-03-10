@@ -1112,7 +1112,7 @@ a:focus-visible {
 }
 
 .mail-pane--mailboxes {
-  grid-template-rows: minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .mail-pane--messages {
@@ -1153,6 +1153,27 @@ a:focus-visible {
   min-height: 0;
 }
 
+.mailbox-pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-bottom: var(--border-w) solid color-mix(in srgb, var(--line-2) 72%, transparent);
+}
+
+.mailbox-pane-copy {
+  min-width: 0;
+}
+
+.mailbox-pane-title {
+  display: block;
+  color: var(--fg-0);
+  font-size: 0.85rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
 .mail-selection-count {
   color: var(--fg-1);
   font-size: 0.75rem;
@@ -1176,7 +1197,15 @@ a:focus-visible {
   margin-bottom: 1px;
 }
 
-.mailbox-list button {
+.mailbox-row-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-1);
+  align-items: stretch;
+}
+
+.mailbox-row > button,
+.mailbox-row-main > button {
   width: 100%;
   min-height: 34px;
   border: 0;
@@ -1205,13 +1234,50 @@ a:focus-visible {
   font-size: 0.72rem;
 }
 
-.mailbox-list button:hover {
+.mailbox-row > button:hover,
+.mailbox-row-main > button:hover {
   background: color-mix(in srgb, var(--line-2) 60%, transparent);
 }
 
-.mailbox-list button.active {
+.mailbox-row > button.active,
+.mailbox-row-main > button.active {
   background: color-mix(in srgb, var(--line-0) 16%, transparent);
   border-left-color: var(--line-0);
+}
+
+.mailbox-row .row-menu {
+  align-self: stretch;
+}
+
+.mailbox-row .row-menu summary {
+  min-height: 34px;
+  border: 0;
+  padding: 0 var(--space-2);
+  color: var(--fg-muted);
+  background: transparent;
+}
+
+.mailbox-row .row-menu summary:hover {
+  background: color-mix(in srgb, var(--line-2) 60%, transparent);
+}
+
+.mailbox-row-menu-btn {
+  min-height: var(--ctrl-h-dense);
+  border: var(--border-w) solid var(--line-1);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: 0 var(--space-2);
+  cursor: pointer;
+}
+
+.mailbox-row-menu-btn:hover {
+  background: color-mix(in srgb, var(--line-2) 60%, transparent);
+}
+
+.mailbox-row-menu-btn--danger {
+  color: var(--sig-err);
 }
 
 .message-row {
@@ -1443,6 +1509,23 @@ a:focus-visible {
 .message-empty {
   padding: var(--space-3);
   color: var(--fg-muted);
+}
+
+.mail-account-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mail-account-switcher-label {
+  color: var(--fg-muted);
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+}
+
+.mail-account-switcher select {
+  min-width: 180px;
+  max-width: 280px;
 }
 
 .mail-pane.is-keyboard-pane {
@@ -2570,6 +2653,7 @@ a:focus-visible {
 }
 
 .ui-modal-input-wrap {
+  display: grid;
   gap: var(--space-1);
 }
 
@@ -3289,7 +3373,8 @@ button.setting-list-item {
     display: none;
   }
 
-  .mailbox-list button,
+  .mailbox-row > button,
+  .mailbox-row-main > button,
   .table th,
   .table td,
   .data-table th,

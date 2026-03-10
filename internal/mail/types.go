@@ -7,23 +7,26 @@ import (
 )
 
 type Mailbox struct {
-	Name     string `json:"name"`
-	Role     string `json:"role,omitempty"`
-	Unread   int    `json:"unread"`
-	Messages int    `json:"messages"`
+	Name      string `json:"name"`
+	Role      string `json:"role,omitempty"`
+	Unread    int    `json:"unread"`
+	Messages  int    `json:"messages"`
+	CanRename bool   `json:"can_rename,omitempty"`
+	CanDelete bool   `json:"can_delete,omitempty"`
 }
 
 type MessageSummary struct {
-	ID       string    `json:"id"`
-	Mailbox  string    `json:"mailbox,omitempty"`
-	From     string    `json:"from"`
-	Subject  string    `json:"subject"`
-	Date     time.Time `json:"date"`
-	Seen     bool      `json:"seen"`
-	Flagged  bool      `json:"flagged,omitempty"`
-	Answered bool      `json:"answered,omitempty"`
-	Preview  string    `json:"preview,omitempty"`
-	ThreadID string    `json:"thread_id,omitempty"`
+	ID        string    `json:"id"`
+	AccountID string    `json:"account_id,omitempty"`
+	Mailbox   string    `json:"mailbox,omitempty"`
+	From      string    `json:"from"`
+	Subject   string    `json:"subject"`
+	Date      time.Time `json:"date"`
+	Seen      bool      `json:"seen"`
+	Flagged   bool      `json:"flagged,omitempty"`
+	Answered  bool      `json:"answered,omitempty"`
+	Preview   string    `json:"preview,omitempty"`
+	ThreadID  string    `json:"thread_id,omitempty"`
 }
 
 type AttachmentMeta struct {
@@ -116,6 +119,8 @@ type FlagPatch struct {
 type Client interface {
 	ListMailboxes(ctx context.Context, user, pass string) ([]Mailbox, error)
 	CreateMailbox(ctx context.Context, user, pass, mailbox string) error
+	RenameMailbox(ctx context.Context, user, pass, mailbox, newMailbox string) error
+	DeleteMailbox(ctx context.Context, user, pass, mailbox string) error
 	ListMessages(ctx context.Context, user, pass, mailbox string, page, pageSize int) ([]MessageSummary, error)
 	GetMessage(ctx context.Context, user, pass, id string) (Message, error)
 	Search(ctx context.Context, user, pass, mailbox, query string, page, pageSize int) ([]MessageSummary, error)

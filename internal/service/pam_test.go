@@ -62,6 +62,12 @@ func (m pamTestDespatch) ListMailboxes(ctx context.Context, user, pass string) (
 func (m pamTestDespatch) CreateMailbox(ctx context.Context, user, pass, mailbox string) error {
 	return nil
 }
+func (m pamTestDespatch) RenameMailbox(ctx context.Context, user, pass, mailbox, newMailbox string) error {
+	return nil
+}
+func (m pamTestDespatch) DeleteMailbox(ctx context.Context, user, pass, mailbox string) error {
+	return nil
+}
 func (m pamTestDespatch) ListMessages(ctx context.Context, user, pass, mailbox string, page, pageSize int) ([]mail.MessageSummary, error) {
 	return nil, nil
 }
@@ -646,15 +652,21 @@ func TestPAMSetupReturnsIdentityErrorWhenNoCandidateAuthenticates(t *testing.T) 
 	}
 }
 
-func TestMailIdentityPrefersStoredMailLogin(t *testing.T) {
+func TestMailIdentityUsesPrimaryEmailWhileMailAuthLoginPrefersStoredLogin(t *testing.T) {
 	u := models.User{Email: "webmaster@example.com"}
 	if got := MailIdentity(u); got != "webmaster@example.com" {
-		t.Fatalf("expected fallback email identity, got %q", got)
+		t.Fatalf("expected sender identity email, got %q", got)
+	}
+	if got := MailAuthLogin(u); got != "webmaster@example.com" {
+		t.Fatalf("expected auth login fallback email, got %q", got)
 	}
 
 	stored := "webmaster"
 	u.MailLogin = &stored
-	if got := MailIdentity(u); got != "webmaster" {
-		t.Fatalf("expected stored mail_login identity, got %q", got)
+	if got := MailIdentity(u); got != "webmaster@example.com" {
+		t.Fatalf("expected sender identity to remain primary email, got %q", got)
+	}
+	if got := MailAuthLogin(u); got != "webmaster" {
+		t.Fatalf("expected stored mail_login auth login, got %q", got)
 	}
 }

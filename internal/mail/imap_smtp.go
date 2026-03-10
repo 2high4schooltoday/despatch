@@ -66,6 +66,36 @@ func (c *IMAPSMTPClient) CreateMailbox(ctx context.Context, user, pass, mailbox 
 	return cli.Create(name)
 }
 
+func (c *IMAPSMTPClient) RenameMailbox(ctx context.Context, user, pass, mailbox, newMailbox string) error {
+	name := strings.TrimSpace(mailbox)
+	target := strings.TrimSpace(newMailbox)
+	if name == "" {
+		return fmt.Errorf("mailbox name is required")
+	}
+	if target == "" {
+		return fmt.Errorf("new mailbox name is required")
+	}
+	cli, err := c.connectIMAP(ctx, user, pass)
+	if err != nil {
+		return err
+	}
+	defer cli.Logout()
+	return cli.Rename(name, target)
+}
+
+func (c *IMAPSMTPClient) DeleteMailbox(ctx context.Context, user, pass, mailbox string) error {
+	name := strings.TrimSpace(mailbox)
+	if name == "" {
+		return fmt.Errorf("mailbox name is required")
+	}
+	cli, err := c.connectIMAP(ctx, user, pass)
+	if err != nil {
+		return err
+	}
+	defer cli.Logout()
+	return cli.Delete(name)
+}
+
 func (c *IMAPSMTPClient) listMailboxesWithClient(cli *imapclient.Client, withStatus bool) ([]Mailbox, error) {
 	ch := make(chan *imap.MailboxInfo, 32)
 	done := make(chan error, 1)
@@ -160,7 +190,7 @@ func (c *IMAPSMTPClient) ListMessages(ctx context.Context, user, pass, mailbox s
 		subject := ""
 		date := msg.InternalDate
 		if msg.Envelope != nil {
-			subject = msg.Envelope.Subject
+			subject = DecodeHeaderText(msg.Envelope.Subject)
 			if !msg.Envelope.Date.IsZero() {
 				date = msg.Envelope.Date
 			}
@@ -189,7 +219,7 @@ func (c *IMAPSMTPClient) GetMessage(ctx context.Context, user, pass, id string) 
 		return Message{}, err
 	}
 	if parsed.Subject == "" && env != nil {
-		parsed.Subject = env.Subject
+		parsed.Subject = DecodeHeaderText(env.Subject)
 	}
 	if parsed.From == "" && env != nil {
 		parsed.From = envelopeFirstAddress(env.From)
@@ -281,7 +311,7 @@ func (c *IMAPSMTPClient) Search(ctx context.Context, user, pass, mailbox, query 
 		subject := ""
 		if msg.Envelope != nil {
 			from = envelopeFirstAddress(msg.Envelope.From)
-			subject = msg.Envelope.Subject
+			subject = DecodeHeaderText(msg.Envelope.Subject)
 		}
 		s := buildMessageSummary(msg, mailbox, from, subject, msg.InternalDate, previewSection)
 		if msg.Envelope != nil && !msg.Envelope.Date.IsZero() {
@@ -613,9 +643,9 @@ func buildRFC822(req SendRequest) ([]byte, error) {
 	mixed := multipart.NewWriter(&buf)
 	boundary := mixed.Boundary()
 	messageID := strings.TrimSpace(req.MessageID)
-	headerFromEmail := firstNonEmptyTrimmed(req.HeaderFromEmail, req.From)
-	if headerFromEmail == "" {
-		return nil, fmt.Errorf("from email is required")
+	headerFromEmail, err := NormalizeMailboxAddress(firstNonEmptyTrimmed(req.HeaderFromEmail, req.From))
+	if err != nil {
+		return nil, fmt.Errorf("invalid from email address")
 	}
 	if messageID == "" {
 		messageID = generateMessageID(headerFromEmail)
@@ -623,6 +653,10 @@ func buildRFC822(req SendRequest) ([]byte, error) {
 
 	fmt.Fprintf(&buf, "From: %s\r\n", encodeHeaderAddress(req.HeaderFromName, headerFromEmail))
 	if replyTo := strings.TrimSpace(req.ReplyTo); replyTo != "" {
+		replyTo, err = NormalizeMailboxAddress(replyTo)
+		if err != nil {
+			return nil, fmt.Errorf("invalid reply-to address")
+		}
 		fmt.Fprintf(&buf, "Reply-To: %s\r\n", encodeHeaderAddress("", replyTo))
 	}
 	fmt.Fprintf(&buf, "To: %s\r\n", strings.Join(to, ", "))
@@ -992,19 +1026,19 @@ func parseMessage(raw []byte, messageID, mailbox string, uid uint32) (Message, e
 
 	msg := Message{ID: messageID, Mailbox: mailbox, UID: uid}
 	if from, err := mr.Header.AddressList("From"); err == nil && len(from) > 0 {
-		msg.From = from[0].String()
+		msg.From = FormatAddress(from[0])
 	}
 	if to, err := mr.Header.AddressList("To"); err == nil {
-		msg.To = mailAddressStrings(to)
+		msg.To = FormatAddressList(to)
 	}
 	if cc, err := mr.Header.AddressList("Cc"); err == nil {
-		msg.CC = mailAddressStrings(cc)
+		msg.CC = FormatAddressList(cc)
 	}
 	if bcc, err := mr.Header.AddressList("Bcc"); err == nil {
-		msg.BCC = mailAddressStrings(bcc)
+		msg.BCC = FormatAddressList(bcc)
 	}
 	if subject, err := mr.Header.Subject(); err == nil {
-		msg.Subject = subject
+		msg.Subject = DecodeHeaderText(subject)
 	}
 	if date, err := mr.Header.Date(); err == nil {
 		msg.Date = date
@@ -1120,25 +1154,11 @@ func extractAttachment(raw []byte, messageID string, targetPart int) (Attachment
 	return AttachmentMeta{}, nil, fmt.Errorf("attachment not found")
 }
 
-func mailAddressStrings(in []*mail.Address) []string {
-	out := make([]string, 0, len(in))
-	for _, a := range in {
-		if a == nil {
-			continue
-		}
-		out = append(out, a.String())
-	}
-	return out
-}
-
 func envelopeFirstAddress(addrs []*imap.Address) string {
 	if len(addrs) == 0 || addrs[0] == nil {
 		return ""
 	}
-	if addrs[0].PersonalName != "" {
-		return fmt.Sprintf("%s <%s>", addrs[0].PersonalName, addrs[0].Address())
-	}
-	return addrs[0].Address()
+	return FormatDisplayAddress(addrs[0].PersonalName, addrs[0].Address())
 }
 
 func buildMessageSummary(msg *imap.Message, mailbox, from, subject string, date time.Time, section *imap.BodySectionName) MessageSummary {

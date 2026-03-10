@@ -102,6 +102,99 @@ func (s *Store) DeleteIndexedMessagesByMailbox(ctx context.Context, accountID, m
 	return tx.Commit()
 }
 
+func (s *Store) listMailboxThreadIDs(ctx context.Context, accountID string, mailboxes []string) ([]string, error) {
+	normalizedMailboxes := make([]string, 0, len(mailboxes))
+	seen := map[string]struct{}{}
+	for _, mailbox := range mailboxes {
+		trimmed := strings.TrimSpace(mailbox)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalizedMailboxes = append(normalizedMailboxes, trimmed)
+	}
+	if len(normalizedMailboxes) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(normalizedMailboxes)+1)
+	args = append(args, accountID)
+	for _, mailbox := range normalizedMailboxes {
+		args = append(args, mailbox)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		fmt.Sprintf(`SELECT DISTINCT thread_id FROM message_index WHERE account_id=? AND mailbox IN (%s)`, placeholders(len(normalizedMailboxes))),
+		args...,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	threadIDs := make([]string, 0, len(normalizedMailboxes))
+	for rows.Next() {
+		var threadID string
+		if err := rows.Scan(&threadID); err != nil {
+			return nil, err
+		}
+		threadIDs = append(threadIDs, threadID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return normalizeThreadIDs(accountID, threadIDs), nil
+}
+
+func (s *Store) RenameIndexedMailbox(ctx context.Context, accountID, mailbox, newMailbox string) ([]string, error) {
+	mailbox = strings.TrimSpace(mailbox)
+	newMailbox = strings.TrimSpace(newMailbox)
+	if mailbox == "" || newMailbox == "" || strings.EqualFold(mailbox, newMailbox) {
+		return nil, nil
+	}
+	threadIDs, err := s.listMailboxThreadIDs(ctx, accountID, []string{mailbox})
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.db.ExecContext(ctx,
+		`UPDATE message_index SET mailbox=?, updated_at=? WHERE account_id=? AND mailbox=?`,
+		newMailbox,
+		time.Now().UTC(),
+		accountID,
+		mailbox,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return threadIDs, nil
+}
+
+func (s *Store) DeleteIndexedMailbox(ctx context.Context, accountID, mailbox string) ([]string, error) {
+	mailbox = strings.TrimSpace(mailbox)
+	if mailbox == "" {
+		return nil, nil
+	}
+	threadIDs, err := s.listMailboxThreadIDs(ctx, accountID, []string{mailbox})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.DeleteIndexedMessagesByMailbox(ctx, accountID, mailbox); err != nil {
+		return nil, err
+	}
+	return threadIDs, nil
+}
+
+func (s *Store) DeleteSyncState(ctx context.Context, accountID, mailbox string) error {
+	mailbox = strings.TrimSpace(mailbox)
+	if mailbox == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM sync_state WHERE account_id=? AND mailbox=?`, accountID, mailbox)
+	return err
+}
+
 func (s *Store) RefreshThreadIndex(ctx context.Context, accountID string, threadIDs []string) error {
 	normalized := normalizeThreadIDs(accountID, threadIDs)
 	if len(normalized) == 0 {

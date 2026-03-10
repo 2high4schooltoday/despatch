@@ -20,6 +20,12 @@ func (NoopClient) ListMailboxes(ctx context.Context, user, pass string) ([]Mailb
 
 func (NoopClient) CreateMailbox(ctx context.Context, user, pass, mailbox string) error { return nil }
 
+func (NoopClient) RenameMailbox(ctx context.Context, user, pass, mailbox, newMailbox string) error {
+	return nil
+}
+
+func (NoopClient) DeleteMailbox(ctx context.Context, user, pass, mailbox string) error { return nil }
+
 func (NoopClient) ListMessages(ctx context.Context, user, pass, mailbox string, page, pageSize int) ([]MessageSummary, error) {
 	return []MessageSummary{}, nil
 }

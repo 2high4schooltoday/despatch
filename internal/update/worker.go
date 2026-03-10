@@ -609,15 +609,16 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 
 	backupDest := filepath.Join(backupsDir(m.cfg), time.Now().UTC().Format("20060102T150405")+"-"+sanitizePathToken(runID))
 	if err := os.MkdirAll(backupDest, 0o750); err != nil {
-		return release.TagName, false, err
+		fmt.Fprintf(os.Stderr, "update backup warning: mkdir %s failed: %v\n", backupDest, err)
+		return release.TagName, false, nil
 	}
-	_ = os.Rename(prevBin, filepath.Join(backupDest, "despatch"))
-	_ = os.Rename(prevPam, filepath.Join(backupDest, "despatch-pam-reset-helper"))
-	_ = os.Rename(prevWorker, filepath.Join(backupDest, "despatch-update-worker"))
-	_ = os.Rename(prevMailSec, filepath.Join(backupDest, "despatch-mailsec-service"))
-	_ = os.Rename(prevWeb, filepath.Join(backupDest, "web"))
-	_ = os.Rename(prevMig, filepath.Join(backupDest, "migrations"))
-	_ = os.Rename(prevDeploy, filepath.Join(backupDest, "deploy"))
+	archivePreviousPathBestEffort(prevBin, filepath.Join(backupDest, "despatch"))
+	archivePreviousPathBestEffort(prevPam, filepath.Join(backupDest, "despatch-pam-reset-helper"))
+	archivePreviousPathBestEffort(prevWorker, filepath.Join(backupDest, "despatch-update-worker"))
+	archivePreviousPathBestEffort(prevMailSec, filepath.Join(backupDest, "despatch-mailsec-service"))
+	archivePreviousPathBestEffort(prevWeb, filepath.Join(backupDest, "web"))
+	archivePreviousPathBestEffort(prevMig, filepath.Join(backupDest, "migrations"))
+	archivePreviousPathBestEffort(prevDeploy, filepath.Join(backupDest, "deploy"))
 	trimBackups(backupsDir(m.cfg), m.cfg.UpdateBackupKeep)
 
 	return release.TagName, false, nil
@@ -1138,6 +1139,47 @@ func normalizeRuntimeTreePermissions(root string) error {
 			return nil
 		}
 	})
+}
+
+func archivePreviousPathBestEffort(src, dst string) {
+	if err := movePathWithCrossDeviceFallback(src, dst); err != nil {
+		fmt.Fprintf(os.Stderr, "update backup warning: archive %s -> %s failed: %v\n", src, dst, err)
+	}
+}
+
+func movePathWithCrossDeviceFallback(src, dst string) error {
+	if err := os.Rename(src, dst); err == nil {
+		return nil
+	} else if !errors.Is(err, syscall.EXDEV) {
+		if os.IsNotExist(err) {
+			if _, statErr := os.Stat(src); statErr == nil {
+				return err
+			} else if os.IsNotExist(statErr) {
+				return nil
+			} else {
+				return statErr
+			}
+		}
+		return err
+	}
+
+	info, err := os.Stat(src)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if info.IsDir() {
+		if err := copyDir(src, dst); err != nil {
+			return err
+		}
+		return os.RemoveAll(src)
+	}
+	if err := copyFile(src, dst, info.Mode().Perm()); err != nil {
+		return err
+	}
+	return os.Remove(src)
 }
 
 func swapPath(current, staged, previous string) error {

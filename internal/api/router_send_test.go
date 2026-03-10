@@ -51,6 +51,14 @@ func (m *sendTestDespatch) CreateMailbox(ctx context.Context, user, pass, mailbo
 	return nil
 }
 
+func (m *sendTestDespatch) RenameMailbox(ctx context.Context, user, pass, mailbox, newMailbox string) error {
+	return nil
+}
+
+func (m *sendTestDespatch) DeleteMailbox(ctx context.Context, user, pass, mailbox string) error {
+	return nil
+}
+
 func (m *sendTestDespatch) ListMessages(ctx context.Context, user, pass, mailbox string, page, pageSize int) ([]mail.MessageSummary, error) {
 	return nil, nil
 }
@@ -282,8 +290,30 @@ func TestSendSMTPPolicyErrorMappedTo422(t *testing.T) {
 	if user != "webmaster" {
 		t.Fatalf("expected SMTP auth user to use mail_login, got %q", user)
 	}
-	if req.HeaderFromEmail != "webmaster" || req.EnvelopeFrom != "webmaster" || req.From != "webmaster" {
-		t.Fatalf("expected resolved session sender webmaster, got %#v", req)
+	if req.HeaderFromEmail != "admin@example.com" || req.EnvelopeFrom != "admin@example.com" || req.From != "admin@example.com" {
+		t.Fatalf("expected resolved session sender admin@example.com, got %#v", req)
+	}
+}
+
+func TestSendInvalidStoredReplyToMappedTo400(t *testing.T) {
+	despatch := &sendTestDespatch{sendErr: errors.New("invalid reply-to address")}
+	router := newSendRouter(t, despatch, "webmaster")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+	body, _ := json.Marshal(map[string]any{
+		"to":      []string{"alice@example.com"},
+		"subject": "hello",
+		"body":    "world",
+	})
+	rec := postSendJSON(t, router, sessionCookie, csrfCookie, body)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var apiErr util.APIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &apiErr); err != nil {
+		t.Fatalf("decode api error: %v body=%s", err, rec.Body.String())
+	}
+	if apiErr.Code != "invalid_sender_identity" {
+		t.Fatalf("expected invalid_sender_identity, got %q body=%s", apiErr.Code, rec.Body.String())
 	}
 }
 

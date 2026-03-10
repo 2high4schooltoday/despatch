@@ -42,6 +42,11 @@ func (h *Handlers) V2UpdateSessionMailProfile(w http.ResponseWriter, r *http.Req
 	}
 	if req.ReplyTo != nil {
 		profile.ReplyTo = strings.TrimSpace(*req.ReplyTo)
+		profile.ReplyTo, err = normalizeOptionalMailboxAddress(profile.ReplyTo, "reply_to")
+		if err != nil {
+			util.WriteError(w, 400, "session_mail_profile_update_failed", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
 	}
 	if req.SignatureHTML != nil {
 		profile.SignatureHTML = strings.TrimSpace(*req.SignatureHTML)

@@ -16,9 +16,13 @@ const state = {
   messages: [],
   mail: {
     mailboxes: [],
+    mailboxesByAccount: {},
     drafts: [],
     indexedAccounts: [],
     indexedAccountID: "",
+    selectedIndexedAccountID: "",
+    lastConcreteIndexedAccountID: "",
+    mailScope: "account",
     indexedAuthEmail: "",
     indexedSelfEmails: [],
     indexedRuntimeFallback: false,
@@ -274,6 +278,8 @@ const el = {
   attachments: document.getElementById("attachment-list"),
   searchInput: document.getElementById("search-input"),
   btnSearch: document.getElementById("btn-search"),
+  mailAccountSwitcherWrap: document.getElementById("mail-account-switcher-wrap"),
+  mailAccountSwitcher: document.getElementById("mail-account-switcher"),
   mailIndexStatus: document.getElementById("mail-index-status"),
   btnMailSaveSearch: document.getElementById("btn-mail-save-search"),
   btnMailDeleteSearch: document.getElementById("btn-mail-delete-search"),
@@ -284,6 +290,7 @@ const el = {
   btnArchive: document.getElementById("btn-archive"),
   btnMove: document.getElementById("btn-move"),
   btnTrash: document.getElementById("btn-trash"),
+  btnMailboxNew: document.getElementById("btn-mailbox-new"),
   mailMoveTarget: document.getElementById("mail-move-target"),
   mailSelectionTools: document.getElementById("mail-selection-tools"),
   mailSelectionCount: document.getElementById("mail-selection-count"),
@@ -350,6 +357,7 @@ const el = {
   uiModalInputWrap: document.getElementById("ui-modal-input-wrap"),
   uiModalInputLabel: document.getElementById("ui-modal-input-label"),
   uiModalInput: document.getElementById("ui-modal-input"),
+  uiModalSelect: document.getElementById("ui-modal-select"),
   uiModalDatalist: document.getElementById("ui-modal-datalist"),
   uiModalCancel: document.getElementById("ui-modal-cancel"),
   uiModalConfirm: document.getElementById("ui-modal-confirm"),
@@ -1364,7 +1372,7 @@ function renderComposeRecipientSuggestions(items = []) {
 }
 
 async function fetchComposeRecipientSuggestions(query) {
-  const accountID = String(state.compose.selectedAccountID || state.mail.indexedAccountID || "").trim();
+  const accountID = String(state.compose.selectedAccountID || effectiveIndexedComposeAccountID() || "").trim();
   const q = String(query || "").trim();
   if (!accountID || q.length < 2) {
     clearComposeRecipientSuggestions();
@@ -2872,7 +2880,7 @@ function renderComposeFromControls() {
   const preferredAccountID = String(
     state.compose.selectedAccountID
     || state.compose.sendContext?.accountID
-    || ((state.user?.mail_secret_required === true || activeMailUsesIndexedSource()) ? state.mail.indexedAccountID : "")
+    || ((state.user?.mail_secret_required === true || activeMailUsesIndexedSource()) ? effectiveIndexedComposeAccountID() : "")
     || "",
   ).trim();
   let chosen = state.compose.selectedIdentityID
@@ -2913,7 +2921,7 @@ function composeSelectedIdentityItem() {
   if (items.length === 0) return null;
   const selected = composeIdentityByID(state.compose.selectedIdentityID);
   if (selected) return selected;
-  const preferredAccountID = String(state.compose.selectedAccountID || state.compose.sendContext?.accountID || "").trim();
+  const preferredAccountID = String(state.compose.selectedAccountID || state.compose.sendContext?.accountID || effectiveIndexedComposeAccountID() || "").trim();
   if (preferredAccountID) {
     const preferred = items.find((item) => String(item.account_id || "") === preferredAccountID && (item.is_default || item.identity_is_default || item.account_is_default))
       || items.find((item) => String(item.account_id || "") === preferredAccountID && item.is_session !== true);
@@ -3274,6 +3282,7 @@ async function openComposeOverlay(trigger = null, opts = {}) {
   const draftID = String(opts.draftID || "").trim();
   const prefill = opts.prefill && typeof opts.prefill === "object" ? opts.prefill : null;
   const sendContext = opts.sendContext && typeof opts.sendContext === "object" ? opts.sendContext : { mode: "send", messageID: "", accountID: "" };
+  const resolvedSendAccountID = String(sendContext.accountID || effectiveIndexedComposeAccountID() || "").trim();
   state.ui.composeOpen = true;
   state.ui.composeLastTrigger = trigger || document.activeElement || null;
   el.composeOverlay.classList.remove("hidden");
@@ -3285,7 +3294,7 @@ async function openComposeOverlay(trigger = null, opts = {}) {
 
   resetComposeDraftSession({ keepCrash: true });
   state.compose.authEmail = String(state.user?.email || "").trim();
-  setComposeSendContext("send", "", "");
+  setComposeSendContext(sendContext.mode, sendContext.messageID, resolvedSendAccountID);
   state.compose.recipients.to = [];
   state.compose.recipients.cc = [];
   state.compose.recipients.bcc = [];
@@ -3338,7 +3347,7 @@ async function openComposeOverlay(trigger = null, opts = {}) {
     preferComposeStartFocus = true;
   }
   if (!draftID) {
-    setComposeSendContext(sendContext.mode, sendContext.messageID, sendContext.accountID);
+    setComposeSendContext(sendContext.mode, sendContext.messageID, resolvedSendAccountID);
     if (shouldAutoInsertSignature) {
       applyComposeIdentitySignature(composeSelectedIdentityItem(), { replaceUntouched: false });
       state.compose.draftBaselineJSON = composeDraftPayloadJSON(composeCurrentDraftPayload());
@@ -3456,6 +3465,8 @@ function openUIModal(options) {
     inputType = "text",
     inputValue = "",
     choices = [],
+    selectOptions = [],
+    selectedValue = "",
     mode = "confirm",
     trigger = null,
   } = options || {};
@@ -3470,6 +3481,19 @@ function openUIModal(options) {
   el.uiModalInputLabel.textContent = inputLabel;
   el.uiModalInput.type = inputType;
   el.uiModalInput.value = inputValue;
+  if (el.uiModalSelect) {
+    el.uiModalSelect.replaceChildren();
+    for (const optionLike of Array.isArray(selectOptions) ? selectOptions : []) {
+      const value = String(optionLike?.value ?? optionLike ?? "").trim();
+      const label = String(optionLike?.label ?? optionLike ?? "").trim();
+      if (!value || !label) continue;
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      el.uiModalSelect.appendChild(option);
+    }
+    el.uiModalSelect.value = String(selectedValue || "");
+  }
   if (el.uiModalDatalist) {
     el.uiModalDatalist.replaceChildren();
     for (const choice of Array.isArray(choices) ? choices : []) {
@@ -3486,12 +3510,20 @@ function openUIModal(options) {
     }
   }
   const hasInput = mode === "prompt";
-  el.uiModalInputWrap.classList.toggle("hidden", !hasInput);
+  const hasSelect = mode === "select";
+  el.uiModalInputWrap.classList.toggle("hidden", !hasInput && !hasSelect);
+  if (el.uiModalInput) {
+    el.uiModalInput.classList.toggle("hidden", !hasInput);
+  }
+  if (el.uiModalSelect) {
+    el.uiModalSelect.classList.toggle("hidden", !hasSelect);
+  }
   el.uiModalOverlay.classList.remove("hidden");
   el.uiModalOverlay.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
   window.setTimeout(() => {
     if (hasInput) el.uiModalInput.focus();
+    else if (hasSelect && el.uiModalSelect) el.uiModalSelect.focus();
     else el.uiModalConfirm.focus();
   }, 0);
 
@@ -3510,6 +3542,22 @@ async function showPromptModal(opts) {
     inputType: opts?.inputType || "text",
     inputValue: opts?.defaultValue || "",
     choices: opts?.choices || [],
+    confirmText: opts?.confirmText || "Confirm",
+    cancelText: opts?.cancelText || "Cancel",
+    trigger: opts?.trigger || null,
+  });
+  if (!out || !out.confirmed) return null;
+  return String(out.value || "");
+}
+
+async function showSelectModal(opts) {
+  const out = await openUIModal({
+    mode: "select",
+    title: opts?.title || "Select",
+    body: opts?.body || "",
+    inputLabel: opts?.label || "Choose",
+    selectOptions: opts?.choices || [],
+    selectedValue: opts?.defaultValue || "",
     confirmText: opts?.confirmText || "Confirm",
     cancelText: opts?.cancelText || "Cancel",
     trigger: opts?.trigger || null,
@@ -7232,6 +7280,22 @@ function mailboxDisplayLabel(mailbox) {
   return String(mailbox?.name || "Mailbox");
 }
 
+function mailboxNameMatches(left, right) {
+  return String(left || "").trim().toLowerCase() === String(right || "").trim().toLowerCase();
+}
+
+function mailboxCanRename(mailbox) {
+  return !!(mailbox?.can_rename ?? mailbox?.canRename);
+}
+
+function mailboxCanDelete(mailbox) {
+  return !!(mailbox?.can_delete ?? mailbox?.canDelete);
+}
+
+function mailboxHasManagementActions(mailbox) {
+  return mailboxCanRename(mailbox) || mailboxCanDelete(mailbox);
+}
+
 function mailboxRecordByName(name) {
   const target = String(name || "").trim();
   if (!target) return null;
@@ -7250,10 +7314,128 @@ function defaultMailboxNameForRole(role) {
   return role === "archive" ? "Archive" : "Trash";
 }
 
+function mailboxNameForRoleInAccount(accountID, role) {
+  const target = normalizeMailboxRole(role);
+  if (!target) return "";
+  const items = accountMailboxList(accountID);
+  const match = items.find((item) => normalizeMailboxRole(item?.role, item?.name) === target);
+  return String(match?.name || "");
+}
+
+async function ensureIndexedAccountMailboxList(accountID) {
+  const key = String(accountID || "").trim();
+  if (!key) return [];
+  const existing = accountMailboxList(key);
+  if (existing.length > 0) return existing;
+  return loadIndexedAccountMailboxList(key, { logErrors: false });
+}
+
+async function ensureSpecialMailboxForAccount(accountID, role, trigger = null) {
+  const normalizedRole = normalizeMailboxRole(role);
+  if (normalizedRole !== "sent" && normalizedRole !== "archive" && normalizedRole !== "trash") {
+    throw new Error("Unsupported special mailbox.");
+  }
+  const existing = String(mailboxNameForRoleInAccount(accountID, normalizedRole) || "").trim();
+  if (existing) {
+    return existing;
+  }
+  const accountLabel = indexedAccountLabel(accountID);
+  const choices = (await ensureIndexedAccountMailboxList(accountID))
+    .map((item) => String(item?.name || "").trim())
+    .filter(Boolean);
+  const input = await showPromptModal({
+    title: normalizedRole === "sent"
+      ? `Choose Sent Mailbox`
+      : normalizedRole === "archive"
+        ? `Choose Archive Mailbox`
+        : `Choose Trash Mailbox`,
+    body: `${accountLabel}: pick an existing mailbox or type a new mailbox name. Despatch will create it if it does not exist yet.`,
+    label: "Mailbox",
+    defaultValue: defaultMailboxNameForRole(normalizedRole),
+    confirmText: "Save",
+    cancelText: "Cancel",
+    choices,
+    trigger,
+  });
+  if (input === null) {
+    throw new Error("Mailbox setup cancelled.");
+  }
+  const mailboxName = String(input || "").trim();
+  if (!mailboxName) {
+    throw new Error("Mailbox name is required.");
+  }
+  const payload = await api(`/api/v2/accounts/${encodeURIComponent(accountID)}/mailboxes/special/${encodeURIComponent(normalizedRole)}`, {
+    method: "POST",
+    json: {
+      mailbox_name: mailboxName,
+      create_if_missing: true,
+    },
+  });
+  if (Array.isArray(payload?.mailboxes)) {
+    state.mail.mailboxesByAccount = {
+      ...(typeof state.mail.mailboxesByAccount === "object" && state.mail.mailboxesByAccount ? state.mail.mailboxesByAccount : {}),
+      [accountID]: payload.mailboxes,
+    };
+  } else {
+    await loadIndexedAccountMailboxList(accountID, { logErrors: false });
+  }
+  if (currentMailScope() === "all") {
+    state.mail.mailboxes = mergeAggregateMailboxesLocal(state.mail.mailboxesByAccount);
+    renderMailboxes();
+    renderMailMoveTargets();
+  } else if (currentIndexedAccountID() === accountID) {
+    const refreshed = accountMailboxList(accountID);
+    if (refreshed.length > 0) {
+      state.mail.mailboxes = refreshed;
+      renderMailboxes();
+      renderMailMoveTargets();
+    }
+  }
+  return String(payload?.mailbox_name || mailboxName).trim();
+}
+
+async function resolveIndexedTargetMailboxForAccount(action, accountID, requestedMailbox, trigger = null) {
+  const normalizedAction = String(action || "").trim().toLowerCase();
+  if (normalizedAction === "archive") {
+    return ensureSpecialMailboxForAccount(accountID, "archive", trigger);
+  }
+  if (normalizedAction === "trash") {
+    return ensureSpecialMailboxForAccount(accountID, "trash", trigger);
+  }
+  const target = String(requestedMailbox || "").trim();
+  if (!target) {
+    throw new Error("Choose a destination mailbox first.");
+  }
+  const items = await ensureIndexedAccountMailboxList(accountID);
+  const targetRole = normalizeMailboxRole("", target);
+  if (targetRole === "archive" || targetRole === "trash" || targetRole === "sent") {
+    return ensureSpecialMailboxForAccount(accountID, targetRole, trigger);
+  }
+  const match = items.find((item) => {
+    if (targetRole) {
+      return normalizeMailboxRole(item?.role, item?.name) === targetRole;
+    }
+    return String(item?.name || "").trim().toLowerCase() === target.toLowerCase();
+  }) || null;
+  if (!match) {
+    throw new Error(`${indexedAccountLabel(accountID)} does not have mailbox ${target}.`);
+  }
+  return String(match?.name || "").trim();
+}
+
 async function ensureSpecialMailbox(role, trigger = null) {
   const normalizedRole = normalizeMailboxRole(role);
   if (normalizedRole !== "sent" && normalizedRole !== "archive" && normalizedRole !== "trash") {
     throw new Error("Unsupported special mailbox.");
+  }
+  const indexedAccountID = String(
+    state.compose.selectedAccountID
+    || state.compose.sendContext?.accountID
+    || effectiveIndexedComposeAccountID()
+    || "",
+  ).trim();
+  if (indexedAccountID) {
+    return ensureSpecialMailboxForAccount(indexedAccountID, normalizedRole, trigger);
   }
   const existing = String(mailboxNameForRole(normalizedRole) || "").trim();
   if (existing) {
@@ -7281,16 +7463,7 @@ async function ensureSpecialMailbox(role, trigger = null) {
   if (!mailboxName) {
     throw new Error("Mailbox name is required.");
   }
-  const accountID = String(
-    state.compose.selectedAccountID
-    || state.compose.sendContext?.accountID
-    || (mailUsesIndexedMode() ? state.mail.indexedAccountID : "")
-    || "",
-  ).trim();
-  const endpoint = accountID
-    ? `/api/v2/accounts/${encodeURIComponent(accountID)}/mailboxes/special/${encodeURIComponent(normalizedRole)}`
-    : `/api/v1/mailboxes/special/${encodeURIComponent(normalizedRole)}`;
-  const payload = await api(endpoint, {
+  const payload = await api(`/api/v1/mailboxes/special/${encodeURIComponent(normalizedRole)}`, {
     method: "POST",
     json: {
       mailbox_name: mailboxName,
@@ -7348,11 +7521,121 @@ function selectedSavedSearchRecord() {
     .find((item) => String(item?.id || "") === id) || null;
 }
 
+function indexedAccountsList() {
+  return Array.isArray(state.mail.indexedAccounts) ? state.mail.indexedAccounts : [];
+}
+
+function hasIndexedAccounts() {
+  return indexedAccountsList().length > 0;
+}
+
+function currentMailScope() {
+  return String(state.mail.mailScope || "").trim() === "all" ? "all" : "account";
+}
+
+function indexedAccountByID(accountID) {
+  const key = String(accountID || "").trim();
+  if (!key) return null;
+  return indexedAccountsList().find((item) => String(item?.id || "") === key) || null;
+}
+
+function currentIndexedAccountID() {
+  const selected = String(state.mail.selectedIndexedAccountID || state.mail.indexedAccountID || "").trim();
+  if (selected && indexedAccountByID(selected)) return selected;
+  return "";
+}
+
+function defaultIndexedAccount() {
+  const accounts = indexedAccountsList();
+  return accounts.find((item) => !!item?.is_default) || accounts[0] || null;
+}
+
+function effectiveIndexedComposeAccountID() {
+  const candidates = [
+    state.compose.selectedAccountID,
+    state.compose.sendContext?.accountID,
+    state.mail.lastConcreteIndexedAccountID,
+    currentIndexedAccountID(),
+    defaultIndexedAccount()?.id,
+    indexedAccountsList()[0]?.id,
+  ];
+  for (const candidate of candidates) {
+    const key = String(candidate || "").trim();
+    if (key && indexedAccountByID(key)) return key;
+  }
+  return "";
+}
+
+function indexedAccountLabel(accountOrID) {
+  const account = typeof accountOrID === "string" ? indexedAccountByID(accountOrID) : accountOrID;
+  if (!account) return "Unknown account";
+  const displayName = String(account?.display_name || "").trim();
+  const login = String(account?.login || "").trim();
+  return displayName || login || String(account?.id || "").trim() || "Unknown account";
+}
+
+function mailAccountChipLabel(accountID) {
+  return indexedAccountLabel(accountID);
+}
+
+const mailScopeStorageKeys = {
+  scope: "mail.scope",
+  accountID: "mail.account_id",
+  lastAccountID: "mail.last_account_id",
+};
+
+function persistMailScopePreference() {
+  try {
+    localStorage.setItem(mailScopeStorageKeys.scope, currentMailScope());
+    localStorage.setItem(mailScopeStorageKeys.accountID, currentIndexedAccountID());
+    localStorage.setItem(mailScopeStorageKeys.lastAccountID, String(state.mail.lastConcreteIndexedAccountID || currentIndexedAccountID() || ""));
+  } catch {}
+}
+
+function setIndexedAccountContext(accountID) {
+  const resolvedID = String(accountID || "").trim();
+  state.mail.indexedAccountID = resolvedID;
+  state.mail.selectedIndexedAccountID = resolvedID;
+  if (resolvedID) {
+    state.mail.lastConcreteIndexedAccountID = resolvedID;
+  }
+  state.mail.syncStatus = resolvedID ? indexedAccountByID(resolvedID) : null;
+}
+
+function setMailScope(scope, accountID = "") {
+  const accounts = indexedAccountsList();
+  let nextScope = String(scope || "").trim() === "all" && accounts.length > 1 ? "all" : "account";
+  let resolvedID = String(accountID || currentIndexedAccountID() || state.mail.lastConcreteIndexedAccountID || defaultIndexedAccount()?.id || accounts[0]?.id || "").trim();
+  if (!indexedAccountByID(resolvedID)) {
+    resolvedID = String(defaultIndexedAccount()?.id || accounts[0]?.id || "").trim();
+  }
+  setIndexedAccountContext(resolvedID);
+  if (accounts.length <= 1) {
+    nextScope = "account";
+  }
+  state.mail.mailScope = nextScope;
+  if (resolvedID) {
+    state.mail.lastConcreteIndexedAccountID = resolvedID;
+  }
+  persistMailScopePreference();
+  renderMailScopeSwitcher();
+  renderMailIndexStatus();
+}
+
+function shouldShowOwningAccountChip(item) {
+  return currentMailScope() === "all" && indexedAccountsList().length > 1 && !!String(item?.account_id || "").trim();
+}
+
 function visibleSavedSearches() {
-  const accountID = String(state.mail.indexedAccountID || "").trim();
+  const scope = currentMailScope();
+  const accountID = currentIndexedAccountID();
   return (Array.isArray(state.mail.savedSearches) ? state.mail.savedSearches : []).filter((item) => {
+    const parsed = parseSavedSearchFilters(item?.filters_json);
     const itemAccountID = String(item?.account_id || "").trim();
-    return itemAccountID === "" || itemAccountID === accountID;
+    if (parsed.accountScope === "all") return true;
+    if (itemAccountID === "") return true;
+    if (scope === "all") return itemAccountID === accountID;
+    return itemAccountID === accountID;
   });
 }
 
@@ -7368,7 +7651,9 @@ function parseSavedSearchFilters(raw) {
   if (viewKind !== "smart" && viewKind !== "mailbox") {
     viewKind = smartView ? "smart" : "mailbox";
   }
+  const accountScope = String(parsed.account_scope || parsed.accountScope || "").trim().toLowerCase();
   return {
+    accountScope: accountScope === "all" || accountScope === "account" ? accountScope : "",
     viewKind,
     mailbox: String(parsed.mailbox || "").trim(),
     smartView,
@@ -7401,28 +7686,290 @@ async function canUseIndexedMailWithoutSessionSecret(opts = {}) {
       refreshAuthIdentity: opts.refreshAuthIdentity === true,
     });
   }
-  return !!String(state.mail.indexedAccountID || "").trim()
-    || ((Array.isArray(state.mail.indexedAccounts) ? state.mail.indexedAccounts : []).length > 0);
+  return mailUsesIndexedMode() || hasIndexedAccounts();
 }
 
 function currentIndexedAccount() {
-  const accountID = String(state.mail.indexedAccountID || "").trim();
+  const accountID = currentIndexedAccountID();
   if (!accountID) return null;
-  return (Array.isArray(state.mail.indexedAccounts) ? state.mail.indexedAccounts : [])
-    .find((item) => String(item?.id || "") === accountID) || null;
-}
-
-function setIndexedAccountContext(accountID) {
-  const resolvedID = String(accountID || "").trim();
-  state.mail.indexedAccountID = resolvedID;
-  state.mail.syncStatus = resolvedID
-    ? ((Array.isArray(state.mail.indexedAccounts) ? state.mail.indexedAccounts : [])
-      .find((item) => String(item?.id || "") === resolvedID) || null)
-    : null;
+  return indexedAccountByID(accountID);
 }
 
 function mailUsesIndexedMode() {
-  return !isDraftsMailboxSelected() && !!String(state.mail.indexedAccountID || "").trim();
+  if (isDraftsMailboxSelected()) return false;
+  if (currentMailScope() === "all") return hasIndexedAccounts();
+  return !!currentIndexedAccountID();
+}
+
+function mailboxManagementUsesIndexedMode() {
+  return hasIndexedAccounts() && !state.mail.indexedRuntimeFallback;
+}
+
+function applyMailboxMutationPayload(accountID, payload) {
+  const items = Array.isArray(payload?.mailboxes) ? payload.mailboxes : [];
+  const key = String(accountID || "").trim();
+  if (!key) {
+    reconcileMailboxes(items);
+    return items;
+  }
+  state.mail.mailboxesByAccount = {
+    ...(typeof state.mail.mailboxesByAccount === "object" && state.mail.mailboxesByAccount ? state.mail.mailboxesByAccount : {}),
+    [key]: items,
+  };
+  if (currentMailScope() === "all") {
+    reconcileMailboxes(mergeAggregateMailboxesLocal(state.mail.mailboxesByAccount));
+  } else if (currentIndexedAccountID() === key) {
+    reconcileMailboxes(items);
+  } else {
+    renderMailboxes();
+    renderMailMoveTargets();
+  }
+  return items;
+}
+
+function preferredMailboxMutationAccountID() {
+  return String(
+    currentIndexedAccountID()
+    || state.mail.lastConcreteIndexedAccountID
+    || defaultIndexedAccount()?.id
+    || indexedAccountsList()[0]?.id
+    || "",
+  ).trim();
+}
+
+async function promptIndexedMailboxAccountSelection(candidates, opts = {}) {
+  const items = Array.isArray(candidates) ? candidates.filter((item) => String(item?.accountID || item?.value || "").trim()) : [];
+  if (items.length === 0) {
+    throw new Error("Mailbox account unavailable.");
+  }
+  if (items.length === 1) {
+    return items[0];
+  }
+  const preferredID = String(opts.preferredAccountID || preferredMailboxMutationAccountID()).trim();
+  const defaultValue = items.some((item) => String(item?.accountID || item?.value || "").trim() === preferredID)
+    ? preferredID
+    : String(items[0]?.accountID || items[0]?.value || "").trim();
+  const selected = await showSelectModal({
+    title: opts.title || "Choose account",
+    body: opts.body || "",
+    label: opts.label || "Account",
+    choices: items.map((item) => ({
+      value: String(item?.accountID || item?.value || "").trim(),
+      label: String(item?.accountLabel || item?.label || "Mail account").trim(),
+    })),
+    defaultValue,
+    confirmText: opts.confirmText || "Continue",
+    cancelText: opts.cancelText || "Cancel",
+    trigger: opts.trigger || null,
+  });
+  if (selected === null) return null;
+  return items.find((item) => String(item?.accountID || item?.value || "").trim() === selected) || null;
+}
+
+async function chooseIndexedMailboxCreateAccount(trigger = null) {
+  if (currentMailScope() !== "all") {
+    const accountID = currentIndexedAccountID();
+    if (accountID) {
+      return {
+        accountID,
+        accountLabel: indexedAccountLabel(accountID),
+      };
+    }
+  }
+  const accounts = indexedAccountsList().map((account) => ({
+    accountID: String(account?.id || "").trim(),
+    accountLabel: indexedAccountLabel(account),
+  })).filter((item) => item.accountID);
+  return promptIndexedMailboxAccountSelection(accounts, {
+    title: "Choose account for new folder",
+    body: "Select the concrete account that should own this folder.",
+    confirmText: "Create",
+    trigger,
+  });
+}
+
+function indexedMailboxMutationCandidates(mailboxName, capability = "rename") {
+  const target = String(mailboxName || "").trim();
+  if (!target) return [];
+  return indexedAccountsList().map((account) => {
+    const accountID = String(account?.id || "").trim();
+    const match = accountMailboxList(accountID).find((item) => {
+      if (!mailboxNameMatches(item?.name, target)) return false;
+      return capability === "delete" ? mailboxCanDelete(item) : mailboxCanRename(item);
+    }) || null;
+    if (!match) return null;
+    return {
+      accountID,
+      accountLabel: indexedAccountLabel(account),
+      mailboxName: String(match?.name || target).trim(),
+    };
+  }).filter(Boolean);
+}
+
+async function chooseIndexedMailboxMutationAccount(mailboxName, capability, trigger = null) {
+  const candidates = indexedMailboxMutationCandidates(mailboxName, capability);
+  if (currentMailScope() !== "all") {
+    const accountID = currentIndexedAccountID();
+    const current = candidates.find((item) => item.accountID === accountID) || null;
+    if (current) return current;
+  }
+  return promptIndexedMailboxAccountSelection(candidates, {
+    title: capability === "delete" ? "Choose account to delete folder" : "Choose account to rename folder",
+    body: `The folder ${String(mailboxName || "").trim()} exists in multiple accounts. Select which account to modify.`,
+    confirmText: capability === "delete" ? "Delete" : "Rename",
+    trigger,
+  });
+}
+
+async function refreshMailAfterMailboxMutation({ accountID = "", payload = null, selectMailboxName = "" } = {}) {
+  applyMailboxMutationPayload(accountID, payload);
+  state.mail.selectedDraftID = "";
+  clearMailMessageSelection({ render: false });
+  clearReaderSelection();
+  if (selectMailboxName) {
+    setMailSourceMailbox(selectMailboxName);
+  }
+  await loadMessages({ quiet: true, query: state.mail.searchQuery });
+  setActiveMailPane("messages");
+}
+
+async function createMailboxFromSidebar(trigger = null) {
+  const input = await showPromptModal({
+    title: "Create folder",
+    body: "Type the full mailbox path to create.",
+    label: "Folder name",
+    confirmText: "Create",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (input === null) return false;
+  const mailboxName = String(input || "").trim();
+  if (!mailboxName) {
+    throw new Error("Mailbox name is required.");
+  }
+  if (mailboxManagementUsesIndexedMode()) {
+    const account = await chooseIndexedMailboxCreateAccount(trigger);
+    if (!account) return false;
+    const payload = await api(`/api/v2/accounts/${encodeURIComponent(account.accountID)}/mailboxes`, {
+      method: "POST",
+      json: { mailbox_name: mailboxName },
+      logErrors: false,
+    });
+    const actualName = String(payload?.mailbox_name || mailboxName).trim();
+    await refreshMailAfterMailboxMutation({
+      accountID: account.accountID,
+      payload,
+      selectMailboxName: actualName,
+    });
+    setStatus(`Folder ${actualName} created.`, "ok");
+    return true;
+  }
+  const payload = await api("/api/v1/mailboxes", {
+    method: "POST",
+    json: { mailbox_name: mailboxName },
+    logErrors: false,
+  });
+  const actualName = String(payload?.mailbox_name || mailboxName).trim();
+  await refreshMailAfterMailboxMutation({
+    payload,
+    selectMailboxName: actualName,
+  });
+  setStatus(`Folder ${actualName} created.`, "ok");
+  return true;
+}
+
+async function renameMailboxFromSidebar(mailbox, trigger = null) {
+  const currentName = String(mailbox?.name || "").trim();
+  if (!currentName) {
+    throw new Error("Mailbox name is required.");
+  }
+  const input = await showPromptModal({
+    title: "Rename folder",
+    body: "Type the new full mailbox path.",
+    label: "Folder name",
+    defaultValue: currentName,
+    confirmText: "Rename",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (input === null) return false;
+  const newMailboxName = String(input || "").trim();
+  if (!newMailboxName) {
+    throw new Error("New mailbox name is required.");
+  }
+  if (mailboxManagementUsesIndexedMode()) {
+    const target = await chooseIndexedMailboxMutationAccount(currentName, "rename", trigger);
+    if (!target) return false;
+    const payload = await api(`/api/v2/accounts/${encodeURIComponent(target.accountID)}/mailboxes`, {
+      method: "PATCH",
+      json: {
+        mailbox_name: target.mailboxName,
+        new_mailbox_name: newMailboxName,
+      },
+      logErrors: false,
+    });
+    const actualName = String(payload?.mailbox_name || newMailboxName).trim();
+    await refreshMailAfterMailboxMutation({
+      accountID: target.accountID,
+      payload,
+      selectMailboxName: actualName,
+    });
+    setStatus(`Folder renamed to ${actualName}.`, "ok");
+    return true;
+  }
+  const payload = await api("/api/v1/mailboxes", {
+    method: "PATCH",
+    json: {
+      mailbox_name: currentName,
+      new_mailbox_name: newMailboxName,
+    },
+    logErrors: false,
+  });
+  const actualName = String(payload?.mailbox_name || newMailboxName).trim();
+  await refreshMailAfterMailboxMutation({
+    payload,
+    selectMailboxName: actualName,
+  });
+  setStatus(`Folder renamed to ${actualName}.`, "ok");
+  return true;
+}
+
+async function deleteMailboxFromSidebar(mailbox, trigger = null) {
+  const currentName = String(mailbox?.name || "").trim();
+  if (!currentName) {
+    throw new Error("Mailbox name is required.");
+  }
+  const confirmed = await showConfirmModal({
+    title: "Delete folder?",
+    body: `Delete ${currentName}? Despatch only deletes empty custom folders.`,
+    confirmText: "Delete",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (!confirmed) return false;
+  if (mailboxManagementUsesIndexedMode()) {
+    const target = await chooseIndexedMailboxMutationAccount(currentName, "delete", trigger);
+    if (!target) return false;
+    const payload = await api(`/api/v2/accounts/${encodeURIComponent(target.accountID)}/mailboxes`, {
+      method: "DELETE",
+      json: { mailbox_name: target.mailboxName },
+      logErrors: false,
+    });
+    await refreshMailAfterMailboxMutation({
+      accountID: target.accountID,
+      payload,
+    });
+    setStatus(`Folder ${target.mailboxName} deleted.`, "ok");
+    return true;
+  }
+  const payload = await api("/api/v1/mailboxes", {
+    method: "DELETE",
+    json: { mailbox_name: currentName },
+    logErrors: false,
+  });
+  await refreshMailAfterMailboxMutation({ payload });
+  setStatus(`Folder ${currentName} deleted.`, "ok");
+  return true;
 }
 
 function mailItemUsesIndexedSource(item) {
@@ -7431,7 +7978,7 @@ function mailItemUsesIndexedSource(item) {
 
 function activeMailUsesIndexedSource(item = state.selectedMessageSummary || state.selectedMessage || null) {
   return mailItemUsesIndexedSource(item)
-    || (!!String(state.mail.indexedAccountID || "").trim() && !state.mail.indexedRuntimeFallback && mailUsesIndexedMode());
+    || (!!currentIndexedAccountID() && !state.mail.indexedRuntimeFallback && mailUsesIndexedMode());
 }
 
 function currentMailFiltersPayload() {
@@ -7440,6 +7987,7 @@ function currentMailFiltersPayload() {
     if (record) {
       const parsed = parseSavedSearchFilters(record.filters_json);
       return {
+        accountScope: parsed.accountScope || currentMailScope(),
         viewKind: parsed.viewKind,
         mailbox: parsed.mailbox || state.mailbox || "INBOX",
         smartView: parsed.smartView,
@@ -7449,6 +7997,7 @@ function currentMailFiltersPayload() {
   }
   if (state.mail.viewKind === "smart") {
     return {
+      accountScope: currentMailScope(),
       viewKind: "smart",
       mailbox: "",
       smartView: String(state.mail.smartView || "").trim(),
@@ -7456,6 +8005,7 @@ function currentMailFiltersPayload() {
     };
   }
   return {
+    accountScope: currentMailScope(),
     viewKind: "mailbox",
     mailbox: String(state.mailbox || "INBOX").trim() || "INBOX",
     smartView: "",
@@ -7498,6 +8048,11 @@ function setMailSourceSmart(viewID) {
 function applySavedSearchSelection(record) {
   if (!record) return;
   const parsed = parseSavedSearchFilters(record.filters_json);
+  if (parsed.accountScope === "all") {
+    setMailScope("all");
+  } else if (String(record.account_id || "").trim()) {
+    setMailScope("account", record.account_id);
+  }
   state.mail.viewKind = "saved";
   state.mail.savedSearchID = String(record.id || "").trim();
   state.mail.smartView = parsed.smartView;
@@ -7521,18 +8076,51 @@ function formatMailIndexFreshness(raw) {
   return `synced ${formatDate(raw)}`;
 }
 
+function renderMailScopeSwitcher() {
+  if (!el.mailAccountSwitcherWrap || !el.mailAccountSwitcher) return;
+  const accounts = indexedAccountsList();
+  const show = accounts.length > 1;
+  el.mailAccountSwitcherWrap.classList.toggle("hidden", !show);
+  if (!show) {
+    el.mailAccountSwitcher.replaceChildren();
+    return;
+  }
+  const currentValue = currentMailScope() === "all"
+    ? "all"
+    : `account:${currentIndexedAccountID()}`;
+  el.mailAccountSwitcher.replaceChildren();
+  const allOption = document.createElement("option");
+  allOption.value = "all";
+  allOption.textContent = "All accounts";
+  el.mailAccountSwitcher.appendChild(allOption);
+  for (const account of accounts) {
+    const option = document.createElement("option");
+    option.value = `account:${String(account?.id || "")}`;
+    option.textContent = indexedAccountLabel(account);
+    el.mailAccountSwitcher.appendChild(option);
+  }
+  el.mailAccountSwitcher.value = currentValue;
+}
+
 function renderMailIndexStatus() {
   if (!el.mailIndexStatus) return;
   el.mailIndexStatus.classList.remove("mail-index-status--ok", "mail-index-status--warn", "mail-index-status--error");
   const sync = state.mail.syncStatus || currentIndexedAccount() || null;
+  const accounts = indexedAccountsList();
   let text = "Live mailbox";
   let tone = "warn";
   if (state.mail.indexedRuntimeFallback) {
     text = `Live mailbox · ${String(state.mail.indexedFallbackReason || "indexed view unavailable").trim()}`;
     tone = "error";
-  } else if (!String(state.mail.indexedAccountID || "").trim()) {
+  } else if (!hasIndexedAccounts()) {
     text = "Live mailbox · indexed view unavailable";
     tone = "warn";
+  } else if (currentMailScope() === "all") {
+    const broken = accounts.filter((item) => String(item?.last_error || "").trim() !== "").length;
+    text = broken > 0
+      ? `Indexed · ${accounts.length} accounts · ${broken} need attention`
+      : `Indexed · ${accounts.length} accounts`;
+    tone = broken > 0 ? "warn" : "ok";
   } else if (sync?.last_error) {
     text = `Indexed · ${formatMailIndexFreshness(sync?.last_sync_at)} · ${String(sync.last_error).trim()}`;
     tone = "warn";
@@ -7545,7 +8133,7 @@ function renderMailIndexStatus() {
   }
   el.mailIndexStatus.textContent = text;
   el.mailIndexStatus.classList.add(`mail-index-status--${tone}`);
-  const canUseSavedViews = !isDraftsMailboxSelected() && !!String(state.mail.indexedAccountID || "").trim() && !state.mail.indexedRuntimeFallback;
+  const canUseSavedViews = !isDraftsMailboxSelected() && hasIndexedAccounts() && !state.mail.indexedRuntimeFallback;
   if (el.btnMailSaveSearch) {
     el.btnMailSaveSearch.classList.toggle("hidden", !canUseSavedViews);
     el.btnMailSaveSearch.disabled = !canUseSavedViews;
@@ -7579,10 +8167,37 @@ async function refreshIndexedMailContext(opts = {}) {
         ...((Array.isArray(composePayload?.items) ? composePayload.items : []).flatMap((item) => [item?.from_email, item?.account_login])),
       ]);
     }
-    const accounts = Array.isArray(state.mail.indexedAccounts) ? state.mail.indexedAccounts : [];
+    const accounts = indexedAccountsList();
     const previous = currentIndexedAccount();
     const authEmail = String(state.mail.indexedAuthEmail || "").trim().toLowerCase();
+    const storedAccountID = (() => {
+      try {
+        return String(localStorage.getItem(mailScopeStorageKeys.accountID) || "").trim();
+      } catch {
+        return "";
+      }
+    })();
+    const storedLastAccountID = (() => {
+      try {
+        return String(localStorage.getItem(mailScopeStorageKeys.lastAccountID) || "").trim();
+      } catch {
+        return "";
+      }
+    })();
+    const storedScope = (() => {
+      try {
+        return String(localStorage.getItem(mailScopeStorageKeys.scope) || "").trim();
+      } catch {
+        return "";
+      }
+    })();
     let chosen = previous && accounts.find((item) => String(item?.id || "") === String(previous.id || "")) || null;
+    if (!chosen && storedAccountID) {
+      chosen = accounts.find((item) => String(item?.id || "") === storedAccountID) || null;
+    }
+    if (!chosen && storedLastAccountID) {
+      chosen = accounts.find((item) => String(item?.id || "") === storedLastAccountID) || null;
+    }
     if (!chosen && authEmail) {
       chosen = accounts.find((item) => String(item?.login || "").trim().toLowerCase() === authEmail) || null;
     }
@@ -7596,14 +8211,33 @@ async function refreshIndexedMailContext(opts = {}) {
       chosen = accounts[0];
     }
     setIndexedAccountContext(chosen?.id || "");
+    let nextScope = currentMailScope();
+    if (!nextScope || nextScope === "account") {
+      nextScope = storedScope === "all" || storedScope === "account"
+        ? storedScope
+        : (accounts.length > 1 ? "all" : "account");
+    }
+    if (accounts.length <= 1) {
+      nextScope = "account";
+    }
+    state.mail.mailScope = nextScope === "all" ? "all" : "account";
+    if (currentIndexedAccountID()) {
+      state.mail.lastConcreteIndexedAccountID = currentIndexedAccountID();
+    }
+    state.mail.mailboxesByAccount = typeof state.mail.mailboxesByAccount === "object" && state.mail.mailboxesByAccount
+      ? state.mail.mailboxesByAccount
+      : {};
+    persistMailScopePreference();
     if (state.mail.viewKind === "saved" && !selectedSavedSearchRecord()) {
       state.mail.viewKind = "mailbox";
       state.mail.savedSearchID = "";
     }
+    renderMailScopeSwitcher();
     renderMailIndexStatus();
     renderMailboxes();
     return chosen || null;
   } catch {
+    renderMailScopeSwitcher();
     renderMailIndexStatus();
     return currentIndexedAccount();
   }
@@ -7612,7 +8246,7 @@ async function refreshIndexedMailContext(opts = {}) {
 function normalizeIndexedMessageSummary(item) {
   return {
     id: String(item?.id || "").trim(),
-    account_id: String(item?.account_id || state.mail.indexedAccountID || "").trim(),
+    account_id: String(item?.account_id || currentIndexedAccountID() || "").trim(),
     mailbox: String(item?.mailbox || state.mailbox || "").trim(),
     from: String(item?.from || item?.from_value || "").trim(),
     subject: String(item?.subject || "").trim(),
@@ -7641,7 +8275,7 @@ function normalizeIndexedMessageDetail(payload, accountID = "") {
   const raw = payload?.message && typeof payload.message === "object" ? payload.message : {};
   return {
     id: String(raw?.id || "").trim(),
-    account_id: String(raw?.account_id || accountID || state.mail.indexedAccountID || "").trim(),
+    account_id: String(raw?.account_id || accountID || currentIndexedAccountID() || "").trim(),
     mailbox: String(raw?.mailbox || state.mailbox || "").trim(),
     uid: Number(raw?.uid || 0) || 0,
     thread_id: String(raw?.thread_id || raw?.threadID || "").trim(),
@@ -7693,10 +8327,76 @@ function filterIndexedSummariesForSmartView(items, viewID) {
   return items;
 }
 
+function aggregateMailboxDisplayNameLocal(role) {
+  const normalized = normalizeMailboxRole(role);
+  if (normalized === "inbox") return "Inbox";
+  if (normalized === "sent") return "Sent";
+  if (normalized === "trash") return "Trash";
+  if (normalized === "archive") return "Archive";
+  if (normalized === "junk") return "Junk";
+  return "";
+}
+
+function mergeAggregateMailboxesLocal(mailboxesByAccount = {}) {
+  const entries = typeof mailboxesByAccount === "object" && mailboxesByAccount ? Object.values(mailboxesByAccount) : [];
+  const merged = new Map();
+  const order = [];
+  for (const group of entries) {
+    for (const mailbox of Array.isArray(group) ? group : []) {
+      const role = normalizeMailboxRole(mailbox?.role, mailbox?.name);
+      if (role === "drafts") continue;
+      const key = role ? `role:${role}` : `name:${String(mailbox?.name || "").trim().toLowerCase()}`;
+      if (!merged.has(key)) {
+        merged.set(key, {
+          name: role ? aggregateMailboxDisplayNameLocal(role) : String(mailbox?.name || "").trim(),
+          role,
+          unread: 0,
+          messages: 0,
+          can_rename: !!(mailbox?.can_rename ?? mailbox?.canRename),
+          can_delete: !!(mailbox?.can_delete ?? mailbox?.canDelete),
+        });
+        order.push(key);
+      }
+      const current = merged.get(key);
+      current.unread += Math.max(0, Number(mailbox?.unread || 0));
+      current.messages += Math.max(0, Number(mailbox?.messages || 0));
+      current.can_rename = current.can_rename || !!(mailbox?.can_rename ?? mailbox?.canRename);
+      current.can_delete = current.can_delete || !!(mailbox?.can_delete ?? mailbox?.canDelete);
+    }
+  }
+  return order
+    .map((key) => merged.get(key))
+    .filter(Boolean)
+    .sort((a, b) => {
+      const rankDiff = mailboxRoleRank(a?.role || a?.name) - mailboxRoleRank(b?.role || b?.name);
+      if (rankDiff !== 0) return rankDiff;
+      return String(a?.name || "").localeCompare(String(b?.name || ""));
+    });
+}
+
+async function loadIndexedAccountMailboxList(accountID, opts = {}) {
+  const key = String(accountID || "").trim();
+  if (!key) return [];
+  const payload = await api(`/api/v2/accounts/${encodeURIComponent(key)}/mailboxes`, { logErrors: opts.logErrors });
+  const items = Array.isArray(payload) ? payload : [];
+  state.mail.mailboxesByAccount = {
+    ...(typeof state.mail.mailboxesByAccount === "object" && state.mail.mailboxesByAccount ? state.mail.mailboxesByAccount : {}),
+    [key]: items,
+  };
+  return items;
+}
+
+function accountMailboxList(accountID) {
+  const key = String(accountID || "").trim();
+  if (!key) return [];
+  const groups = typeof state.mail.mailboxesByAccount === "object" && state.mail.mailboxesByAccount ? state.mail.mailboxesByAccount : {};
+  return Array.isArray(groups[key]) ? groups[key] : [];
+}
+
 function renderMailboxes() {
   const items = Array.isArray(state.mail.mailboxes) ? state.mail.mailboxes : [];
   const activeNavKey = currentMailNavKey();
-  const showIndexedSections = !!String(state.mail.indexedAccountID || "").trim() && !state.mail.indexedRuntimeFallback;
+  const showIndexedSections = hasIndexedAccounts() && !state.mail.indexedRuntimeFallback;
   const system = [];
   const folders = [];
   for (const mb of items) {
@@ -7789,7 +8489,64 @@ function renderMailboxes() {
       btn.setAttribute("aria-selected", navKey === activeNavKey ? "true" : "false");
       btn.innerHTML = `<span class="mailbox-name">${escapeHtml(label)}</span><span class="mailbox-meta">${escapeHtml(meta)}</span>`;
       optionIndex += 1;
-      li.appendChild(btn);
+      if (kind === "mailbox") {
+        const wrap = document.createElement("div");
+        wrap.className = "mailbox-row-main";
+        wrap.appendChild(btn);
+        if (mailboxHasManagementActions(entry)) {
+          const menu = document.createElement("details");
+          menu.className = "row-menu";
+          menu.addEventListener("toggle", () => {
+            if (menu.open) closeOpenRowMenus(menu);
+          });
+          const summary = document.createElement("summary");
+          summary.textContent = "Manage";
+          menu.appendChild(summary);
+          const body = document.createElement("div");
+          body.className = "row-menu-body";
+          if (mailboxCanRename(entry)) {
+            const renameBtn = document.createElement("button");
+            renameBtn.type = "button";
+            renameBtn.className = "mailbox-row-menu-btn";
+            renameBtn.textContent = "Rename";
+            renameBtn.onclick = async (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              menu.removeAttribute("open");
+              try {
+                await renameMailboxFromSidebar(entry, renameBtn);
+              } catch (err) {
+                setStatus(formatAPIError(err, "Failed to rename folder."), "error");
+              }
+            };
+            body.appendChild(renameBtn);
+          }
+          if (mailboxCanDelete(entry)) {
+            const deleteBtn = document.createElement("button");
+            deleteBtn.type = "button";
+            deleteBtn.className = "mailbox-row-menu-btn mailbox-row-menu-btn--danger";
+            deleteBtn.textContent = "Delete";
+            deleteBtn.onclick = async (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              menu.removeAttribute("open");
+              try {
+                await deleteMailboxFromSidebar(entry, deleteBtn);
+              } catch (err) {
+                setStatus(formatAPIError(err, "Failed to delete folder."), "error");
+              }
+            };
+            body.appendChild(deleteBtn);
+          }
+          if (body.children.length > 0) {
+            menu.appendChild(body);
+            wrap.appendChild(menu);
+          }
+        }
+        li.appendChild(wrap);
+      } else {
+        li.appendChild(btn);
+      }
       el.mailboxes.appendChild(li);
     }
   };
@@ -7818,12 +8575,28 @@ async function loadMailboxes(opts = {}) {
     loadDrafts({ logErrors: false }).catch(() => state.mail.drafts),
     refreshIndexedMailContext({ logErrors: false }),
   ]);
-  const indexedAccountID = String(state.mail.indexedAccountID || "").trim();
+  const indexedAccountID = currentIndexedAccountID();
   let mailboxes = null;
   let indexedErr = null;
-  if (indexedAccountID) {
+  if (mailUsesIndexedMode()) {
     try {
-      mailboxes = await api(`/api/v2/accounts/${encodeURIComponent(indexedAccountID)}/mailboxes`, { logErrors: false });
+      if (currentMailScope() === "all") {
+        const accounts = indexedAccountsList();
+        const accountEntries = await Promise.all(accounts.map(async (account) => {
+          const items = await loadIndexedAccountMailboxList(account.id, { logErrors: false });
+          return [String(account.id || ""), items];
+        }));
+        const byAccount = Object.fromEntries(accountEntries);
+        state.mail.mailboxesByAccount = byAccount;
+        try {
+          mailboxes = await api("/api/v2/mailboxes/aggregate", { logErrors: false });
+        } catch (aggregateErr) {
+          indexedErr = aggregateErr;
+          mailboxes = mergeAggregateMailboxesLocal(byAccount);
+        }
+      } else if (indexedAccountID) {
+        mailboxes = await loadIndexedAccountMailboxList(indexedAccountID, { logErrors: false });
+      }
     } catch (err) {
       indexedErr = err;
     }
@@ -8234,6 +9007,9 @@ function renderMessages(items) {
     const contextBadge = m.isDraft && String(m.context_badge || "").trim()
       ? `<span class="message-context-badge">${escapeHtml(m.context_badge)}</span>`
       : "";
+    const accountChip = shouldShowOwningAccountChip(m)
+      ? `<span class="message-context-badge">${escapeHtml(mailAccountChipLabel(m.account_id))}</span>`
+      : "";
     btn.innerHTML = `<span class="message-mark" aria-hidden="true"></span>
       ${renderMailSummaryBody({
         structPrefix: "message-row",
@@ -8246,6 +9022,7 @@ function renderMessages(items) {
         subject: m.subject,
         previewText,
         dateText: formatListDate(m.date),
+        senderAfterHTML: accountChip,
         subjectAfterHTML: contextBadge,
       })}`;
     const cancelLongPress = () => {
@@ -8336,16 +9113,18 @@ async function loadLegacyMailMessages(query) {
 }
 
 async function loadIndexedMailMessages(query) {
-  const accountID = String(state.mail.indexedAccountID || "").trim();
-  if (!accountID) {
+  const scope = currentMailScope();
+  const accountID = currentIndexedAccountID();
+  if (scope !== "all" && !accountID) {
     throw new Error("indexed account unavailable");
   }
   const filters = currentMailFiltersPayload();
-  const params = new URLSearchParams({
-    account_id: accountID,
-    page: "1",
-    page_size: "40",
-  });
+  const params = new URLSearchParams({ page: "1", page_size: "40" });
+  if (scope === "all") {
+    params.set("account_scope", "all");
+  } else {
+    params.set("account_id", accountID);
+  }
 
   if (query) {
     params.set("q", query);
@@ -8497,6 +9276,9 @@ function renderSelectedMessageChrome(message = state.selectedMessage) {
     ["To", (message.to || []).join(", ") || "-"],
     ["Date", formatDate(message.date) || "-"],
   ];
+  if (shouldShowOwningAccountChip(message)) {
+    metaRows.splice(2, 0, ["Account", mailAccountChipLabel(message.account_id)]);
+  }
   const status = readerStatusText(message);
   if (status) {
     metaRows.push(["Status", status]);
@@ -8661,7 +9443,15 @@ function formatThreadSelectionLabel(thread, hasSelection) {
 function threadMailboxBadgeLabel(item, currentMailbox = "") {
   const mailbox = String(item?.mailbox || "").trim();
   const current = String(currentMailbox || "").trim();
-  if (!mailbox || !current || mailbox.toLowerCase() === current.toLowerCase()) {
+  if (!mailbox || !current) {
+    return "";
+  }
+  if (mailbox.toLowerCase() === current.toLowerCase()) {
+    return "";
+  }
+  const mailboxRole = normalizeMailboxRole("", mailbox);
+  const currentRole = normalizeMailboxRole("", current);
+  if (mailboxRole && currentRole && mailboxRole === currentRole) {
     return "";
   }
   const record = mailboxRecordByName(mailbox);
@@ -8792,7 +9582,7 @@ async function loadThreadContext(summary, messageID, mailboxHint = "") {
   const baseMailbox = String(mailboxHint || summary?.mailbox || state.mailbox || "INBOX").trim() || "INBOX";
   if (activeMailUsesIndexedSource(summary)) {
     try {
-      const accountID = String(summary?.account_id || state.mail.indexedAccountID || "").trim();
+      const accountID = String(summary?.account_id || currentIndexedAccountID() || "").trim();
       const payload = await api(`/api/v2/threads/${encodeURIComponent(threadID)}?account_id=${encodeURIComponent(accountID)}`, { logErrors: false });
       const items = (Array.isArray(payload?.items) ? payload.items : []).map((item) => normalizeIndexedMessageSummary(item));
       items.sort((a, b) => new Date(a?.date || 0).getTime() - new Date(b?.date || 0).getTime());
@@ -9056,16 +9846,131 @@ function pluralizeMessages(count) {
   return count === 1 ? "message" : "messages";
 }
 
+function removeMessagesFromCurrentView(messageIDs) {
+  const ids = new Set((Array.isArray(messageIDs) ? messageIDs : []).map((item) => String(item || "").trim()).filter(Boolean));
+  if (ids.size === 0) return;
+  let removedSelectedReader = false;
+  state.messages = (Array.isArray(state.messages) ? state.messages : []).filter((item) => {
+    const id = String(item?.id || "").trim();
+    if (!ids.has(id)) return true;
+    if (String(state.selectedMessage?.id || "") === id || String(state.selectedMessageSummary?.id || "") === id) {
+      removedSelectedReader = true;
+    }
+    return false;
+  });
+  if (removedSelectedReader) {
+    clearReaderSelection();
+    setActiveMailPane("messages", { focus: false });
+  }
+  renderMessages(state.messages);
+}
+
+function indexedBulkActionName(action) {
+  if (action === "flag") return "star";
+  if (action === "unflag") return "unstar";
+  if (action === "read") return "seen";
+  if (action === "unread") return "unseen";
+  return "move";
+}
+
+async function runIndexedMailAction(action, options = {}) {
+  const items = selectedMailActionItems().filter((item) => mailItemUsesIndexedSource(item));
+  const groups = new Map();
+  const failed = [];
+  let succeeded = 0;
+  for (const item of items) {
+    const accountID = String(item?.account_id || "").trim();
+    if (!accountID) {
+      failed.push({ id: String(item?.id || ""), message: "indexed account unavailable" });
+      continue
+    }
+    if (!groups.has(accountID)) groups.set(accountID, []);
+    groups.get(accountID).push(item);
+  }
+
+  for (const [accountID, groupItems] of groups.entries()) {
+    let targetMailbox = "";
+    try {
+      if (action === "move" || action === "archive" || action === "trash") {
+        targetMailbox = await resolveIndexedTargetMailboxForAccount(action, accountID, options.mailbox, options.trigger || null);
+      }
+    } catch (err) {
+      for (const item of groupItems) {
+        failed.push({ id: String(item?.id || ""), message: String(err?.message || err || "mailbox resolution failed") });
+      }
+      continue;
+    }
+    try {
+      const payload = {
+        account_id: accountID,
+        ids: groupItems.map((item) => String(item?.id || "")).filter(Boolean),
+        action: indexedBulkActionName(action),
+      };
+      if (targetMailbox) {
+        payload.mailbox = targetMailbox;
+      }
+      const result = await api("/api/v2/messages/bulk", {
+        method: "POST",
+        json: payload,
+        logErrors: false,
+      });
+      const appliedIDs = (Array.isArray(result?.applied) ? result.applied : []).map((value) => String(value || "").trim()).filter(Boolean);
+      const failedItems = Array.isArray(result?.failed) ? result.failed : [];
+      if (appliedIDs.length > 0) {
+        if (action === "flag") {
+          appliedIDs.forEach((id) => applyLocalMessagePatch(id, { flagged: true }));
+        } else if (action === "unflag") {
+          appliedIDs.forEach((id) => applyLocalMessagePatch(id, { flagged: false }));
+        } else if (action === "read") {
+          appliedIDs.forEach((id) => applyLocalMessagePatch(id, { seen: true }));
+        } else if (action === "unread") {
+          appliedIDs.forEach((id) => applyLocalMessagePatch(id, { seen: false }));
+        } else {
+          removeMessagesFromCurrentView(appliedIDs);
+        }
+        succeeded += appliedIDs.length;
+      }
+      for (const item of failedItems) {
+        failed.push({
+          id: String(item?.id || ""),
+          message: String(item?.message || item?.code || "action failed"),
+        });
+      }
+    } catch (err) {
+      for (const item of groupItems) {
+        failed.push({ id: String(item?.id || ""), message: String(err?.message || err || "action failed") });
+      }
+    }
+  }
+
+  if (succeeded > 0) {
+    queueMailRefresh({ preservePane: true, delay: 120 });
+  }
+  if (failed.length > 0) {
+    setStatus(`${options.statusVerb || "Updated"} ${succeeded} ${pluralizeMessages(succeeded)}, ${failed.length} failed.`, "error");
+    return;
+  }
+  setStatus(`${options.statusVerb || "Updated"} ${succeeded} ${pluralizeMessages(succeeded)}.`, "ok");
+}
+
 async function runMailAction(action, options = {}) {
   const ids = selectedMailActionIDs();
   if (ids.length === 0) {
     setStatus("Select at least one message.", "error");
     return;
   }
-  const targetMailbox = String(options.mailbox || "").trim();
-  if ((action === "move" || action === "archive" || action === "trash") && !targetMailbox) {
+  let targetMailbox = String(options.mailbox || "").trim();
+  if (action === "move" && !targetMailbox) {
     setStatus("Choose a destination mailbox first.", "error");
     return;
+  }
+  const selectedItems = selectedMailActionItems();
+  if (selectedItems.length > 0 && selectedItems.every((item) => mailItemUsesIndexedSource(item) && !!String(item?.account_id || "").trim())) {
+    await runIndexedMailAction(action, options);
+    return;
+  }
+  if ((action === "archive" || action === "trash") && !targetMailbox) {
+    targetMailbox = await ensureSpecialMailbox(action === "archive" ? "archive" : "trash", options.trigger || null);
   }
   const failed = [];
   let succeeded = 0;
@@ -9137,7 +10042,7 @@ async function openReplyCompose() {
     sendContext: {
       mode: "reply",
       messageID: message.id,
-      accountID: String(message?.account_id || (activeMailUsesIndexedSource(message) ? state.mail.indexedAccountID : "") || "").trim(),
+      accountID: String(message?.account_id || (activeMailUsesIndexedSource(message) ? currentIndexedAccountID() : "") || "").trim(),
     },
     prefill: {
       to: target,
@@ -9157,7 +10062,7 @@ async function openForwardCompose() {
     sendContext: {
       mode: "forward",
       messageID: message.id,
-      accountID: String(message?.account_id || (activeMailUsesIndexedSource(message) ? state.mail.indexedAccountID : "") || "").trim(),
+      accountID: String(message?.account_id || (activeMailUsesIndexedSource(message) ? currentIndexedAccountID() : "") || "").trim(),
     },
     prefill: {
       subject: withPrefixSubject("Fwd", message.subject),
@@ -9186,7 +10091,7 @@ async function openMessage(id, summary = null) {
   const knownSummary = summary || state.messages.find((item) => String(item?.id || "") === String(id || "")) || null;
   state.selectedMessageSummary = knownSummary;
   const shouldUseIndexed = activeMailUsesIndexedSource(knownSummary);
-  const accountID = String(knownSummary?.account_id || state.mail.indexedAccountID || "").trim();
+  const accountID = String(knownSummary?.account_id || currentIndexedAccountID() || "").trim();
   const m = shouldUseIndexed
     ? normalizeIndexedMessageDetail(
       await api(`/api/v2/messages/${encodeURIComponent(id)}?account_id=${encodeURIComponent(accountID)}`, { logErrors: false }),
@@ -9244,6 +10149,7 @@ async function searchMessages() {
 function currentSavedSearchFiltersJSON() {
   const filters = currentMailFiltersPayload();
   return JSON.stringify({
+    account_scope: String(filters.accountScope || currentMailScope() || "account").trim(),
     view_kind: filters.viewKind,
     mailbox: filters.viewKind === "mailbox" ? String(filters.mailbox || state.mailbox || "INBOX").trim() : "",
     smart_view: filters.viewKind === "smart" ? String(filters.smartView || "").trim() : "",
@@ -9252,10 +10158,11 @@ function currentSavedSearchFiltersJSON() {
 }
 
 async function saveCurrentMailView(trigger = null) {
-  const accountID = String(state.mail.indexedAccountID || "").trim();
-  if (!accountID) {
+  if (!hasIndexedAccounts()) {
     throw new Error("Indexed mail is not available for this account.");
   }
+  const scope = currentMailScope();
+  const accountID = scope === "account" ? currentIndexedAccountID() : "";
   const current = selectedSavedSearchRecord();
   const name = await showPromptModal({
     title: current ? "Update Saved View" : "Save Current View",
@@ -12079,7 +12986,9 @@ function bindUI() {
   }
   if (el.uiModalConfirm) {
     el.uiModalConfirm.onclick = () => {
-      const value = el.uiModalInput ? el.uiModalInput.value : "";
+      const value = modalState.mode === "select" && el.uiModalSelect
+        ? el.uiModalSelect.value
+        : (el.uiModalInput ? el.uiModalInput.value : "");
       closeUIModal({ confirmed: true, value });
     };
   }
@@ -12340,8 +13249,7 @@ function bindUI() {
   if (el.btnArchive) {
     el.btnArchive.onclick = async () => {
       try {
-        const archiveMailbox = await ensureSpecialMailbox("archive", el.btnArchive);
-        await runMailAction("archive", { mailbox: archiveMailbox, statusVerb: "Archived" });
+        await runMailAction("archive", { statusVerb: "Archived", trigger: el.btnArchive });
       } catch (err) {
         setStatus(err.message, "error");
       }
@@ -12362,12 +13270,42 @@ function bindUI() {
   if (el.btnTrash) {
     el.btnTrash.onclick = async () => {
       try {
-        const trashMailbox = await ensureSpecialMailbox("trash", el.btnTrash);
-        await runMailAction("trash", { mailbox: trashMailbox, statusVerb: "Moved to trash" });
+        await runMailAction("trash", { statusVerb: "Moved to trash", trigger: el.btnTrash });
       } catch (err) {
         setStatus(err.message, "error");
       }
     };
+  }
+
+  if (el.btnMailboxNew) {
+    el.btnMailboxNew.onclick = async () => {
+      try {
+        await createMailboxFromSidebar(el.btnMailboxNew);
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to create folder."), "error");
+      }
+    };
+  }
+
+  if (el.mailAccountSwitcher) {
+    el.mailAccountSwitcher.addEventListener("change", async () => {
+      const value = String(el.mailAccountSwitcher.value || "").trim();
+      if (value === "all") {
+        setMailScope("all");
+      } else if (value.startsWith("account:")) {
+        setMailScope("account", value.slice("account:".length));
+      }
+      state.mail.selectedDraftID = "";
+      clearMailMessageSelection({ render: false });
+      clearReaderSelection();
+      try {
+        await loadMailboxes({ quiet: true, logErrors: false });
+        await loadMessages({ quiet: true, query: state.mail.searchQuery });
+        setActiveMailPane("messages");
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to switch mailbox scope."), "error");
+      }
+    });
   }
 
   if (el.mailMoveTarget) {

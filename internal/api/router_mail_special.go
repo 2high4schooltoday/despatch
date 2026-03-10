@@ -25,6 +25,170 @@ type specialMailboxMappingDTO struct {
 
 var specialMailboxRoles = []string{"sent", "archive", "trash"}
 
+const appDraftsMailboxName = "__despatch_app_drafts__"
+
+var reservedMailboxNames = map[string]struct{}{
+	"inbox":              {},
+	"drafts":             {},
+	"sent":               {},
+	"sent messages":      {},
+	"trash":              {},
+	"deleted messages":   {},
+	"archive":            {},
+	"all mail":           {},
+	"junk":               {},
+	"spam":               {},
+	appDraftsMailboxName: {},
+}
+
+type mailboxMutationRequest struct {
+	MailboxName    string `json:"mailbox_name"`
+	NewMailboxName string `json:"new_mailbox_name"`
+}
+
+func normalizeAggregateMailboxRole(rawRole, mailboxName string) string {
+	role := strings.ToLower(strings.TrimSpace(rawRole))
+	if role != "" {
+		return role
+	}
+	key := strings.ToLower(strings.TrimSpace(mailboxName))
+	switch {
+	case key == "inbox" || strings.HasSuffix(key, "/inbox"):
+		return "inbox"
+	case key == "drafts" || strings.Contains(key, "draft"):
+		return "drafts"
+	case key == "sent" || key == "sent messages" || strings.Contains(key, "sent"):
+		return "sent"
+	case key == "trash" || key == "deleted messages" || strings.Contains(key, "trash") || strings.Contains(key, "deleted"):
+		return "trash"
+	case key == "archive" || strings.Contains(key, "archive") || strings.Contains(key, "all mail"):
+		return "archive"
+	case key == "junk" || key == "spam" || strings.Contains(key, "junk") || strings.Contains(key, "spam"):
+		return "junk"
+	default:
+		return ""
+	}
+}
+
+func aggregateMailboxDisplayName(role string) string {
+	switch normalizeAggregateMailboxRole(role, "") {
+	case "inbox":
+		return "Inbox"
+	case "drafts":
+		return "Drafts"
+	case "sent":
+		return "Sent"
+	case "trash":
+		return "Trash"
+	case "archive":
+		return "Archive"
+	case "junk":
+		return "Junk"
+	default:
+		return ""
+	}
+}
+
+func aggregateMailboxKey(item mail.Mailbox) string {
+	role := normalizeAggregateMailboxRole(item.Role, item.Name)
+	if role != "" && role != "drafts" {
+		return "role:" + role
+	}
+	return "name:" + strings.ToLower(strings.TrimSpace(item.Name))
+}
+
+func mergeAggregateMailboxes(items [][]mail.Mailbox) []mail.Mailbox {
+	merged := map[string]mail.Mailbox{}
+	order := make([]string, 0, 16)
+	for _, group := range items {
+		for _, mailbox := range group {
+			role := normalizeAggregateMailboxRole(mailbox.Role, mailbox.Name)
+			if role == "drafts" {
+				continue
+			}
+			key := aggregateMailboxKey(mailbox)
+			current, ok := merged[key]
+			if !ok {
+				name := strings.TrimSpace(mailbox.Name)
+				if role != "" {
+					name = aggregateMailboxDisplayName(role)
+				}
+				current = mail.Mailbox{
+					Name:      name,
+					Role:      role,
+					CanRename: mailbox.CanRename,
+					CanDelete: mailbox.CanDelete,
+				}
+				order = append(order, key)
+			}
+			current.Unread += mailbox.Unread
+			current.Messages += mailbox.Messages
+			current.CanRename = current.CanRename || mailbox.CanRename
+			current.CanDelete = current.CanDelete || mailbox.CanDelete
+			merged[key] = current
+		}
+	}
+	out := make([]mail.Mailbox, 0, len(order))
+	for _, key := range order {
+		out = append(out, merged[key])
+	}
+	rank := func(item mail.Mailbox) int {
+		switch normalizeAggregateMailboxRole(item.Role, item.Name) {
+		case "inbox":
+			return 0
+		case "sent":
+			return 1
+		case "trash":
+			return 2
+		case "archive":
+			return 3
+		case "junk":
+			return 4
+		default:
+			return 999
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ri := rank(out[i])
+		rj := rank(out[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return strings.ToLower(strings.TrimSpace(out[i].Name)) < strings.ToLower(strings.TrimSpace(out[j].Name))
+	})
+	return out
+}
+
+func resolveAggregateMailboxSelection(mailboxes []mail.Mailbox, mailboxName string) []string {
+	target := strings.TrimSpace(mailboxName)
+	if target == "" {
+		return nil
+	}
+	role := normalizeAggregateMailboxRole("", target)
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 4)
+	for _, mailbox := range mailboxes {
+		name := strings.TrimSpace(mailbox.Name)
+		if name == "" {
+			continue
+		}
+		if role != "" && role != "drafts" {
+			if normalizeAggregateMailboxRole(mailbox.Role, mailbox.Name) != role {
+				continue
+			}
+		} else if !strings.EqualFold(name, target) {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
 func specialMailboxMappingsForResponse(mappings map[string]string) []specialMailboxMappingDTO {
 	out := make([]specialMailboxMappingDTO, 0, len(mappings))
 	for _, role := range specialMailboxRoles {
@@ -72,13 +236,57 @@ func resolveSpecialMailboxFromAvailable(mailboxes []mail.Mailbox, mappings map[s
 	return strings.TrimSpace(mail.ResolveMailboxByRole(applySpecialMailboxRoles(mailboxes, mappings), normalizedRole))
 }
 
+func isReservedMailboxName(name string) bool {
+	_, ok := reservedMailboxNames[strings.ToLower(strings.TrimSpace(name))]
+	return ok
+}
+
+func mailboxIsProtected(item mail.Mailbox) bool {
+	if strings.EqualFold(strings.TrimSpace(item.Name), appDraftsMailboxName) {
+		return true
+	}
+	return strings.TrimSpace(item.Role) != ""
+}
+
+func applyMailboxCapabilities(items []mail.Mailbox) []mail.Mailbox {
+	out := make([]mail.Mailbox, len(items))
+	copy(out, items)
+	for i := range out {
+		protected := mailboxIsProtected(out[i])
+		out[i].CanRename = !protected
+		out[i].CanDelete = !protected
+	}
+	return out
+}
+
+func mailboxByName(items []mail.Mailbox, name string) (mail.Mailbox, bool) {
+	target := strings.TrimSpace(name)
+	if target == "" {
+		return mail.Mailbox{}, false
+	}
+	for _, item := range items {
+		if strings.EqualFold(strings.TrimSpace(item.Name), target) {
+			return item, true
+		}
+	}
+	return mail.Mailbox{}, false
+}
+
+func writeMailboxMutationIMAPError(w http.ResponseWriter, r *http.Request, err error) {
+	if status, code, ok := classifyMailboxMutationIMAPError(err); ok {
+		util.WriteError(w, status, code, err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	util.WriteError(w, http.StatusBadGateway, "imap_error", err.Error(), middleware.RequestID(r.Context()))
+}
+
 func (h *Handlers) listMailboxesWithSpecialRoles(r *http.Request) ([]mail.Mailbox, map[string]string, string, string, error) {
 	u, _ := middleware.User(r.Context())
 	pass, err := h.sessionMailPassword(r)
 	if err != nil {
 		return nil, nil, "", "", err
 	}
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	items, err := h.rawMailboxes(r.Context(), mailLogin, pass)
 	if err != nil {
 		return nil, nil, mailLogin, pass, err
@@ -87,11 +295,11 @@ func (h *Handlers) listMailboxesWithSpecialRoles(r *http.Request) ([]mail.Mailbo
 	if err != nil {
 		return nil, nil, mailLogin, pass, err
 	}
-	return applySpecialMailboxRoles(items, mappings), mappings, mailLogin, pass, nil
+	return applyMailboxCapabilities(applySpecialMailboxRoles(items, mappings)), mappings, mailLogin, pass, nil
 }
 
 func (h *Handlers) resolveSessionSpecialMailboxByRole(ctx context.Context, u models.User, pass, role string) (string, error) {
-	mailLogin := service.MailIdentity(u)
+	mailLogin := service.MailAuthLogin(u)
 	items, err := h.rawMailboxes(ctx, mailLogin, pass)
 	if err != nil {
 		return "", err
@@ -187,29 +395,53 @@ func (h *Handlers) rawAccountMailboxes(ctx context.Context, account models.MailA
 	})
 }
 
+func (h *Handlers) listAccountMailboxesWithRolesForAccount(ctx context.Context, account models.MailAccount) ([]mail.Mailbox, []models.MailboxMapping, string, error) {
+	pass, err := h.accountMailSecret(account)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	items, err := h.rawAccountMailboxes(ctx, account, pass)
+	if err != nil {
+		return nil, nil, pass, err
+	}
+	counts, err := h.svc.Store().ListIndexedMailboxCounts(ctx, account.ID)
+	if err != nil {
+		return nil, nil, pass, err
+	}
+	mappings, err := h.svc.Store().ListMailboxMappings(ctx, account.ID)
+	if err != nil {
+		return nil, nil, pass, err
+	}
+	items = mergeMailboxCounts(items, counts)
+	return applyMailboxCapabilities(applySpecialMailboxRoles(items, mailboxMappingsOverlay(mappings))), mappings, pass, nil
+}
+
+func (h *Handlers) listAccountMailboxesWithRolesBestEffort(ctx context.Context, account models.MailAccount) ([]mail.Mailbox, error) {
+	items, _, _, err := h.listAccountMailboxesWithRolesForAccount(ctx, account)
+	if err == nil {
+		return items, nil
+	}
+	counts, countErr := h.svc.Store().ListIndexedMailboxCounts(ctx, account.ID)
+	if countErr != nil {
+		return nil, err
+	}
+	mappings, mappingsErr := h.svc.Store().ListMailboxMappings(ctx, account.ID)
+	if mappingsErr != nil {
+		return nil, mappingsErr
+	}
+	return applyMailboxCapabilities(applySpecialMailboxRoles(counts, mailboxMappingsOverlay(mappings))), nil
+}
+
 func (h *Handlers) listAccountMailboxesWithRoles(ctx context.Context, u models.User, accountID string) ([]mail.Mailbox, []models.MailboxMapping, models.MailAccount, string, error) {
 	account, err := h.svc.Store().GetMailAccountByID(ctx, u.ID, strings.TrimSpace(accountID))
 	if err != nil {
 		return nil, nil, models.MailAccount{}, "", err
 	}
-	pass, err := h.accountMailSecret(account)
-	if err != nil {
-		return nil, nil, models.MailAccount{}, "", err
-	}
-	items, err := h.rawAccountMailboxes(ctx, account, pass)
+	items, mappings, pass, err := h.listAccountMailboxesWithRolesForAccount(ctx, account)
 	if err != nil {
 		return nil, nil, account, pass, err
 	}
-	counts, err := h.svc.Store().ListIndexedMailboxCounts(ctx, account.ID)
-	if err != nil {
-		return nil, nil, account, pass, err
-	}
-	mappings, err := h.svc.Store().ListMailboxMappings(ctx, account.ID)
-	if err != nil {
-		return nil, nil, account, pass, err
-	}
-	items = mergeMailboxCounts(items, counts)
-	return applySpecialMailboxRoles(items, mailboxMappingsOverlay(mappings)), mappings, account, pass, nil
+	return items, mappings, account, pass, nil
 }
 
 func (h *Handlers) resolveAccountSpecialMailboxByRole(ctx context.Context, account models.MailAccount, pass, role string, client mail.Client) (string, error) {
@@ -247,6 +479,189 @@ func (h *Handlers) ListSpecialMailboxes(w http.ResponseWriter, r *http.Request) 
 	}
 	util.WriteJSON(w, 200, map[string]any{
 		"items": specialMailboxMappingsForResponse(mappings),
+	})
+}
+
+func (h *Handlers) CreateMailbox(w http.ResponseWriter, r *http.Request) {
+	var req mailboxMutationRequest
+	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	target := strings.TrimSpace(req.MailboxName)
+	if target == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "mailbox_name is required", middleware.RequestID(r.Context()))
+		return
+	}
+	if isReservedMailboxName(target) {
+		util.WriteError(w, http.StatusBadRequest, "mailbox_protected", "mailbox is protected", middleware.RequestID(r.Context()))
+		return
+	}
+
+	items, _, mailLogin, pass, err := h.listMailboxesWithSpecialRoles(r)
+	if err != nil {
+		if isSessionMailAuthError(err) {
+			h.writeMailAuthError(w, r, err)
+			return
+		}
+		util.WriteError(w, http.StatusInternalServerError, "special_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	if _, found := mailboxByName(items, target); found {
+		util.WriteError(w, http.StatusConflict, "mailbox_exists", "mailbox already exists", middleware.RequestID(r.Context()))
+		return
+	}
+	if err := h.svc.Mail().CreateMailbox(r.Context(), mailLogin, pass, target); err != nil {
+		writeMailboxMutationIMAPError(w, r, err)
+		return
+	}
+	h.invalidateMailCaches(mailLogin)
+
+	items, _, _, _, err = h.listMailboxesWithSpecialRoles(r)
+	if err != nil {
+		if isSessionMailAuthError(err) {
+			h.writeMailAuthError(w, r, err)
+			return
+		}
+		util.WriteError(w, http.StatusInternalServerError, "special_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	actualName := target
+	if current, found := mailboxByName(items, target); found {
+		actualName = strings.TrimSpace(current.Name)
+	}
+	util.WriteJSON(w, http.StatusCreated, map[string]any{
+		"status":       "ok",
+		"mailbox_name": actualName,
+		"mailboxes":    items,
+	})
+}
+
+func (h *Handlers) RenameMailbox(w http.ResponseWriter, r *http.Request) {
+	var req mailboxMutationRequest
+	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	sourceName := strings.TrimSpace(req.MailboxName)
+	targetName := strings.TrimSpace(req.NewMailboxName)
+	if sourceName == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "mailbox_name is required", middleware.RequestID(r.Context()))
+		return
+	}
+	if targetName == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "new_mailbox_name is required", middleware.RequestID(r.Context()))
+		return
+	}
+	if isReservedMailboxName(targetName) {
+		util.WriteError(w, http.StatusBadRequest, "mailbox_protected", "mailbox is protected", middleware.RequestID(r.Context()))
+		return
+	}
+
+	items, _, mailLogin, pass, err := h.listMailboxesWithSpecialRoles(r)
+	if err != nil {
+		if isSessionMailAuthError(err) {
+			h.writeMailAuthError(w, r, err)
+			return
+		}
+		util.WriteError(w, http.StatusInternalServerError, "special_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	source, found := mailboxByName(items, sourceName)
+	if !found {
+		util.WriteError(w, http.StatusNotFound, "mailbox_not_found", "mailbox does not exist", middleware.RequestID(r.Context()))
+		return
+	}
+	if !source.CanRename {
+		util.WriteError(w, http.StatusBadRequest, "mailbox_protected", "mailbox is protected", middleware.RequestID(r.Context()))
+		return
+	}
+	if target, exists := mailboxByName(items, targetName); exists && !strings.EqualFold(strings.TrimSpace(target.Name), strings.TrimSpace(source.Name)) {
+		util.WriteError(w, http.StatusConflict, "mailbox_exists", "mailbox already exists", middleware.RequestID(r.Context()))
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(source.Name), targetName) {
+		if err := h.svc.Mail().RenameMailbox(r.Context(), mailLogin, pass, source.Name, targetName); err != nil {
+			writeMailboxMutationIMAPError(w, r, err)
+			return
+		}
+		h.invalidateMailCaches(mailLogin)
+	}
+
+	items, _, _, _, err = h.listMailboxesWithSpecialRoles(r)
+	if err != nil {
+		if isSessionMailAuthError(err) {
+			h.writeMailAuthError(w, r, err)
+			return
+		}
+		util.WriteError(w, http.StatusInternalServerError, "special_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	actualName := targetName
+	if current, found := mailboxByName(items, targetName); found {
+		actualName = strings.TrimSpace(current.Name)
+	}
+	util.WriteJSON(w, http.StatusOK, map[string]any{
+		"status":                "ok",
+		"mailbox_name":          actualName,
+		"previous_mailbox_name": strings.TrimSpace(source.Name),
+		"mailboxes":             items,
+	})
+}
+
+func (h *Handlers) DeleteMailbox(w http.ResponseWriter, r *http.Request) {
+	var req mailboxMutationRequest
+	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	target := strings.TrimSpace(req.MailboxName)
+	if target == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "mailbox_name is required", middleware.RequestID(r.Context()))
+		return
+	}
+
+	items, _, mailLogin, pass, err := h.listMailboxesWithSpecialRoles(r)
+	if err != nil {
+		if isSessionMailAuthError(err) {
+			h.writeMailAuthError(w, r, err)
+			return
+		}
+		util.WriteError(w, http.StatusInternalServerError, "special_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	current, found := mailboxByName(items, target)
+	if !found {
+		util.WriteError(w, http.StatusNotFound, "mailbox_not_found", "mailbox does not exist", middleware.RequestID(r.Context()))
+		return
+	}
+	if !current.CanDelete {
+		util.WriteError(w, http.StatusBadRequest, "mailbox_protected", "mailbox is protected", middleware.RequestID(r.Context()))
+		return
+	}
+	if current.Messages > 0 {
+		util.WriteError(w, http.StatusConflict, "mailbox_not_empty", "mailbox must be empty before deletion", middleware.RequestID(r.Context()))
+		return
+	}
+	if err := h.svc.Mail().DeleteMailbox(r.Context(), mailLogin, pass, current.Name); err != nil {
+		writeMailboxMutationIMAPError(w, r, err)
+		return
+	}
+	h.invalidateMailCaches(mailLogin)
+
+	items, _, _, _, err = h.listMailboxesWithSpecialRoles(r)
+	if err != nil {
+		if isSessionMailAuthError(err) {
+			h.writeMailAuthError(w, r, err)
+			return
+		}
+		util.WriteError(w, http.StatusInternalServerError, "special_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	util.WriteJSON(w, http.StatusOK, map[string]any{
+		"status":       "ok",
+		"mailbox_name": strings.TrimSpace(current.Name),
+		"mailboxes":    items,
 	})
 }
 
@@ -306,7 +721,7 @@ func (h *Handlers) UpsertSpecialMailbox(w http.ResponseWriter, r *http.Request) 
 	}
 	h.invalidateMailCaches(mailLogin)
 	mappings[role] = actualName
-	items = applySpecialMailboxRoles(items, mappings)
+	items = applyMailboxCapabilities(applySpecialMailboxRoles(items, mappings))
 	responseItems := specialMailboxMappingsForResponse(mappings)
 	sort.Slice(responseItems, func(i, j int) bool {
 		return responseItems[i].Role < responseItems[j].Role
@@ -333,6 +748,239 @@ func (h *Handlers) V2ListAccountMailboxes(w http.ResponseWriter, r *http.Request
 		return
 	}
 	util.WriteJSON(w, http.StatusOK, items)
+}
+
+func (h *Handlers) V2ListAggregateMailboxes(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	accounts, err := h.svc.Store().ListMailAccounts(r.Context(), u.ID)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "accounts_list_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	items := make([][]mail.Mailbox, 0, len(accounts))
+	var firstErr error
+	for _, account := range accounts {
+		mailboxes, mailboxErr := h.listAccountMailboxesWithRolesBestEffort(r.Context(), account)
+		if mailboxErr != nil {
+			if firstErr == nil {
+				firstErr = mailboxErr
+			}
+			continue
+		}
+		items = append(items, mailboxes)
+	}
+	merged := mergeAggregateMailboxes(items)
+	if len(accounts) > 0 && len(merged) == 0 && firstErr != nil {
+		util.WriteError(w, http.StatusInternalServerError, "aggregate_mailboxes_failed", firstErr.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	util.WriteJSON(w, http.StatusOK, merged)
+}
+
+func (h *Handlers) V2CreateAccountMailbox(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	var req mailboxMutationRequest
+	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	target := strings.TrimSpace(req.MailboxName)
+	if target == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "mailbox_name is required", middleware.RequestID(r.Context()))
+		return
+	}
+	if isReservedMailboxName(target) {
+		util.WriteError(w, http.StatusBadRequest, "mailbox_protected", "mailbox is protected", middleware.RequestID(r.Context()))
+		return
+	}
+
+	items, _, account, pass, err := h.listAccountMailboxesWithRoles(r.Context(), u, chi.URLParam(r, "id"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, http.StatusNotFound, "account_not_found", "account not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, http.StatusInternalServerError, "account_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	if _, found := mailboxByName(items, target); found {
+		util.WriteError(w, http.StatusConflict, "mailbox_exists", "mailbox already exists", middleware.RequestID(r.Context()))
+		return
+	}
+	cli := h.accountMailClient(account)
+	if err := cli.CreateMailbox(r.Context(), account.Login, pass, target); err != nil {
+		writeMailboxMutationIMAPError(w, r, err)
+		return
+	}
+	h.mailboxCache.invalidate(accountMailboxCacheKey(account))
+	h.mailboxCache.invalidate(account.Login)
+
+	items, _, _, _, err = h.listAccountMailboxesWithRoles(r.Context(), u, account.ID)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "account_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	actualName := target
+	if current, found := mailboxByName(items, target); found {
+		actualName = strings.TrimSpace(current.Name)
+	}
+	util.WriteJSON(w, http.StatusCreated, map[string]any{
+		"status":       "ok",
+		"mailbox_name": actualName,
+		"mailboxes":    items,
+	})
+}
+
+func (h *Handlers) V2RenameAccountMailbox(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	var req mailboxMutationRequest
+	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	sourceName := strings.TrimSpace(req.MailboxName)
+	targetName := strings.TrimSpace(req.NewMailboxName)
+	if sourceName == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "mailbox_name is required", middleware.RequestID(r.Context()))
+		return
+	}
+	if targetName == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "new_mailbox_name is required", middleware.RequestID(r.Context()))
+		return
+	}
+	if isReservedMailboxName(targetName) {
+		util.WriteError(w, http.StatusBadRequest, "mailbox_protected", "mailbox is protected", middleware.RequestID(r.Context()))
+		return
+	}
+
+	items, _, account, pass, err := h.listAccountMailboxesWithRoles(r.Context(), u, chi.URLParam(r, "id"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, http.StatusNotFound, "account_not_found", "account not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, http.StatusInternalServerError, "account_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	source, found := mailboxByName(items, sourceName)
+	if !found {
+		util.WriteError(w, http.StatusNotFound, "mailbox_not_found", "mailbox does not exist", middleware.RequestID(r.Context()))
+		return
+	}
+	if !source.CanRename {
+		util.WriteError(w, http.StatusBadRequest, "mailbox_protected", "mailbox is protected", middleware.RequestID(r.Context()))
+		return
+	}
+	if target, exists := mailboxByName(items, targetName); exists && !strings.EqualFold(strings.TrimSpace(target.Name), strings.TrimSpace(source.Name)) {
+		util.WriteError(w, http.StatusConflict, "mailbox_exists", "mailbox already exists", middleware.RequestID(r.Context()))
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(source.Name), targetName) {
+		cli := h.accountMailClient(account)
+		if err := cli.RenameMailbox(r.Context(), account.Login, pass, source.Name, targetName); err != nil {
+			writeMailboxMutationIMAPError(w, r, err)
+			return
+		}
+		h.mailboxCache.invalidate(accountMailboxCacheKey(account))
+		h.mailboxCache.invalidate(account.Login)
+		threadIDs, err := h.svc.Store().RenameIndexedMailbox(r.Context(), account.ID, source.Name, targetName)
+		if err != nil {
+			util.WriteError(w, http.StatusInternalServerError, "index_update_failed", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		if err := h.svc.Store().DeleteSyncState(r.Context(), account.ID, source.Name); err != nil {
+			util.WriteError(w, http.StatusInternalServerError, "index_update_failed", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		if err := h.svc.Store().RefreshThreadIndex(r.Context(), account.ID, threadIDs); err != nil {
+			util.WriteError(w, http.StatusInternalServerError, "index_update_failed", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+	}
+
+	items, _, _, _, err = h.listAccountMailboxesWithRoles(r.Context(), u, account.ID)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "account_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	actualName := targetName
+	if current, found := mailboxByName(items, targetName); found {
+		actualName = strings.TrimSpace(current.Name)
+	}
+	util.WriteJSON(w, http.StatusOK, map[string]any{
+		"status":                "ok",
+		"mailbox_name":          actualName,
+		"previous_mailbox_name": strings.TrimSpace(source.Name),
+		"mailboxes":             items,
+	})
+}
+
+func (h *Handlers) V2DeleteAccountMailbox(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	var req mailboxMutationRequest
+	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	target := strings.TrimSpace(req.MailboxName)
+	if target == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "mailbox_name is required", middleware.RequestID(r.Context()))
+		return
+	}
+
+	items, _, account, pass, err := h.listAccountMailboxesWithRoles(r.Context(), u, chi.URLParam(r, "id"))
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, http.StatusNotFound, "account_not_found", "account not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, http.StatusInternalServerError, "account_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	current, found := mailboxByName(items, target)
+	if !found {
+		util.WriteError(w, http.StatusNotFound, "mailbox_not_found", "mailbox does not exist", middleware.RequestID(r.Context()))
+		return
+	}
+	if !current.CanDelete {
+		util.WriteError(w, http.StatusBadRequest, "mailbox_protected", "mailbox is protected", middleware.RequestID(r.Context()))
+		return
+	}
+	if current.Messages > 0 {
+		util.WriteError(w, http.StatusConflict, "mailbox_not_empty", "mailbox must be empty before deletion", middleware.RequestID(r.Context()))
+		return
+	}
+	cli := h.accountMailClient(account)
+	if err := cli.DeleteMailbox(r.Context(), account.Login, pass, current.Name); err != nil {
+		writeMailboxMutationIMAPError(w, r, err)
+		return
+	}
+	h.mailboxCache.invalidate(accountMailboxCacheKey(account))
+	h.mailboxCache.invalidate(account.Login)
+	threadIDs, err := h.svc.Store().DeleteIndexedMailbox(r.Context(), account.ID, current.Name)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "index_update_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	if err := h.svc.Store().DeleteSyncState(r.Context(), account.ID, current.Name); err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "index_update_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	if err := h.svc.Store().RefreshThreadIndex(r.Context(), account.ID, threadIDs); err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "index_update_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+
+	items, _, _, _, err = h.listAccountMailboxesWithRoles(r.Context(), u, account.ID)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "account_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	util.WriteJSON(w, http.StatusOK, map[string]any{
+		"status":       "ok",
+		"mailbox_name": strings.TrimSpace(current.Name),
+		"mailboxes":    items,
+	})
 }
 
 func (h *Handlers) V2UpsertAccountSpecialMailbox(w http.ResponseWriter, r *http.Request) {

@@ -126,3 +126,30 @@ func TestParseMessageIncludesInlineCIDAttachmentAndExtractParity(t *testing.T) {
 		t.Fatalf("unexpected extracted payload: %v", data)
 	}
 }
+
+func TestParseMessageDecodesRFC2047DisplayNamesAndSubject(t *testing.T) {
+	raw := []byte(strings.Join([]string{
+		"From: =?utf-8?q?=D0=9C=D0=B5=D0=B4=D0=A2=D0=BE=D1=87=D0=BA=D0=B0?= <info@medtochka.ru>",
+		"To: =?utf-8?b?0JrQvtC80LDQvdC00LAg0JjQstCw0L3QvtCy0LA=?= <user@example.com>",
+		"Subject: =?utf-8?b?0KLQtdGB0YLQvtCy0L7QtSDQv9C40YHRjNC80L4=?=",
+		"MIME-Version: 1.0",
+		"Content-Type: text/plain; charset=utf-8",
+		"",
+		"Hello.",
+		"",
+	}, "\r\n"))
+
+	msg, err := parseMessage(raw, "msg-rfc2047", "INBOX", 104)
+	if err != nil {
+		t.Fatalf("parseMessage: %v", err)
+	}
+	if got := msg.From; got != "МедТочка <info@medtochka.ru>" {
+		t.Fatalf("expected decoded from, got %q", got)
+	}
+	if len(msg.To) != 1 || msg.To[0] != "Команда Иванова <user@example.com>" {
+		t.Fatalf("expected decoded to, got %#v", msg.To)
+	}
+	if got := msg.Subject; got != "Тестовое письмо" {
+		t.Fatalf("expected decoded subject, got %q", got)
+	}
+}

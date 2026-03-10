@@ -1586,15 +1586,115 @@ func (s *Store) GetIndexedMessageByID(ctx context.Context, accountID, id string)
 	return models.IndexedMessage{}, ErrNotFound
 }
 
-func (s *Store) ListIndexedMessages(ctx context.Context, accountID, mailbox, view, sort string, limit, offset int) ([]models.IndexedMessage, int, error) {
+func normalizeMailboxFilters(mailboxes []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(mailboxes))
+	for _, mailbox := range mailboxes {
+		trimmed := strings.TrimSpace(mailbox)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func mailboxFilterClause(column string, mailboxes []string, args *[]any) string {
+	normalized := normalizeMailboxFilters(mailboxes)
+	switch len(normalized) {
+	case 0:
+		return ""
+	case 1:
+		*args = append(*args, normalized[0])
+		return column + "=?"
+	default:
+		for _, mailbox := range normalized {
+			*args = append(*args, mailbox)
+		}
+		return fmt.Sprintf("%s IN (%s)", column, placeholders(len(normalized)))
+	}
+}
+
+func indexedMessageSortTime(item models.IndexedMessage) time.Time {
+	if !item.DateHeader.IsZero() {
+		return item.DateHeader
+	}
+	return item.InternalDate
+}
+
+func indexedMessageLess(a, b models.IndexedMessage, sortOrder string) bool {
+	switch strings.ToLower(strings.TrimSpace(sortOrder)) {
+	case "oldest":
+		at := indexedMessageSortTime(a)
+		bt := indexedMessageSortTime(b)
+		if !at.Equal(bt) {
+			return at.Before(bt)
+		}
+	case "subject":
+		as := strings.ToLower(strings.TrimSpace(a.Subject))
+		bs := strings.ToLower(strings.TrimSpace(b.Subject))
+		if as != bs {
+			return as < bs
+		}
+		at := indexedMessageSortTime(a)
+		bt := indexedMessageSortTime(b)
+		if !at.Equal(bt) {
+			return at.After(bt)
+		}
+	case "sender":
+		af := strings.ToLower(strings.TrimSpace(a.FromValue))
+		bf := strings.ToLower(strings.TrimSpace(b.FromValue))
+		if af != bf {
+			return af < bf
+		}
+		at := indexedMessageSortTime(a)
+		bt := indexedMessageSortTime(b)
+		if !at.Equal(bt) {
+			return at.After(bt)
+		}
+	default:
+		at := indexedMessageSortTime(a)
+		bt := indexedMessageSortTime(b)
+		if !at.Equal(bt) {
+			return at.After(bt)
+		}
+	}
+	if a.AccountID != b.AccountID {
+		return a.AccountID < b.AccountID
+	}
+	return a.ID < b.ID
+}
+
+func normalizeIndexedAccountIDs(accountIDs []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(accountIDs))
+	for _, accountID := range accountIDs {
+		trimmed := strings.TrimSpace(accountID)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func (s *Store) listIndexedMessagesForMailboxes(ctx context.Context, accountID string, mailboxes []string, view, sort string, limit, offset int) ([]models.IndexedMessage, int, error) {
 	limit = clampLimit(limit)
 	offset = clampOffset(offset)
 
 	where := []string{"account_id=?"}
 	args := []any{accountID}
-	if strings.TrimSpace(mailbox) != "" {
-		where = append(where, "mailbox=?")
-		args = append(args, mailbox)
+	if clause := mailboxFilterClause("mailbox", mailboxes, &args); clause != "" {
+		where = append(where, clause)
 	}
 	switch strings.ToLower(strings.TrimSpace(view)) {
 	case "unread":
@@ -1649,6 +1749,14 @@ func (s *Store) ListIndexedMessages(ctx context.Context, accountID, mailbox, vie
 	return out, total, rows.Err()
 }
 
+func (s *Store) ListIndexedMessages(ctx context.Context, accountID, mailbox, view, sort string, limit, offset int) ([]models.IndexedMessage, int, error) {
+	mailboxes := []string(nil)
+	if trimmed := strings.TrimSpace(mailbox); trimmed != "" {
+		mailboxes = []string{trimmed}
+	}
+	return s.listIndexedMessagesForMailboxes(ctx, accountID, mailboxes, view, sort, limit, offset)
+}
+
 func (s *Store) GetIndexedMessageAttachments(ctx context.Context, accountID, messageID string) ([]models.IndexedAttachment, error) {
 	candidates := indexedMessageIDCandidates(accountID, messageID)
 	if len(candidates) == 0 {
@@ -1697,7 +1805,7 @@ func (s *Store) GetIndexedMessageAttachments(ctx context.Context, accountID, mes
 	return nil, ErrNotFound
 }
 
-func (s *Store) SearchIndexedMessages(ctx context.Context, accountID, mailbox, query string, limit, offset int) ([]models.IndexedMessage, int, error) {
+func (s *Store) searchIndexedMessagesForMailboxes(ctx context.Context, accountID string, mailboxes []string, query string, limit, offset int) ([]models.IndexedMessage, int, error) {
 	limit = clampLimit(limit)
 	offset = clampOffset(offset)
 	if strings.TrimSpace(query) == "" {
@@ -1708,9 +1816,8 @@ func (s *Store) SearchIndexedMessages(ctx context.Context, accountID, mailbox, q
 		JOIN message_index m ON m.id = f.message_id
 		WHERE f.account_id=?`
 	args := []any{accountID}
-	if strings.TrimSpace(mailbox) != "" {
-		totalQuery += ` AND f.mailbox=?`
-		args = append(args, mailbox)
+	if clause := mailboxFilterClause("f.mailbox", mailboxes, &args); clause != "" {
+		totalQuery += ` AND ` + clause
 	}
 	totalQuery += ` AND message_search_fts MATCH ?`
 	args = append(args, query)
@@ -1725,9 +1832,8 @@ func (s *Store) SearchIndexedMessages(ctx context.Context, accountID, mailbox, q
 		JOIN message_index m ON m.id = f.message_id
 		WHERE f.account_id=?`
 	listArgs := []any{accountID}
-	if strings.TrimSpace(mailbox) != "" {
-		listQuery += ` AND f.mailbox=?`
-		listArgs = append(listArgs, mailbox)
+	if clause := mailboxFilterClause("f.mailbox", mailboxes, &listArgs); clause != "" {
+		listQuery += ` AND ` + clause
 	}
 	listQuery += ` AND message_search_fts MATCH ?
 		ORDER BY m.date_header DESC
@@ -1748,6 +1854,92 @@ func (s *Store) SearchIndexedMessages(ctx context.Context, accountID, mailbox, q
 		out = append(out, item)
 	}
 	return out, total, rows.Err()
+}
+
+func (s *Store) SearchIndexedMessages(ctx context.Context, accountID, mailbox, query string, limit, offset int) ([]models.IndexedMessage, int, error) {
+	mailboxes := []string(nil)
+	if trimmed := strings.TrimSpace(mailbox); trimmed != "" {
+		mailboxes = []string{trimmed}
+	}
+	return s.searchIndexedMessagesForMailboxes(ctx, accountID, mailboxes, query, limit, offset)
+}
+
+func (s *Store) ListIndexedMessagesByAccounts(ctx context.Context, accountIDs []string, mailboxesByAccount map[string][]string, view, sortOrder string, limit, offset int) ([]models.IndexedMessage, int, error) {
+	normalizedAccounts := normalizeIndexedAccountIDs(accountIDs)
+	limit = clampLimit(limit)
+	offset = clampOffset(offset)
+	if len(normalizedAccounts) == 0 {
+		return []models.IndexedMessage{}, 0, nil
+	}
+	fetchLimit := limit + offset
+	if fetchLimit < limit {
+		fetchLimit = limit
+	}
+	total := 0
+	merged := make([]models.IndexedMessage, 0, fetchLimit*len(normalizedAccounts))
+	for _, accountID := range normalizedAccounts {
+		resolvedMailboxes, filtered := mailboxesByAccount[accountID]
+		resolvedMailboxes = normalizeMailboxFilters(resolvedMailboxes)
+		if filtered && len(resolvedMailboxes) == 0 {
+			continue
+		}
+		items, count, err := s.listIndexedMessagesForMailboxes(ctx, accountID, resolvedMailboxes, view, sortOrder, fetchLimit, 0)
+		if err != nil {
+			return nil, 0, err
+		}
+		total += count
+		merged = append(merged, items...)
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		return indexedMessageLess(merged[i], merged[j], sortOrder)
+	})
+	if offset >= len(merged) {
+		return []models.IndexedMessage{}, total, nil
+	}
+	end := offset + limit
+	if end > len(merged) {
+		end = len(merged)
+	}
+	return append([]models.IndexedMessage(nil), merged[offset:end]...), total, nil
+}
+
+func (s *Store) SearchIndexedMessagesByAccounts(ctx context.Context, accountIDs []string, mailboxesByAccount map[string][]string, query string, limit, offset int) ([]models.IndexedMessage, int, error) {
+	normalizedAccounts := normalizeIndexedAccountIDs(accountIDs)
+	limit = clampLimit(limit)
+	offset = clampOffset(offset)
+	if len(normalizedAccounts) == 0 {
+		return []models.IndexedMessage{}, 0, nil
+	}
+	fetchLimit := limit + offset
+	if fetchLimit < limit {
+		fetchLimit = limit
+	}
+	total := 0
+	merged := make([]models.IndexedMessage, 0, fetchLimit*len(normalizedAccounts))
+	for _, accountID := range normalizedAccounts {
+		resolvedMailboxes, filtered := mailboxesByAccount[accountID]
+		resolvedMailboxes = normalizeMailboxFilters(resolvedMailboxes)
+		if filtered && len(resolvedMailboxes) == 0 {
+			continue
+		}
+		items, count, err := s.searchIndexedMessagesForMailboxes(ctx, accountID, resolvedMailboxes, query, fetchLimit, 0)
+		if err != nil {
+			return nil, 0, err
+		}
+		total += count
+		merged = append(merged, items...)
+	}
+	sort.SliceStable(merged, func(i, j int) bool {
+		return indexedMessageLess(merged[i], merged[j], "")
+	})
+	if offset >= len(merged) {
+		return []models.IndexedMessage{}, total, nil
+	}
+	end := offset + limit
+	if end > len(merged) {
+		end = len(merged)
+	}
+	return append([]models.IndexedMessage(nil), merged[offset:end]...), total, nil
 }
 
 func (s *Store) SuggestRecipients(ctx context.Context, accountID string, selfEmails []string, query string, limit int) ([]models.RecipientSuggestion, error) {

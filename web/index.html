@@ -639,6 +639,10 @@
             <button id="btn-search" class="cmd-btn cmd-btn--dense" type="button">Search</button>
           </div>
           <div class="mail-commandbar-meta">
+            <label id="mail-account-switcher-wrap" class="mail-account-switcher hidden">
+              <span class="mail-account-switcher-label">Mailbox</span>
+              <select id="mail-account-switcher" aria-label="Select indexed mail account scope"></select>
+            </label>
             <span id="mail-index-status" class="mail-index-status">Live mailbox</span>
             <button id="btn-mail-save-search" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Save View</button>
             <button id="btn-mail-delete-search" class="cmd-btn cmd-btn--dense cmd-btn--ghost hidden" type="button">Delete View</button>
@@ -647,6 +651,12 @@
 
         <div class="mail-layout">
           <aside id="mail-pane-mailboxes" class="panel mail-pane mail-pane--mailboxes" tabindex="-1">
+            <div class="mailbox-pane-head">
+              <div class="mailbox-pane-copy">
+                <span class="mailbox-pane-title">Mailboxes</span>
+              </div>
+              <button id="btn-mailbox-new" class="cmd-btn cmd-btn--dense" type="button">New Folder</button>
+            </div>
             <ul id="mailboxes" class="list mailbox-list" role="listbox" aria-label="Mailboxes" tabindex="0"></ul>
           </aside>
 
@@ -1052,6 +1062,7 @@
       <label id="ui-modal-input-wrap" class="ui-modal-input-wrap hidden">
         <span id="ui-modal-input-label">Value</span>
         <input id="ui-modal-input" type="text" autocomplete="off" list="ui-modal-datalist">
+        <select id="ui-modal-select" class="hidden"></select>
         <datalist id="ui-modal-datalist"></datalist>
       </label>
       <div class="actions ui-modal-actions">

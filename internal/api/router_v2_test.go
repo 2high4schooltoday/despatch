@@ -1705,6 +1705,46 @@ func TestComposeIdentitiesIncludesSessionProfileAndAccountIdentityMetadata(t *te
 	}
 }
 
+func TestV2CreateIdentityRejectsInvalidFromEmail(t *testing.T) {
+	router := newV2Router(t)
+	sess, csrf := loginV2(t, router)
+
+	createAccount := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/accounts", map[string]any{
+		"display_name": "Primary Mail",
+		"login":        "mailbox@example.com",
+		"password":     "mailbox-secret",
+		"imap_host":    "imap.example.com",
+		"imap_port":    993,
+		"smtp_host":    "smtp.example.com",
+		"smtp_port":    587,
+	}, sess, csrf)
+	if createAccount.Code != http.StatusCreated {
+		t.Fatalf("expected account create 201, got %d body=%s", createAccount.Code, createAccount.Body.String())
+	}
+	var account models.MailAccount
+	if err := json.Unmarshal(createAccount.Body.Bytes(), &account); err != nil {
+		t.Fatalf("decode account response: %v", err)
+	}
+
+	createIdentity := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/accounts/"+account.ID+"/identities", map[string]any{
+		"display_name": "Primary Alias",
+		"from_email":   "webmaster",
+	}, sess, csrf)
+	if createIdentity.Code != http.StatusBadRequest {
+		t.Fatalf("expected identity create 400, got %d body=%s", createIdentity.Code, createIdentity.Body.String())
+	}
+	var apiErr struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(createIdentity.Body.Bytes(), &apiErr); err != nil {
+		t.Fatalf("decode api error: %v body=%s", err, createIdentity.Body.String())
+	}
+	if apiErr.Code != "create_identity_failed" || apiErr.Message != "from_email must be a valid email address" {
+		t.Fatalf("unexpected api error: %+v", apiErr)
+	}
+}
+
 func TestV2SendDraftSchedulesFutureDraft(t *testing.T) {
 	router := newV2Router(t)
 	sess, csrf := loginV2(t, router)

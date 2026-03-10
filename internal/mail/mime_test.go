@@ -132,6 +132,29 @@ func TestBuildRFC822EncodesNonASCIIDisplayName(t *testing.T) {
 	}
 }
 
+func TestBuildRFC822RejectsInvalidFromAddress(t *testing.T) {
+	if _, err := buildRFC822(SendRequest{
+		HeaderFromEmail: "webmaster",
+		To:              []string{"to@example.com"},
+		Subject:         "Headers",
+		Body:            "Body",
+	}); err == nil || !strings.Contains(err.Error(), "invalid from email address") {
+		t.Fatalf("expected invalid from email address error, got %v", err)
+	}
+}
+
+func TestBuildRFC822RejectsInvalidReplyToAddress(t *testing.T) {
+	if _, err := buildRFC822(SendRequest{
+		HeaderFromEmail: "sender@example.com",
+		ReplyTo:         "reply",
+		To:              []string{"to@example.com"},
+		Subject:         "Headers",
+		Body:            "Body",
+	}); err == nil || !strings.Contains(err.Error(), "invalid reply-to address") {
+		t.Fatalf("expected invalid reply-to address error, got %v", err)
+	}
+}
+
 func TestSendWithSenderFallbackUsesToCcBccRecipients(t *testing.T) {
 	c := &IMAPSMTPClient{}
 	var captured []string
