@@ -266,9 +266,17 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireMFAStageAuthenticated(h.svc))
 				r.Get("/accounts", h.V2ListAccounts)
+				r.Get("/accounts/health", h.V2ListAccountHealth)
 				r.Get("/accounts/{id}/mailboxes", h.V2ListAccountMailboxes)
 				r.Get("/accounts/{id}/identities", h.V2ListIdentities)
+				r.Get("/accounts/{id}/rules", h.V2ListAccountRules)
+				r.Get("/mail/senders", h.V2ListSenders)
 				r.Get("/mail/session-profile", h.V2GetSessionMailProfile)
+				r.Get("/contacts", h.V2ListContacts)
+				r.Get("/contacts/{id}", h.V2GetContact)
+				r.Get("/contacts/export", h.V2ExportContacts)
+				r.Get("/contact-groups", h.V2ListContactGroups)
+				r.Get("/contact-groups/{id}", h.V2GetContactGroup)
 				r.Get("/mailboxes", h.V2ListMailboxMappings)
 				r.Get("/mailboxes/aggregate", h.V2ListAggregateMailboxes)
 				r.Get("/threads", h.V2ListThreads)
@@ -299,13 +307,31 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Patch("/accounts/{id}", h.V2UpdateAccount)
 					r.Delete("/accounts/{id}", h.V2DeleteAccount)
 					r.Post("/accounts/{id}/activate", h.V2ActivateAccount)
+					r.Post("/accounts/{id}/health/sync", h.V2QueueAccountHealthSync)
+					r.Post("/accounts/{id}/health/quota-refresh", h.V2QueueAccountQuotaRefresh)
+					r.Post("/accounts/{id}/health/reindex", h.V2QueueAccountReindex)
 					r.Post("/accounts/{id}/mailboxes", h.V2CreateAccountMailbox)
 					r.Patch("/accounts/{id}/mailboxes", h.V2RenameAccountMailbox)
 					r.Delete("/accounts/{id}/mailboxes", h.V2DeleteAccountMailbox)
 					r.Post("/accounts/{id}/mailboxes/special/{role}", h.V2UpsertAccountSpecialMailbox)
 					r.Post("/accounts/{id}/identities", h.V2CreateIdentity)
+					r.Post("/accounts/{id}/rules", h.V2CreateAccountRule)
+					r.Patch("/accounts/{id}/rules/{rule_id}", h.V2UpdateAccountRule)
+					r.Delete("/accounts/{id}/rules/{rule_id}", h.V2DeleteAccountRule)
+					r.Post("/accounts/{id}/rules/reorder", h.V2ReorderAccountRules)
+					r.Post("/accounts/{id}/rules/activate-managed", h.V2ActivateManagedRuleScript)
+					r.Post("/accounts/{id}/senders", h.V2CreateSender)
 					r.Patch("/identities/{id}", h.V2UpdateIdentity)
+					r.Patch("/mail/senders/{sender_id}", h.V2UpdateSender)
 					r.Delete("/identities/{id}", h.V2DeleteIdentity)
+					r.Delete("/mail/senders/{sender_id}", h.V2DeleteSender)
+					r.Post("/contacts", h.V2CreateContact)
+					r.Post("/contacts/import", h.V2ImportContacts)
+					r.Patch("/contacts/{id}", h.V2UpdateContact)
+					r.Delete("/contacts/{id}", h.V2DeleteContact)
+					r.Post("/contact-groups", h.V2CreateContactGroup)
+					r.Patch("/contact-groups/{id}", h.V2UpdateContactGroup)
+					r.Delete("/contact-groups/{id}", h.V2DeleteContactGroup)
 					r.Patch("/mail/session-profile", h.V2UpdateSessionMailProfile)
 
 					r.Post("/mailboxes", h.V2UpsertMailboxMapping)
@@ -335,6 +361,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Post("/rules/validate", h.V2ValidateRuleScript)
 
 					r.Put("/preferences", h.V2UpdatePreferences)
+					r.Patch("/preferences", h.V2UpdatePreferences)
 					r.Patch("/security/mfa/webauthn/{id}", h.V2MFAWebAuthnRename)
 					r.Delete("/security/mfa/webauthn/{id}", h.V2MFAWebAuthnDelete)
 					r.Post("/security/mfa/trusted-devices/revoke-all", h.V2RevokeAllTrustedDevices)
@@ -888,6 +915,7 @@ func (h *Handlers) ListMessages(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	items = presentLiveMessageSummaries(items, mbox)
 	util.WriteJSON(w, 200, map[string]any{"page": page, "page_size": pageSize, "items": items})
 }
 
@@ -905,6 +933,7 @@ func (h *Handlers) GetMessage(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 404, "not_found", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	msg = presentLiveMessage(msg)
 	if strings.TrimSpace(msg.BodyHTML) != "" {
 		msg.BodyHTML = rewriteMessageHTML(id, msg.BodyHTML, msg.Attachments)
 	}
@@ -1066,13 +1095,7 @@ func (h *Handlers) ListThreadMessages(w http.ResponseWriter, r *http.Request) {
 					break
 				}
 				for _, item := range items {
-					candidate := item
-					if strings.TrimSpace(candidate.Mailbox) == "" {
-						candidate.Mailbox = scanMailbox
-					}
-					if strings.TrimSpace(candidate.ThreadID) == "" {
-						candidate.ThreadID = mail.DeriveThreadID(scanMailbox, candidate.Subject, candidate.From)
-					}
+					candidate := presentLiveMessageSummary(item, scanMailbox)
 					if candidate.ThreadID != threadID {
 						continue
 					}
@@ -1196,7 +1219,7 @@ func (h *Handlers) ForwardMessage(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) ComposeIdentities(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
-	sessionProfile, err := h.svc.EnsureSessionMailProfile(r.Context(), u)
+	senders, err := h.svc.ListSenderProfiles(r.Context(), u)
 	if err != nil {
 		util.WriteError(w, 500, "compose_identities_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
@@ -1222,52 +1245,55 @@ func (h *Handlers) ComposeIdentities(w http.ResponseWriter, r *http.Request) {
 		IsDefault         bool   `json:"is_default"`
 		IsSession         bool   `json:"is_session"`
 	}
-	items := []composeIdentityItem{{
-		AccountID:         "",
-		AccountDisplay:    "Session sender",
-		AccountLogin:      strings.TrimSpace(sessionProfile.FromEmail),
-		AccountIsDefault:  true,
-		IdentityID:        sessionProfile.ID,
-		IdentityDisplay:   strings.TrimSpace(sessionProfile.DisplayName),
-		IdentityFromEmail: strings.TrimSpace(sessionProfile.FromEmail),
-		ReplyTo:           strings.TrimSpace(sessionProfile.ReplyTo),
-		SignatureText:     strings.TrimSpace(sessionProfile.SignatureText),
-		SignatureHTML:     strings.TrimSpace(sessionProfile.SignatureHTML),
-		IdentityIsDefault: true,
-		IsDefault:         true,
-		IsSession:         true,
-	}}
+	accountByID := make(map[string]models.MailAccount, len(accounts))
 	for _, account := range accounts {
-		identities, err := h.svc.Store().ListMailIdentities(r.Context(), account.ID)
-		if err != nil {
-			util.WriteError(w, 500, "compose_identities_failed", err.Error(), middleware.RequestID(r.Context()))
-			return
+		accountByID[account.ID] = account
+	}
+	items := make([]composeIdentityItem, 0, len(senders))
+	for _, sender := range senders {
+		account := accountByID[sender.AccountID]
+		accountDisplay := strings.TrimSpace(sender.AccountLabel)
+		if accountDisplay == "" {
+			accountDisplay = strings.TrimSpace(account.DisplayName)
 		}
-		for _, identity := range identities {
-			fromEmail := strings.TrimSpace(identity.FromEmail)
-			if fromEmail == "" {
-				continue
+		accountLogin := strings.TrimSpace(account.Login)
+		if accountLogin == "" {
+			accountLogin = strings.TrimSpace(sender.FromEmail)
+		}
+		accountID := strings.TrimSpace(sender.AccountID)
+		accountIsDefault := sender.AccountIsDefault
+		identityIsDefault := sender.IsDefault || sender.IsAccountDefault
+		isDefault := sender.IsDefault
+		if sender.IsPrimary {
+			accountID = ""
+			accountDisplay = "Primary sender"
+			accountLogin = strings.TrimSpace(sender.FromEmail)
+			accountIsDefault = true
+			identityIsDefault = true
+			if !isDefault {
+				isDefault = true
 			}
-			items = append(items, composeIdentityItem{
-				AccountID:         account.ID,
-				AccountDisplay:    strings.TrimSpace(account.DisplayName),
-				AccountLogin:      strings.TrimSpace(account.Login),
-				AccountIsDefault:  account.IsDefault,
-				IdentityID:        identity.ID,
-				IdentityDisplay:   strings.TrimSpace(identity.DisplayName),
-				IdentityFromEmail: fromEmail,
-				ReplyTo:           strings.TrimSpace(identity.ReplyTo),
-				SignatureText:     strings.TrimSpace(identity.SignatureText),
-				SignatureHTML:     strings.TrimSpace(identity.SignatureHTML),
-				IdentityIsDefault: identity.IsDefault,
-				IsDefault:         identity.IsDefault || account.IsDefault,
-			})
 		}
+		items = append(items, composeIdentityItem{
+			AccountID:         accountID,
+			AccountDisplay:    accountDisplay,
+			AccountLogin:      accountLogin,
+			AccountIsDefault:  accountIsDefault,
+			IdentityID:        sender.ID,
+			IdentityDisplay:   strings.TrimSpace(sender.Name),
+			IdentityFromEmail: strings.TrimSpace(sender.FromEmail),
+			ReplyTo:           strings.TrimSpace(sender.ReplyTo),
+			SignatureText:     strings.TrimSpace(sender.SignatureText),
+			SignatureHTML:     strings.TrimSpace(sender.SignatureHTML),
+			IdentityIsDefault: identityIsDefault,
+			IsDefault:         isDefault,
+			IsSession:         sender.IsPrimary,
+		})
 	}
 
 	util.WriteJSON(w, 200, map[string]any{
 		"auth_email":               strings.TrimSpace(service.MailIdentity(u)),
-		"manual_fallback_required": len(items) == 0,
+		"manual_fallback_required": false,
 		"items":                    items,
 	})
 }
@@ -1299,12 +1325,15 @@ func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply st
 			return
 		}
 		originalMessageID = strings.TrimSpace(original.MessageID)
-		req.InReplyToID = originalMessageID
-		req.References = append([]string{}, original.References...)
+		req.InReplyToID, req.References = mail.BuildReplyHeaders(
+			original.MessageID,
+			original.InReplyTo,
+			original.References,
+		)
 	}
 
 	sendAccountID := ""
-	sender, err := h.svc.ResolveComposeSender(r.Context(), u, decoded.FromMode, decoded.IdentityID, decoded.FromManual)
+	sender, err := h.svc.ResolveComposeSender(r.Context(), u, decoded.SenderProfileID, decoded.FromMode, decoded.IdentityID, decoded.FromManual)
 	if err != nil {
 		status := 400
 		code := "send_failed"
@@ -1313,7 +1342,7 @@ func (h *Handlers) handleSend(w http.ResponseWriter, r *http.Request, inReply st
 			code = "sender_identity_required"
 		case strings.Contains(err.Error(), "manual sender must match authenticated account email"):
 			code = "invalid_sender_manual"
-		case strings.Contains(err.Error(), "selected identity is missing from_email"):
+		case strings.Contains(err.Error(), "selected identity is missing from_email"), strings.Contains(err.Error(), "selected sender is missing from_email"), strings.Contains(err.Error(), "selected sender requires a sending account"), strings.Contains(err.Error(), "selected sender is not available for sending"):
 			code = "sender_identity_invalid"
 		case errors.Is(err, store.ErrNotFound):
 			code = "sender_identity_not_found"
@@ -1454,7 +1483,32 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	items = presentLiveMessageSummaries(items, mailbox)
 	util.WriteJSON(w, 200, map[string]any{"page": page, "page_size": pageSize, "items": items})
+}
+
+func presentLiveMessageSummary(item mail.MessageSummary, mailbox string) mail.MessageSummary {
+	if strings.TrimSpace(item.Mailbox) == "" {
+		item.Mailbox = strings.TrimSpace(mailbox)
+	}
+	if strings.TrimSpace(item.ThreadID) == "" {
+		item.ThreadID = mail.DeriveThreadID(item.Mailbox, item.Subject, item.From)
+	}
+	item.Source = "live"
+	return item
+}
+
+func presentLiveMessageSummaries(items []mail.MessageSummary, mailbox string) []mail.MessageSummary {
+	out := make([]mail.MessageSummary, 0, len(items))
+	for _, item := range items {
+		out = append(out, presentLiveMessageSummary(item, mailbox))
+	}
+	return out
+}
+
+func presentLiveMessage(item mail.Message) mail.Message {
+	item.Source = "live"
+	return item
 }
 
 func (h *Handlers) GetAttachment(w http.ResponseWriter, r *http.Request) {
@@ -2241,11 +2295,12 @@ func (h *Handlers) clearAuthCookies(w http.ResponseWriter, r *http.Request) {
 }
 
 type decodedSendRequest struct {
-	Request    mail.SendRequest
-	FromMode   string
-	IdentityID string
-	AccountID  string
-	FromManual string
+	Request         mail.SendRequest
+	SenderProfileID string
+	FromMode        string
+	IdentityID      string
+	AccountID       string
+	FromManual      string
 }
 
 func decodeSendRequest(w http.ResponseWriter, r *http.Request) (decodedSendRequest, error) {
@@ -2263,10 +2318,11 @@ func decodeSendRequest(w http.ResponseWriter, r *http.Request) (decodedSendReque
 				Body:     r.FormValue("body"),
 				BodyHTML: r.FormValue("body_html"),
 			},
-			FromMode:   strings.ToLower(strings.TrimSpace(r.FormValue("from_mode"))),
-			IdentityID: strings.TrimSpace(r.FormValue("identity_id")),
-			AccountID:  strings.TrimSpace(r.FormValue("account_id")),
-			FromManual: strings.TrimSpace(r.FormValue("from_manual")),
+			SenderProfileID: strings.TrimSpace(r.FormValue("sender_profile_id")),
+			FromMode:        strings.ToLower(strings.TrimSpace(r.FormValue("from_mode"))),
+			IdentityID:      strings.TrimSpace(r.FormValue("identity_id")),
+			AccountID:       strings.TrimSpace(r.FormValue("account_id")),
+			FromManual:      strings.TrimSpace(r.FormValue("from_manual")),
 		}
 		files := r.MultipartForm.File["attachments"]
 		var totalBytes int64
@@ -2330,16 +2386,17 @@ func decodeSendRequest(w http.ResponseWriter, r *http.Request) (decodedSendReque
 		return req, nil
 	}
 	var req struct {
-		To         []string `json:"to"`
-		CC         []string `json:"cc"`
-		BCC        []string `json:"bcc"`
-		Subject    string   `json:"subject"`
-		Body       string   `json:"body"`
-		BodyHTML   string   `json:"body_html"`
-		FromMode   string   `json:"from_mode"`
-		IdentityID string   `json:"identity_id"`
-		AccountID  string   `json:"account_id"`
-		FromManual string   `json:"from_manual"`
+		To              []string `json:"to"`
+		CC              []string `json:"cc"`
+		BCC             []string `json:"bcc"`
+		Subject         string   `json:"subject"`
+		Body            string   `json:"body"`
+		BodyHTML        string   `json:"body_html"`
+		SenderProfileID string   `json:"sender_profile_id"`
+		FromMode        string   `json:"from_mode"`
+		IdentityID      string   `json:"identity_id"`
+		AccountID       string   `json:"account_id"`
+		FromManual      string   `json:"from_manual"`
 	}
 	if err := decodeJSON(w, r, &req, jsonLimitLarge, false); err != nil {
 		return decodedSendRequest{}, err
@@ -2353,10 +2410,11 @@ func decodeSendRequest(w http.ResponseWriter, r *http.Request) (decodedSendReque
 			Body:     req.Body,
 			BodyHTML: req.BodyHTML,
 		},
-		FromMode:   strings.ToLower(strings.TrimSpace(req.FromMode)),
-		IdentityID: strings.TrimSpace(req.IdentityID),
-		AccountID:  strings.TrimSpace(req.AccountID),
-		FromManual: strings.TrimSpace(req.FromManual),
+		SenderProfileID: strings.TrimSpace(req.SenderProfileID),
+		FromMode:        strings.ToLower(strings.TrimSpace(req.FromMode)),
+		IdentityID:      strings.TrimSpace(req.IdentityID),
+		AccountID:       strings.TrimSpace(req.AccountID),
+		FromManual:      strings.TrimSpace(req.FromManual),
 	}, nil
 }
 

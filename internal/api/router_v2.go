@@ -1429,10 +1429,11 @@ func (h *Handlers) V2GetIndexedMessageAttachment(w http.ResponseWriter, r *http.
 func (h *Handlers) V2BulkMessages(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
 	var req struct {
-		AccountID string   `json:"account_id"`
-		IDs       []string `json:"ids"`
-		Action    string   `json:"action"`
-		Mailbox   string   `json:"mailbox"`
+		AccountID  string   `json:"account_id"`
+		IDs        []string `json:"ids"`
+		Action     string   `json:"action"`
+		Mailbox    string   `json:"mailbox"`
+		TargetRole string   `json:"target_role"`
 	}
 	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
 		writeJSONDecodeError(w, r, err)
@@ -1445,11 +1446,16 @@ func (h *Handlers) V2BulkMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	targetMailbox := strings.TrimSpace(req.Mailbox)
+	targetRole := strings.ToLower(strings.TrimSpace(req.TargetRole))
 	switch action {
 	case "seen", "unseen", "star", "unstar":
 	case "move":
-		if targetMailbox == "" {
+		if targetMailbox == "" && targetRole == "" {
 			util.WriteError(w, 400, "bad_request", "mailbox is required for move", middleware.RequestID(r.Context()))
+			return
+		}
+		if targetRole != "" && targetRole != "trash" && targetRole != "archive" && targetRole != "junk" && targetRole != "inbox" {
+			util.WriteError(w, 400, "bad_request", "unsupported target_role", middleware.RequestID(r.Context()))
 			return
 		}
 	default:
@@ -1462,6 +1468,22 @@ func (h *Handlers) V2BulkMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	client := h.accountMailClient(account)
+	if action == "move" && targetMailbox == "" && targetRole != "" {
+		resolvedMailbox, resolveErr := h.resolveAccountSpecialMailboxByRole(r.Context(), account, pass, targetRole, client)
+		if resolveErr != nil {
+			writeMailboxMutationIMAPError(w, r, resolveErr)
+			return
+		}
+		if strings.TrimSpace(resolvedMailbox) == "" {
+			if targetRole == "inbox" {
+				util.WriteError(w, 409, "mailbox_not_found", "Inbox mailbox is unavailable", middleware.RequestID(r.Context()))
+				return
+			}
+			writeSpecialMailboxRequired(w, r, targetRole)
+			return
+		}
+		targetMailbox = strings.TrimSpace(resolvedMailbox)
+	}
 	applied := make([]string, 0, len(req.IDs))
 	failed := make([]map[string]string, 0, len(req.IDs))
 
@@ -1792,23 +1814,23 @@ func (h *Handlers) V2Search(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) V2SuggestRecipients(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
 	accountID := strings.TrimSpace(r.URL.Query().Get("account_id"))
-	if accountID == "" {
-		util.WriteError(w, 400, "bad_request", "account_id is required", middleware.RequestID(r.Context()))
-		return
-	}
-	account, err := h.svc.Store().GetMailAccountByID(r.Context(), u.ID, accountID)
-	if err != nil {
-		util.WriteError(w, 403, "forbidden", "account does not belong to current user", middleware.RequestID(r.Context()))
-		return
-	}
-	selfEmails := indexedSelfEmails(r.Context(), h, u, account)
 	limit := 8
 	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
 		if parsed, parseErr := strconv.Atoi(raw); parseErr == nil && parsed > 0 {
 			limit = parsed
 		}
 	}
-	items, err := h.svc.Store().SuggestRecipients(r.Context(), accountID, selfEmails, strings.TrimSpace(r.URL.Query().Get("q")), limit)
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	selfEmails := []string{}
+	if accountID != "" {
+		account, err := h.svc.Store().GetMailAccountByID(r.Context(), u.ID, accountID)
+		if err != nil {
+			util.WriteError(w, 403, "forbidden", "account does not belong to current user", middleware.RequestID(r.Context()))
+			return
+		}
+		selfEmails = indexedSelfEmails(r.Context(), h, u, account)
+	}
+	items, err := h.svc.Store().SuggestRecipients(r.Context(), u.ID, accountID, selfEmails, query, limit)
 	if err != nil {
 		util.WriteError(w, 500, "recipient_suggest_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
@@ -1826,6 +1848,7 @@ func indexedMessageSummary(item models.IndexedMessage) mail.MessageSummary {
 		ID:        item.ID,
 		AccountID: item.AccountID,
 		Mailbox:   item.Mailbox,
+		Source:    "indexed",
 		From:      item.FromValue,
 		Subject:   item.Subject,
 		Date:      date,
@@ -1840,6 +1863,7 @@ func indexedMessageSummary(item models.IndexedMessage) mail.MessageSummary {
 func presentIndexedMessage(item models.IndexedMessage) models.IndexedMessage {
 	item.ID = mail.UnscopeIndexedMessageID(item.ID)
 	item.ThreadID = mail.UnscopeIndexedThreadID(item.ThreadID)
+	item.Source = "indexed"
 	item.FromValue = mail.DecodeAddressListValue(item.FromValue)
 	item.ToValue = mail.DecodeAddressListValue(item.ToValue)
 	item.CCValue = mail.DecodeAddressListValue(item.CCValue)
@@ -2027,6 +2051,9 @@ func (h *Handlers) V2ListDrafts(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 500, "drafts_list_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	for i := range items {
+		_ = h.hydrateDraftSenderProfileID(r.Context(), u, &items[i])
+	}
 	util.WriteJSON(w, 200, map[string]any{"items": items, "page": page, "page_size": pageSize, "total": total})
 }
 
@@ -2042,6 +2069,7 @@ func (h *Handlers) V2GetDraft(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 500, "draft_get_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	_ = h.hydrateDraftSenderProfileID(r.Context(), u, &item)
 	util.WriteJSON(w, 200, item)
 }
 
@@ -2102,6 +2130,14 @@ func (h *Handlers) V2CreateDraft(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := h.hydrateDraftSenderProfileID(r.Context(), u, &req); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, 404, "sender_not_found", "sender not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, 400, "create_draft_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
 	out, err := h.svc.Store().CreateDraft(r.Context(), req)
 	if err != nil {
 		util.WriteError(w, 400, "create_draft_failed", err.Error(), middleware.RequestID(r.Context()))
@@ -2141,11 +2177,20 @@ func (h *Handlers) V2UpdateDraft(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if err := h.hydrateDraftSenderProfileID(r.Context(), u, &current); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			util.WriteError(w, 404, "sender_not_found", "sender not found", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, 400, "update_draft_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
 	out, err := h.svc.Store().UpdateDraft(r.Context(), current)
 	if err != nil {
 		util.WriteError(w, 400, "update_draft_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	_ = h.hydrateDraftSenderProfileID(r.Context(), u, &out)
 	util.WriteJSON(w, 200, out)
 }
 
@@ -2291,16 +2336,56 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 500, "draft_get_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	replyContext := strings.EqualFold(strings.TrimSpace(draft.ComposeMode), "reply") && strings.TrimSpace(draft.ContextMessageID) != ""
+	mailLogin := service.MailAuthLogin(u)
+	mailPass := ""
+	if replyContext && strings.TrimSpace(draft.ContextAccountID) == "" {
+		mailPass, err = h.sessionMailPasswordFromContext(r.Context())
+		if err != nil {
+			code := "send_failed"
+			status := 400
+			if errors.Is(err, store.ErrNotFound) {
+				code = "context_message_not_found"
+				status = 404
+			}
+			util.WriteError(w, status, code, err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+	}
 	sendMode := strings.ToLower(strings.TrimSpace(draft.SendMode))
 	if sendMode == "scheduled" && !draft.ScheduledFor.IsZero() && draft.ScheduledFor.After(time.Now().UTC()) {
-		if strings.TrimSpace(draft.AccountID) == "" {
+		_, sendAccountID, _, err := h.svc.BuildDraftSendRequest(r.Context(), u, mailLogin, mailPass, draft)
+		if err != nil {
+			code := "send_failed"
+			status := 400
+			if errors.Is(err, store.ErrNotFound) {
+				code = "context_message_not_found"
+				status = 404
+			} else if strings.Contains(err.Error(), "identity_id is required") ||
+				strings.Contains(err.Error(), "selected identity is missing from_email") ||
+				strings.Contains(err.Error(), "selected sender is missing from_email") ||
+				strings.Contains(err.Error(), "selected sender requires a sending account") ||
+				strings.Contains(err.Error(), "selected sender is not available for sending") ||
+				strings.Contains(err.Error(), "manual sender must match authenticated account email") {
+				code = "invalid_sender_identity"
+			}
+			util.WriteError(w, status, code, err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		if strings.TrimSpace(sendAccountID) == "" {
+			sendAccountID = strings.TrimSpace(draft.AccountID)
+		}
+		if strings.TrimSpace(sendAccountID) == "" {
 			util.WriteError(w, 400, "schedule_requires_account", "scheduled send requires an account-backed draft", middleware.RequestID(r.Context()))
 			return
 		}
-		if err := h.svc.Store().QueueScheduledSend(r.Context(), draft); err != nil {
+		queueDraft := draft
+		queueDraft.AccountID = sendAccountID
+		if err := h.svc.Store().QueueScheduledSend(r.Context(), queueDraft); err != nil {
 			util.WriteError(w, 500, "schedule_failed", err.Error(), middleware.RequestID(r.Context()))
 			return
 		}
+		draft.AccountID = sendAccountID
 		draft.Status = "scheduled"
 		draft.LastSendError = ""
 		_, _ = h.svc.Store().UpdateDraft(r.Context(), draft)
@@ -2320,22 +2405,6 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 		}
 		cryptoJSON = string(b)
 	}
-	replyContext := strings.EqualFold(strings.TrimSpace(draft.ComposeMode), "reply") && strings.TrimSpace(draft.ContextMessageID) != ""
-	mailLogin := service.MailAuthLogin(u)
-	mailPass := ""
-	if replyContext && strings.TrimSpace(draft.ContextAccountID) == "" {
-		mailPass, err = h.sessionMailPasswordFromContext(r.Context())
-		if err != nil {
-			code := "send_failed"
-			status := 400
-			if errors.Is(err, store.ErrNotFound) {
-				code = "context_message_not_found"
-				status = 404
-			}
-			util.WriteError(w, status, code, err.Error(), middleware.RequestID(r.Context()))
-			return
-		}
-	}
 	sendReq, sendAccountID, markAnswered, err := h.svc.BuildDraftSendRequest(r.Context(), u, mailLogin, mailPass, draft)
 	if err != nil {
 		code := "send_failed"
@@ -2343,6 +2412,13 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, store.ErrNotFound) {
 			code = "context_message_not_found"
 			status = 404
+		} else if strings.Contains(err.Error(), "identity_id is required") ||
+			strings.Contains(err.Error(), "selected identity is missing from_email") ||
+			strings.Contains(err.Error(), "selected sender is missing from_email") ||
+			strings.Contains(err.Error(), "selected sender requires a sending account") ||
+			strings.Contains(err.Error(), "selected sender is not available for sending") ||
+			strings.Contains(err.Error(), "manual sender must match authenticated account email") {
+			code = "invalid_sender_identity"
 		}
 		util.WriteError(w, status, code, err.Error(), middleware.RequestID(r.Context()))
 		return
@@ -2391,6 +2467,10 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
 	var req struct {
+		SenderProfileID  string         `json:"sender_profile_id"`
+		FromMode         string         `json:"from_mode"`
+		IdentityID       string         `json:"identity_id"`
+		FromManual       string         `json:"from_manual"`
 		AccountID        string         `json:"account_id"`
 		To               []string       `json:"to"`
 		CC               []string       `json:"cc"`
@@ -2419,6 +2499,33 @@ func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
 		Subject: req.Subject,
 		Body:    req.Body,
 	}
+	sender, err := h.svc.ResolveComposeSender(
+		r.Context(),
+		u,
+		req.SenderProfileID,
+		req.FromMode,
+		req.IdentityID,
+		req.FromManual,
+	)
+	if err != nil {
+		status := 400
+		code := "invalid_sender_identity"
+		if errors.Is(err, store.ErrNotFound) {
+			status = 404
+			code = "sender_identity_not_found"
+		}
+		util.WriteError(w, status, code, err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	sendReq.HeaderFromName = sender.HeaderFromName
+	sendReq.HeaderFromEmail = sender.HeaderFromEmail
+	sendReq.EnvelopeFrom = sender.EnvelopeFrom
+	sendReq.ReplyTo = sender.ReplyTo
+	sendReq.From = sender.HeaderFromEmail
+	sendAccountID := strings.TrimSpace(sender.AccountID)
+	if sendAccountID == "" {
+		sendAccountID = strings.TrimSpace(req.AccountID)
+	}
 	cryptoJSON := ""
 	if len(req.CryptoOptions) > 0 {
 		b, err := json.Marshal(req.CryptoOptions)
@@ -2428,12 +2535,12 @@ func (h *Handlers) V2SendMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		cryptoJSON = string(b)
 	}
-	sendReq, err := h.applyCryptoToSendRequest(r.Context(), u, strings.TrimSpace(req.AccountID), sendReq, cryptoJSON, req.CryptoPassphrase)
+	sendReq, err = h.applyCryptoToSendRequest(r.Context(), u, sendAccountID, sendReq, cryptoJSON, req.CryptoPassphrase)
 	if err != nil {
 		util.WriteError(w, 422, "crypto_send_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	if _, err := h.v2SendWithAccount(r.Context(), u, strings.TrimSpace(req.AccountID), sendReq); err != nil {
+	if _, err := h.v2SendWithAccount(r.Context(), u, sendAccountID, sendReq); err != nil {
 		if isInvalidMessageHeaderError(err) {
 			util.WriteError(w, 400, "invalid_sender_identity", err.Error(), middleware.RequestID(r.Context()))
 			return
@@ -2612,6 +2719,16 @@ func (h *Handlers) V2UpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	}
 	applyPreferencesPatch(&current, req)
 	current.UserID = u.ID
+	if strings.TrimSpace(current.DefaultSenderID) != "" {
+		if _, err := h.svc.GetSenderProfileByID(r.Context(), u, current.DefaultSenderID); err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				util.WriteError(w, 400, "preferences_update_failed", "default_sender_id is invalid", middleware.RequestID(r.Context()))
+				return
+			}
+			util.WriteError(w, 500, "preferences_update_failed", err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+	}
 	out, err := h.svc.Store().UpsertUserPreferences(r.Context(), current)
 	if err != nil {
 		util.WriteError(w, 500, "preferences_update_failed", err.Error(), middleware.RequestID(r.Context()))
@@ -4050,6 +4167,9 @@ func applyPreferencesPatch(current *models.UserPreferences, patch map[string]any
 	if v, ok := patch["grouping_mode"].(string); ok {
 		current.GroupingMode = strings.TrimSpace(v)
 	}
+	if v, ok := patch["default_sender_id"].(string); ok {
+		current.DefaultSenderID = strings.TrimSpace(v)
+	}
 	if v, ok := patch["keymap"]; ok {
 		if b, err := json.Marshal(v); err == nil {
 			current.KeymapJSON = string(b)
@@ -4063,6 +4183,9 @@ func mergeDraftPatch(current *models.Draft, patch map[string]any) {
 	}
 	if v, ok := patch["identity_id"].(string); ok {
 		current.IdentityID = strings.TrimSpace(v)
+	}
+	if v, ok := patch["sender_profile_id"].(string); ok {
+		current.SenderProfileID = strings.TrimSpace(v)
 	}
 	if v, ok := patch["compose_mode"].(string); ok {
 		current.ComposeMode = strings.TrimSpace(v)
@@ -4123,6 +4246,22 @@ func mergeDraftPatch(current *models.Draft, patch map[string]any) {
 			current.ScheduledFor = t.UTC()
 		}
 	}
+}
+
+func (h *Handlers) hydrateDraftSenderProfileID(ctx context.Context, u models.User, draft *models.Draft) error {
+	if draft == nil {
+		return nil
+	}
+	if senderProfileID := strings.TrimSpace(draft.SenderProfileID); senderProfileID != "" {
+		_, err := h.svc.GetSenderProfileByID(ctx, u, senderProfileID)
+		return err
+	}
+	senderProfileID, err := h.svc.DeriveDraftSenderProfileID(ctx, u, *draft)
+	if err != nil {
+		return err
+	}
+	draft.SenderProfileID = senderProfileID
+	return nil
 }
 
 func decodeDraftAttachmentUpload(r *http.Request) ([]models.DraftAttachment, error) {

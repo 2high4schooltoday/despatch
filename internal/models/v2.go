@@ -66,6 +66,7 @@ type ThreadSummary struct {
 type IndexedMessage struct {
 	ID                  string    `json:"id"`
 	AccountID           string    `json:"account_id"`
+	Source              string    `json:"source,omitempty"`
 	Mailbox             string    `json:"mailbox"`
 	UID                 uint32    `json:"uid"`
 	ThreadID            string    `json:"thread_id"`
@@ -108,9 +109,52 @@ type IndexedAttachment struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+type ContactEmail struct {
+	ID        string `json:"id"`
+	ContactID string `json:"contact_id,omitempty"`
+	Email     string `json:"email"`
+	Label     string `json:"label,omitempty"`
+	IsPrimary bool   `json:"is_primary"`
+}
+
+type Contact struct {
+	ID                 string         `json:"id"`
+	UserID             string         `json:"user_id,omitempty"`
+	Name               string         `json:"name"`
+	Nicknames          []string       `json:"nicknames,omitempty"`
+	Emails             []ContactEmail `json:"emails,omitempty"`
+	Notes              string         `json:"notes,omitempty"`
+	GroupIDs           []string       `json:"group_ids,omitempty"`
+	PreferredAccountID string         `json:"preferred_account_id,omitempty"`
+	PreferredSenderID  string         `json:"preferred_sender_id,omitempty"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+}
+
+type ContactGroup struct {
+	ID               string    `json:"id"`
+	UserID           string    `json:"user_id,omitempty"`
+	Name             string    `json:"name"`
+	Description      string    `json:"description,omitempty"`
+	MemberCount      int       `json:"member_count"`
+	MemberContactIDs []string  `json:"member_contact_ids,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
+}
+
 type RecipientSuggestion struct {
-	Email string `json:"email"`
-	Label string `json:"label"`
+	Kind               string   `json:"kind,omitempty"`
+	ID                 string   `json:"id,omitempty"`
+	Email              string   `json:"email"`
+	Label              string   `json:"label"`
+	Subtitle           string   `json:"subtitle,omitempty"`
+	Emails             []string `json:"emails,omitempty"`
+	ContactID          string   `json:"contact_id,omitempty"`
+	GroupID            string   `json:"group_id,omitempty"`
+	MemberCount        int      `json:"member_count,omitempty"`
+	Source             string   `json:"source,omitempty"`
+	PreferredAccountID string   `json:"preferred_account_id,omitempty"`
+	PreferredSenderID  string   `json:"preferred_sender_id,omitempty"`
 }
 
 type IndexedMessageFilter struct {
@@ -139,6 +183,7 @@ type UserPreferences struct {
 	Timezone          string    `json:"timezone"`
 	PageSize          int       `json:"page_size"`
 	GroupingMode      string    `json:"grouping_mode"`
+	DefaultSenderID   string    `json:"default_sender_id"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
@@ -158,6 +203,7 @@ type Draft struct {
 	UserID           string    `json:"user_id"`
 	AccountID        string    `json:"account_id"`
 	IdentityID       string    `json:"identity_id"`
+	SenderProfileID  string    `json:"sender_profile_id"`
 	ComposeMode      string    `json:"compose_mode"`
 	ContextMessageID string    `json:"context_message_id"`
 	ContextAccountID string    `json:"context_account_id"`
@@ -178,6 +224,25 @@ type Draft struct {
 	LastSendError    string    `json:"last_send_error,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+type SenderProfile struct {
+	ID               string `json:"id"`
+	Kind             string `json:"kind"`
+	Name             string `json:"name"`
+	FromEmail        string `json:"from_email"`
+	ReplyTo          string `json:"reply_to,omitempty"`
+	SignatureText    string `json:"signature_text,omitempty"`
+	SignatureHTML    string `json:"signature_html,omitempty"`
+	AccountID        string `json:"account_id"`
+	AccountLabel     string `json:"account_label"`
+	IsDefault        bool   `json:"is_default"`
+	IsPrimary        bool   `json:"is_primary"`
+	CanDelete        bool   `json:"can_delete"`
+	CanSchedule      bool   `json:"can_schedule"`
+	Status           string `json:"status"`
+	AccountIsDefault bool   `json:"account_is_default,omitempty"`
+	IsAccountDefault bool   `json:"is_account_default,omitempty"`
 }
 
 type DraftVersion struct {
@@ -295,6 +360,38 @@ type QuotaCache struct {
 	TotalMessages int64     `json:"total_messages"`
 	RefreshedAt   time.Time `json:"refreshed_at"`
 	LastError     string    `json:"last_error,omitempty"`
+}
+
+type MailHealthActionState struct {
+	Kind      string    `json:"kind,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	UpdatedAt time.Time `json:"updated_at,omitempty"`
+}
+
+type MailAccountHealth struct {
+	AccountID        string                 `json:"account_id"`
+	AccountLabel     string                 `json:"account_label"`
+	IsDefault        bool                   `json:"is_default"`
+	Status           string                 `json:"status"`
+	LastSyncAt       time.Time              `json:"last_sync_at,omitempty"`
+	LastError        string                 `json:"last_error,omitempty"`
+	QuotaAvailable   bool                   `json:"quota_available"`
+	QuotaSupported   bool                   `json:"quota_supported"`
+	UsedBytes        int64                  `json:"used_bytes"`
+	TotalBytes       int64                  `json:"total_bytes"`
+	UsedMessages     int64                  `json:"used_messages"`
+	TotalMessages    int64                  `json:"total_messages"`
+	QuotaRefreshedAt time.Time              `json:"quota_refreshed_at,omitempty"`
+	QuotaLastError   string                 `json:"quota_last_error,omitempty"`
+	ActionState      *MailHealthActionState `json:"action_state,omitempty"`
+}
+
+type MailAccountHealthSummary struct {
+	TotalAccounts     int `json:"total_accounts"`
+	HealthyAccounts   int `json:"healthy_accounts"`
+	AttentionAccounts int `json:"attention_accounts"`
+	ErrorAccounts     int `json:"error_accounts"`
 }
 
 type ScheduledSendQueueItem struct {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	stdmail "net/mail"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -17,6 +18,8 @@ import (
 )
 
 const indexedMessageSelectColumns = `id,account_id,mailbox,uid,thread_id,message_id_header,in_reply_to_header,references_header,from_value,to_value,cc_value,bcc_value,subject,snippet,body_text,body_html_sanitized,raw_source,seen,flagged,answered,draft,has_attachments,importance,dkim_status,spf_status,dmarc_status,phishing_score,remote_images_blocked,remote_images_allowed,date_header,internal_date`
+
+var indexedSearchTokenPattern = regexp.MustCompile(`[\pL\pN]+`)
 
 type recipientScore struct {
 	models.RecipientSuggestion
@@ -63,6 +66,9 @@ func (s *Store) ListMailAccounts(ctx context.Context, userID string) ([]models.M
 		userID,
 	)
 	if err != nil {
+		if isOptionalSchemaErr(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	defer rows.Close()
@@ -112,6 +118,9 @@ func (s *Store) GetMailAccountByID(ctx context.Context, userID, id string) (mode
 		return models.MailAccount{}, ErrNotFound
 	}
 	if err != nil {
+		if isOptionalSchemaErr(err) {
+			return models.MailAccount{}, ErrNotFound
+		}
 		return models.MailAccount{}, err
 	}
 	return item, nil
@@ -254,6 +263,9 @@ func (s *Store) ListMailIdentities(ctx context.Context, accountID string) ([]mod
 		accountID,
 	)
 	if err != nil {
+		if isOptionalSchemaErr(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	defer rows.Close()
@@ -327,10 +339,14 @@ func (s *Store) GetMailIdentityByID(ctx context.Context, id string) (models.Mail
 
 func (s *Store) UpdateMailIdentity(ctx context.Context, in models.MailIdentity) (models.MailIdentity, error) {
 	now := time.Now().UTC()
+	current, err := s.GetMailIdentityByID(ctx, in.ID)
+	if err != nil {
+		return models.MailIdentity{}, err
+	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE mail_identities SET display_name=?,from_email=?,reply_to=?,signature_text=?,signature_html=?,is_default=?,updated_at=?
-		 WHERE id=? AND account_id=?`,
-		in.DisplayName, in.FromEmail, in.ReplyTo, in.SignatureText, in.SignatureHTML, boolToInt(in.IsDefault), now, in.ID, in.AccountID,
+		`UPDATE mail_identities SET account_id=?,display_name=?,from_email=?,reply_to=?,signature_text=?,signature_html=?,is_default=?,updated_at=?
+		 WHERE id=?`,
+		in.AccountID, in.DisplayName, in.FromEmail, in.ReplyTo, in.SignatureText, in.SignatureHTML, boolToInt(in.IsDefault), now, in.ID,
 	)
 	if err != nil {
 		return models.MailIdentity{}, err
@@ -343,6 +359,12 @@ func (s *Store) UpdateMailIdentity(ctx context.Context, in models.MailIdentity) 
 		_, _ = s.db.ExecContext(ctx,
 			`UPDATE mail_identities SET is_default=CASE WHEN id=? THEN 1 ELSE 0 END, updated_at=? WHERE account_id=?`,
 			in.ID, now, in.AccountID,
+		)
+	}
+	if strings.TrimSpace(current.AccountID) != "" && current.AccountID != in.AccountID {
+		_, _ = s.db.ExecContext(ctx,
+			`UPDATE mail_identities SET updated_at=? WHERE account_id=?`,
+			now, current.AccountID,
 		)
 	}
 	return s.GetMailIdentityByID(ctx, in.ID)
@@ -445,7 +467,7 @@ func (s *Store) ListIndexedMailboxCounts(ctx context.Context, accountID string) 
 
 func (s *Store) GetUserPreferences(ctx context.Context, userID string) (models.UserPreferences, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT user_id,theme,density,layout_mode,keymap_json,remote_image_policy,timezone,page_size,grouping_mode,updated_at
+		`SELECT user_id,theme,density,layout_mode,keymap_json,remote_image_policy,timezone,page_size,grouping_mode,default_sender_id,updated_at
 		 FROM user_preferences
 		 WHERE user_id=?`,
 		userID,
@@ -461,23 +483,16 @@ func (s *Store) GetUserPreferences(ctx context.Context, userID string) (models.U
 		&item.Timezone,
 		&item.PageSize,
 		&item.GroupingMode,
+		&item.DefaultSenderID,
 		&item.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
-		return models.UserPreferences{
-			UserID:            userID,
-			Theme:             "machine-dark",
-			Density:           "comfortable",
-			LayoutMode:        "three-pane",
-			KeymapJSON:        "{}",
-			RemoteImagePolicy: "block",
-			Timezone:          "UTC",
-			PageSize:          50,
-			GroupingMode:      "day",
-			UpdatedAt:         time.Now().UTC(),
-		}, nil
+		return defaultUserPreferences(userID), nil
 	}
 	if err != nil {
+		if isOptionalSchemaErr(err) {
+			return defaultUserPreferences(userID), nil
+		}
 		return models.UserPreferences{}, err
 	}
 	return item, nil
@@ -510,8 +525,8 @@ func (s *Store) UpsertUserPreferences(ctx context.Context, in models.UserPrefere
 		in.GroupingMode = "day"
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO user_preferences(user_id,theme,density,layout_mode,keymap_json,remote_image_policy,timezone,page_size,grouping_mode,updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO user_preferences(user_id,theme,density,layout_mode,keymap_json,remote_image_policy,timezone,page_size,grouping_mode,default_sender_id,updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(user_id) DO UPDATE SET
 		   theme=excluded.theme,
 		   density=excluded.density,
@@ -521,6 +536,7 @@ func (s *Store) UpsertUserPreferences(ctx context.Context, in models.UserPrefere
 		   timezone=excluded.timezone,
 		   page_size=excluded.page_size,
 		   grouping_mode=excluded.grouping_mode,
+		   default_sender_id=excluded.default_sender_id,
 		   updated_at=excluded.updated_at`,
 		in.UserID,
 		in.Theme,
@@ -531,12 +547,37 @@ func (s *Store) UpsertUserPreferences(ctx context.Context, in models.UserPrefere
 		in.Timezone,
 		in.PageSize,
 		in.GroupingMode,
+		in.DefaultSenderID,
 		in.UpdatedAt,
 	)
 	if err != nil {
+		if isOptionalSchemaErr(err) {
+			return in, nil
+		}
 		return models.UserPreferences{}, err
 	}
 	return in, nil
+}
+
+func defaultUserPreferences(userID string) models.UserPreferences {
+	return models.UserPreferences{
+		UserID:            userID,
+		Theme:             "machine-dark",
+		Density:           "comfortable",
+		LayoutMode:        "three-pane",
+		KeymapJSON:        "{}",
+		RemoteImagePolicy: "block",
+		Timezone:          "UTC",
+		PageSize:          50,
+		GroupingMode:      "day",
+		DefaultSenderID:   "",
+		UpdatedAt:         time.Now().UTC(),
+	}
+}
+
+func isOptionalSchemaErr(err error) bool {
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "no such table") || strings.Contains(msg, "no such column")
 }
 
 func (s *Store) ListSavedSearches(ctx context.Context, userID string) ([]models.SavedSearch, error) {
@@ -632,7 +673,7 @@ func (s *Store) ListDrafts(ctx context.Context, userID, accountID string, limit,
 	limit = clampLimit(limit)
 	offset = clampOffset(offset)
 	query := fmt.Sprintf(
-		`SELECT id,user_id,account_id,identity_id,compose_mode,context_message_id,context_account_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,last_send_error,created_at,updated_at
+		`SELECT id,user_id,account_id,identity_id,sender_profile_id,compose_mode,context_message_id,context_account_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,last_send_error,created_at,updated_at
 		 FROM drafts
 		 WHERE %s
 		 ORDER BY updated_at DESC
@@ -659,7 +700,7 @@ func (s *Store) ListDrafts(ctx context.Context, userID, accountID string, limit,
 
 func (s *Store) GetDraftByID(ctx context.Context, userID, id string) (models.Draft, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id,user_id,account_id,identity_id,compose_mode,context_message_id,context_account_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,last_send_error,created_at,updated_at
+		`SELECT id,user_id,account_id,identity_id,sender_profile_id,compose_mode,context_message_id,context_account_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,last_send_error,created_at,updated_at
 		 FROM drafts
 		 WHERE user_id=? AND id=?`,
 		userID, id,
@@ -694,12 +735,13 @@ func (s *Store) CreateDraft(ctx context.Context, in models.Draft) (models.Draft,
 	}
 	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO drafts(
-		  id,user_id,account_id,identity_id,compose_mode,context_message_id,context_account_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,last_send_error,created_at,updated_at
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		  id,user_id,account_id,identity_id,sender_profile_id,compose_mode,context_message_id,context_account_id,from_mode,from_manual,client_state_json,to_value,cc_value,bcc_value,subject,body_text,body_html,attachments_json,crypto_options_json,send_mode,scheduled_for,status,last_send_error,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		in.ID,
 		in.UserID,
 		nullStringValue(in.AccountID),
 		in.IdentityID,
+		in.SenderProfileID,
 		in.ComposeMode,
 		in.ContextMessageID,
 		in.ContextAccountID,
@@ -741,10 +783,11 @@ func (s *Store) UpdateDraft(ctx context.Context, in models.Draft) (models.Draft,
 	in.LastSendError = strings.TrimSpace(in.LastSendError)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE drafts SET
-		  account_id=?,identity_id=?,compose_mode=?,context_message_id=?,context_account_id=?,from_mode=?,from_manual=?,client_state_json=?,to_value=?,cc_value=?,bcc_value=?,subject=?,body_text=?,body_html=?,attachments_json=?,crypto_options_json=?,send_mode=?,scheduled_for=?,status=?,last_send_error=?,updated_at=?
+		  account_id=?,identity_id=?,sender_profile_id=?,compose_mode=?,context_message_id=?,context_account_id=?,from_mode=?,from_manual=?,client_state_json=?,to_value=?,cc_value=?,bcc_value=?,subject=?,body_text=?,body_html=?,attachments_json=?,crypto_options_json=?,send_mode=?,scheduled_for=?,status=?,last_send_error=?,updated_at=?
 		 WHERE user_id=? AND id=?`,
 		nullStringValue(in.AccountID),
 		in.IdentityID,
+		in.SenderProfileID,
 		in.ComposeMode,
 		in.ContextMessageID,
 		in.ContextAccountID,
@@ -1761,6 +1804,33 @@ func indexedMessageOrderBy(sort string) string {
 	}
 }
 
+func indexedFTSMatchQuery(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	// Treat UI-style filter prefixes as plain text hints, not FTS column selectors.
+	replacer := strings.NewReplacer(
+		"from:", " ",
+		"to:", " ",
+		"subject:", " ",
+	)
+	clean := replacer.Replace(strings.ToLower(raw))
+	tokens := indexedSearchTokenPattern.FindAllString(clean, -1)
+	if len(tokens) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(tokens))
+	for _, token := range tokens {
+		trimmed := strings.TrimSpace(token)
+		if trimmed == "" {
+			continue
+		}
+		parts = append(parts, `"`+strings.ReplaceAll(trimmed, `"`, `""`)+`"`)
+	}
+	return strings.Join(parts, " AND ")
+}
+
 func (s *Store) listIndexedMessagesForMailboxes(ctx context.Context, accountID string, mailboxes []string, filter models.IndexedMessageFilter, sort string, limit, offset int) ([]models.IndexedMessage, int, error) {
 	limit = clampLimit(limit)
 	offset = clampOffset(offset)
@@ -1868,6 +1938,11 @@ func (s *Store) searchIndexedMessagesForMailboxes(ctx context.Context, accountID
 	if filter.Query == "" {
 		return s.listIndexedMessagesForMailboxes(ctx, accountID, mailboxes, filter, "", limit, offset)
 	}
+	matchQuery := indexedFTSMatchQuery(filter.Query)
+	if matchQuery == "" {
+		filter.Query = ""
+		return s.listIndexedMessagesForMailboxes(ctx, accountID, mailboxes, filter, "", limit, offset)
+	}
 	limit = clampLimit(limit)
 	offset = clampOffset(offset)
 	totalQuery := `SELECT COUNT(1)
@@ -1882,7 +1957,7 @@ func (s *Store) searchIndexedMessagesForMailboxes(ctx context.Context, accountID
 		totalQuery += ` AND ` + clause
 	}
 	totalQuery += ` AND message_search_fts MATCH ?`
-	args = append(args, filter.Query)
+	args = append(args, matchQuery)
 
 	var total int
 	if err := s.db.QueryRowContext(ctx, totalQuery, args...).Scan(&total); err != nil {
@@ -1903,7 +1978,7 @@ func (s *Store) searchIndexedMessagesForMailboxes(ctx context.Context, accountID
 	listQuery += ` AND message_search_fts MATCH ?
 		ORDER BY m.date_header DESC
 		LIMIT ? OFFSET ?`
-	listArgs = append(listArgs, filter.Query, limit, offset)
+	listArgs = append(listArgs, matchQuery, limit, offset)
 
 	rows, err := s.db.QueryContext(ctx, listQuery, listArgs...)
 	if err != nil {
@@ -2007,7 +2082,48 @@ func (s *Store) SearchIndexedMessagesByAccounts(ctx context.Context, accountIDs 
 	return append([]models.IndexedMessage(nil), merged[offset:end]...), total, nil
 }
 
-func (s *Store) SuggestRecipients(ctx context.Context, accountID string, selfEmails []string, query string, limit int) ([]models.RecipientSuggestion, error) {
+func suggestionMatchScore(value, query string) int {
+	value = strings.ToLower(strings.TrimSpace(value))
+	query = strings.ToLower(strings.TrimSpace(query))
+	if value == "" || query == "" {
+		return 0
+	}
+	switch {
+	case value == query:
+		return 300
+	case strings.HasPrefix(value, query):
+		return 200
+	case strings.Contains(value, query):
+		return 100
+	default:
+		return 0
+	}
+}
+
+func contactSuggestionScore(contact models.Contact, email models.ContactEmail, query, accountID string) int {
+	best := suggestionMatchScore(email.Email, query)
+	if score := suggestionMatchScore(contact.Name, query); score > best {
+		best = score
+	}
+	for _, nickname := range contact.Nicknames {
+		if score := suggestionMatchScore(nickname, query) + 20; score > best {
+			best = score
+		}
+	}
+	if email.IsPrimary {
+		best += 15
+	}
+	if accountID != "" && strings.EqualFold(strings.TrimSpace(contact.PreferredAccountID), accountID) {
+		best += 10
+	}
+	return best
+}
+
+func groupSuggestionScore(group models.ContactGroup, query string) int {
+	return suggestionMatchScore(group.Name, query) + 10
+}
+
+func (s *Store) suggestRecentRecipients(ctx context.Context, accountID string, selfEmails []string, query string, limit int) ([]recipientScore, error) {
 	if limit <= 0 {
 		limit = 8
 	}
@@ -2089,6 +2205,10 @@ func (s *Store) SuggestRecipients(ctx context.Context, accountID string, selfEma
 		if query != "" && !strings.Contains(strings.ToLower(item.Email), query) && !strings.Contains(strings.ToLower(item.Label), query) {
 			continue
 		}
+		item.Kind = "recent"
+		item.ID = item.Email
+		item.Source = "history"
+		item.Subtitle = "Recent history"
 		items = append(items, item)
 	}
 	sort.Slice(items, func(i, j int) bool {
@@ -2099,6 +2219,128 @@ func (s *Store) SuggestRecipients(ctx context.Context, accountID string, selfEma
 			return items[i].LastAt.After(items[j].LastAt)
 		}
 		return items[i].Email < items[j].Email
+	})
+	if len(items) > limit {
+		items = items[:limit]
+	}
+	return items, nil
+}
+
+func (s *Store) SuggestRecipients(ctx context.Context, userID, accountID string, selfEmails []string, query string, limit int) ([]models.RecipientSuggestion, error) {
+	if limit <= 0 {
+		limit = 8
+	}
+	if limit > 25 {
+		limit = 25
+	}
+	query = strings.TrimSpace(query)
+	suggestions := map[string]recipientScore{}
+
+	if query != "" {
+		contacts, err := s.ListContacts(ctx, userID, query)
+		if err != nil {
+			return nil, err
+		}
+		for _, contact := range contacts {
+			for _, email := range contact.Emails {
+				score := contactSuggestionScore(contact, email, query, accountID)
+				if score <= 0 {
+					continue
+				}
+				key := "contact:" + strings.ToLower(strings.TrimSpace(email.Email))
+				current := suggestions[key]
+				if score > current.Score {
+					label := strings.TrimSpace(contact.Name)
+					if label == "" {
+						label = strings.TrimSpace(email.Email)
+					}
+					subtitle := strings.TrimSpace(email.Email)
+					if label == subtitle {
+						subtitle = ""
+					}
+					current.RecipientSuggestion = models.RecipientSuggestion{
+						Kind:               "contact_email",
+						ID:                 email.ID,
+						Email:              strings.TrimSpace(email.Email),
+						Label:              label,
+						Subtitle:           subtitle,
+						ContactID:          contact.ID,
+						Source:             "contacts",
+						PreferredAccountID: strings.TrimSpace(contact.PreferredAccountID),
+						PreferredSenderID:  strings.TrimSpace(contact.PreferredSenderID),
+					}
+					current.Score = score + 100000
+				}
+				suggestions[key] = current
+			}
+		}
+
+		groups, err := s.ListContactGroups(ctx, userID, query)
+		if err != nil {
+			return nil, err
+		}
+		for _, group := range groups {
+			emails, err := s.ContactGroupPrimaryEmails(ctx, userID, group.ID)
+			if err != nil {
+				return nil, err
+			}
+			score := groupSuggestionScore(group, query)
+			if score <= 0 {
+				continue
+			}
+			key := "group:" + group.ID
+			suggestions[key] = recipientScore{
+				RecipientSuggestion: models.RecipientSuggestion{
+					Kind:        "group",
+					ID:          group.ID,
+					Label:       strings.TrimSpace(group.Name),
+					Subtitle:    strings.TrimSpace(group.Description),
+					Emails:      emails,
+					GroupID:     group.ID,
+					MemberCount: group.MemberCount,
+					Source:      "contacts",
+				},
+				Score: score + 90000,
+			}
+		}
+	}
+
+	if strings.TrimSpace(accountID) != "" {
+		recentItems, err := s.suggestRecentRecipients(ctx, accountID, selfEmails, query, limit)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range recentItems {
+			emailKey := strings.ToLower(strings.TrimSpace(item.Email))
+			if _, ok := suggestions["contact:"+emailKey]; ok {
+				continue
+			}
+			key := "recent:" + emailKey
+			if existing, ok := suggestions[key]; ok && existing.Score >= item.Score {
+				continue
+			}
+			item.Score += 1000
+			suggestions[key] = item
+		}
+	}
+
+	items := make([]recipientScore, 0, len(suggestions))
+	for _, item := range suggestions {
+		items = append(items, item)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Score != items[j].Score {
+			return items[i].Score > items[j].Score
+		}
+		if !items[i].LastAt.Equal(items[j].LastAt) {
+			return items[i].LastAt.After(items[j].LastAt)
+		}
+		left := strings.ToLower(strings.TrimSpace(items[i].Label))
+		right := strings.ToLower(strings.TrimSpace(items[j].Label))
+		if left != right {
+			return left < right
+		}
+		return strings.ToLower(strings.TrimSpace(items[i].Email)) < strings.ToLower(strings.TrimSpace(items[j].Email))
 	})
 	if len(items) > limit {
 		items = items[:limit]
@@ -3395,6 +3637,7 @@ func scanDraft(scanner interface{ Scan(dest ...any) error }) (models.Draft, erro
 		&item.UserID,
 		&accountID,
 		&item.IdentityID,
+		&item.SenderProfileID,
 		&item.ComposeMode,
 		&item.ContextMessageID,
 		&item.ContextAccountID,

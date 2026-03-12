@@ -22,6 +22,7 @@ func ApplyMigrationFile(db *sql.DB, path string) error {
 		`ALTER TABLE sessions ADD COLUMN mfa_verified_at DATETIME`,
 		`ALTER TABLE sessions ADD COLUMN auth_method TEXT NOT NULL DEFAULT 'password'`,
 		`ALTER TABLE sessions ADD COLUMN active_account_id TEXT`,
+		`ALTER TABLE drafts ADD COLUMN sender_profile_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN provision_state TEXT NOT NULL DEFAULT 'pending'`,
 		`ALTER TABLE users ADD COLUMN provision_error TEXT`,
 		`ALTER TABLE users ADD COLUMN mail_login TEXT`,
@@ -47,6 +48,7 @@ func ApplyMigrationFile(db *sql.DB, path string) error {
 		 )`,
 		`CREATE INDEX IF NOT EXISTS idx_mfa_trusted_user ON mfa_trusted_devices(user_id, expires_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_mfa_trusted_active ON mfa_trusted_devices(user_id, revoked_at, expires_at)`,
+		`ALTER TABLE user_preferences ADD COLUMN default_sender_id TEXT NOT NULL DEFAULT ''`,
 		`UPDATE users
 		 SET legacy_mfa_prompt_pending = 1
 		 WHERE status = 'active'

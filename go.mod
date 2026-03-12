@@ -4,6 +4,7 @@ go 1.22
 
 require (
 	github.com/emersion/go-imap v1.2.1
+	github.com/emersion/go-imap-quota v0.0.0-20210203125329-619074823f3c
 	github.com/emersion/go-message v0.18.1
 	github.com/go-chi/chi/v5 v5.1.0
 	github.com/go-chi/cors v1.2.1

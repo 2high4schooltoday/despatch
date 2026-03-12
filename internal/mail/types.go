@@ -2,6 +2,7 @@ package mail
 
 import (
 	"context"
+	"errors"
 	"io"
 	"time"
 )
@@ -19,6 +20,7 @@ type MessageSummary struct {
 	ID        string    `json:"id"`
 	AccountID string    `json:"account_id,omitempty"`
 	Mailbox   string    `json:"mailbox,omitempty"`
+	Source    string    `json:"source,omitempty"`
 	From      string    `json:"from"`
 	Subject   string    `json:"subject"`
 	Date      time.Time `json:"date"`
@@ -41,6 +43,7 @@ type AttachmentMeta struct {
 type Message struct {
 	ID          string           `json:"id"`
 	Mailbox     string           `json:"mailbox"`
+	Source      string           `json:"source,omitempty"`
 	UID         uint32           `json:"uid"`
 	From        string           `json:"from"`
 	To          []string         `json:"to"`
@@ -76,6 +79,19 @@ type SyncMessage struct {
 type AttachmentContent struct {
 	Meta AttachmentMeta
 	Data []byte
+}
+
+type Quota struct {
+	UsedBytes     int64
+	TotalBytes    int64
+	UsedMessages  int64
+	TotalMessages int64
+}
+
+var ErrQuotaUnsupported = errors.New("quota unsupported")
+
+type QuotaReader interface {
+	GetQuota(ctx context.Context, user, pass string) (Quota, error)
 }
 
 type SendAttachment struct {

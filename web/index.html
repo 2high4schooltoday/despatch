@@ -23,6 +23,7 @@
           <button id="tab-setup" class="tab" type="button">Setup</button>
           <button id="tab-auth" class="tab active" type="button">Auth</button>
           <button id="tab-mail" class="tab" type="button">Mail</button>
+          <button id="tab-contacts" class="tab" type="button">Contacts</button>
           <button id="tab-settings" class="tab" type="button">Settings</button>
           <button id="tab-admin" class="tab" type="button">Admin</button>
         </nav>
@@ -163,46 +164,9 @@
             <section id="settings-section-mail" class="panel settings-section hidden">
               <header class="settings-page-head">
                 <h3>Mail</h3>
-                <p class="hint">Manage sender identities, Reply-To, and the signature inserted into new mail, replies, and forwards.</p>
+                <p class="hint">Manage delivery accounts, visible senders, signatures, and mail defaults.</p>
               </header>
-              <p id="settings-mail-note" class="hint">Sender settings are loading.</p>
-
-              <section class="setting-section">
-                <header class="setting-section-head">
-                  <h4>Session Sender</h4>
-                  <p class="hint">Used when sending through the currently authenticated mailbox.</p>
-                </header>
-                <div class="mail-settings-form-grid">
-                  <label class="mail-settings-field">
-                    <span>Display Name</span>
-                    <input id="settings-mail-session-display-name" type="text" autocomplete="name" placeholder="Full Name">
-                  </label>
-                  <label class="mail-settings-field">
-                    <span>From Email</span>
-                    <input id="settings-mail-session-from-email" type="email" autocomplete="email" disabled>
-                  </label>
-                  <label class="mail-settings-field mail-settings-field--full">
-                    <span>Reply-To</span>
-                    <input id="settings-mail-session-reply-to" type="email" autocomplete="email" placeholder="reply-to@example.com">
-                  </label>
-                </div>
-                <div class="mail-signature-card">
-                  <div class="mail-signature-head">
-                    <strong>Signature</strong>
-                    <span class="hint">The `-- ` delimiter is added automatically when composing.</span>
-                  </div>
-                  <div id="settings-mail-session-toolbar" class="mail-signature-toolbar" role="group" aria-label="Session signature formatting">
-                    <button type="button" class="cmd-btn cmd-btn--dense" data-signature-command="bold">Bold</button>
-                    <button type="button" class="cmd-btn cmd-btn--dense" data-signature-command="italic">Italic</button>
-                    <button type="button" class="cmd-btn cmd-btn--dense" data-signature-command="createLink">Link</button>
-                    <button type="button" class="cmd-btn cmd-btn--dense" data-signature-command="removeFormat">Clear</button>
-                  </div>
-                  <div id="settings-mail-session-signature" class="mail-signature-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write a signature for your session mailbox"></div>
-                </div>
-                <div class="actions setting-actions">
-                  <button id="btn-settings-mail-session-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Session Sender</button>
-                </div>
-              </section>
+              <p id="settings-mail-note" class="hint">Mail settings are loading.</p>
 
               <section class="setting-section">
                 <header class="setting-section-head">
@@ -277,24 +241,28 @@
 
               <section class="setting-section">
                 <header class="setting-section-head">
-                  <h4>Identities</h4>
-                  <p class="hint">Choose the sender name, visible From address, Reply-To, and signature per account.</p>
+                  <h4>Senders</h4>
+                  <p class="hint">Choose the sender name, visible email, Reply-To, and signature recipients see.</p>
                 </header>
                 <div class="mail-settings-columns">
                   <div class="mail-settings-column">
                     <div class="actions setting-actions">
-                      <button id="btn-settings-mail-identity-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Identity</button>
+                      <button id="btn-settings-mail-identity-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Sender</button>
                     </div>
                     <div id="settings-mail-identity-list" class="settings-list"></div>
                   </div>
                   <form id="settings-mail-identity-form" class="mail-settings-form" novalidate>
                     <div class="mail-settings-form-grid">
                       <label class="mail-settings-field">
-                        <span>Display Name</span>
+                        <span>Sends Via</span>
+                        <select id="settings-mail-identity-account" autocomplete="off"></select>
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>Sender Name</span>
                         <input id="settings-mail-identity-display-name" type="text" autocomplete="name" placeholder="Full Name">
                       </label>
                       <label class="mail-settings-field">
-                        <span>From Email</span>
+                        <span>Visible Email</span>
                         <input id="settings-mail-identity-from-email" type="email" autocomplete="email" placeholder="alias@example.com">
                       </label>
                       <label class="mail-settings-field mail-settings-field--full">
@@ -302,28 +270,172 @@
                         <input id="settings-mail-identity-reply-to" type="email" autocomplete="email" placeholder="reply-to@example.com">
                       </label>
                       <label class="mail-settings-field">
-                        <span>Default Identity</span>
+                        <span>Default Sender</span>
                         <input id="settings-mail-identity-default" type="checkbox">
                       </label>
                     </div>
                     <div class="mail-signature-card">
                       <div class="mail-signature-head">
                         <strong>Signature</strong>
-                        <span class="hint">Used for new mail, replies, and forwards when this identity is selected.</span>
+                        <span class="hint">Used for new mail, replies, and forwards when this sender is selected.</span>
                       </div>
-                      <div id="settings-mail-identity-toolbar" class="mail-signature-toolbar" role="group" aria-label="Identity signature formatting">
+                      <div id="settings-mail-identity-toolbar" class="mail-signature-toolbar" role="group" aria-label="Sender signature formatting">
                         <button type="button" class="cmd-btn cmd-btn--dense" data-signature-command="bold">Bold</button>
                         <button type="button" class="cmd-btn cmd-btn--dense" data-signature-command="italic">Italic</button>
                         <button type="button" class="cmd-btn cmd-btn--dense" data-signature-command="createLink">Link</button>
                         <button type="button" class="cmd-btn cmd-btn--dense" data-signature-command="removeFormat">Clear</button>
                       </div>
-                      <div id="settings-mail-identity-signature" class="mail-signature-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write a signature for this identity"></div>
+                      <div id="settings-mail-identity-signature" class="mail-signature-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write a signature for this sender"></div>
                     </div>
                     <div class="actions setting-actions">
-                      <button id="btn-settings-mail-identity-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Identity</button>
-                      <button id="btn-settings-mail-identity-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Identity</button>
+                      <button id="btn-settings-mail-identity-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Sender</button>
+                      <button id="btn-settings-mail-identity-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Sender</button>
                     </div>
                   </form>
+                </div>
+              </section>
+
+              <section class="setting-section">
+                <header class="setting-section-head">
+                  <h4>Defaults</h4>
+                  <p class="hint">Choose which account sends by default and which sender recipients see first.</p>
+                </header>
+                <div class="mail-settings-form-grid">
+                  <label class="mail-settings-field">
+                    <span>Default Account</span>
+                    <select id="settings-mail-default-account" autocomplete="off"></select>
+                  </label>
+                  <label class="mail-settings-field">
+                    <span>Default Sender</span>
+                    <select id="settings-mail-default-sender" autocomplete="off"></select>
+                  </label>
+                </div>
+                <div class="actions setting-actions">
+                  <button id="btn-settings-mail-defaults-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Defaults</button>
+                </div>
+              </section>
+
+              <section class="setting-section">
+                <header class="setting-section-head">
+                  <h4>Rules & Junk</h4>
+                  <p class="hint">Build inbox rules per account and manage the active Sieve script without raw syntax unless you want it.</p>
+                </header>
+                <div class="mail-settings-form-grid">
+                  <label class="mail-settings-field">
+                    <span>Rules Account</span>
+                    <select id="settings-mail-rules-account" autocomplete="off"></select>
+                  </label>
+                </div>
+                <div id="settings-mail-rules-junk-status" class="mail-rules-status-card">
+                  <div class="mail-rules-status-copy">
+                    <strong>Junk mailbox</strong>
+                    <p class="hint">Checking junk mailbox mapping…</p>
+                  </div>
+                  <button id="btn-settings-mail-rules-junk" class="cmd-btn cmd-btn--dense" type="button">Choose/Create Junk Mailbox</button>
+                </div>
+                <div id="settings-mail-rules-warning" class="mail-rules-warning hidden">
+                  <div>
+                    <strong>Custom script active</strong>
+                    <p class="hint">Builder rules are still saved, but they are not live until Despatch Rules is activated again.</p>
+                  </div>
+                  <button id="btn-settings-mail-rules-activate" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Activate Despatch Rules</button>
+                </div>
+                <div class="mail-settings-columns mail-rules-columns">
+                  <div class="mail-settings-column">
+                    <div class="actions setting-actions">
+                      <button id="btn-settings-mail-rule-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Rule</button>
+                    </div>
+                    <div id="settings-mail-rule-list" class="settings-list"></div>
+                  </div>
+                  <form id="settings-mail-rule-form" class="mail-settings-form" novalidate>
+                    <div class="mail-settings-form-grid">
+                      <label class="mail-settings-field">
+                        <span>Rule Name</span>
+                        <input id="settings-mail-rule-name" type="text" autocomplete="off" placeholder="Move invoices to Finance">
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>Enabled</span>
+                        <input id="settings-mail-rule-enabled" type="checkbox" checked>
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>Match</span>
+                        <select id="settings-mail-rule-match-mode" autocomplete="off">
+                          <option value="all">All conditions</option>
+                          <option value="any">Any condition</option>
+                        </select>
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>From Contains</span>
+                        <input id="settings-mail-rule-from-contains" type="text" autocomplete="off" placeholder="billing@example.com">
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>From Domain</span>
+                        <input id="settings-mail-rule-from-domain" type="text" autocomplete="off" placeholder="example.com">
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>To Contains</span>
+                        <input id="settings-mail-rule-to-contains" type="text" autocomplete="off" placeholder="finance@">
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>Subject Contains</span>
+                        <input id="settings-mail-rule-subject-contains" type="text" autocomplete="off" placeholder="Invoice">
+                      </label>
+                      <label class="mail-settings-field mail-settings-field--full">
+                        <span>Body Contains</span>
+                        <input id="settings-mail-rule-body-contains" type="text" autocomplete="off" placeholder="payment due">
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>Move To</span>
+                        <select id="settings-mail-rule-move-destination" autocomplete="off">
+                          <option value="">Leave in place</option>
+                          <option value="role:junk">Junk</option>
+                          <option value="role:trash">Trash</option>
+                          <option value="mailbox">Mailbox…</option>
+                        </select>
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>Mailbox</span>
+                        <select id="settings-mail-rule-move-mailbox" autocomplete="off"></select>
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>Mark Read</span>
+                        <input id="settings-mail-rule-mark-read" type="checkbox">
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>Redirect</span>
+                        <input id="settings-mail-rule-redirect" type="email" autocomplete="off" placeholder="team@example.com">
+                      </label>
+                      <label class="mail-settings-field">
+                        <span>Stop Processing</span>
+                        <input id="settings-mail-rule-stop" type="checkbox" checked>
+                      </label>
+                    </div>
+                    <div class="actions setting-actions">
+                      <button id="btn-settings-mail-rule-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Rule</button>
+                      <button id="btn-settings-mail-rule-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Rule</button>
+                    </div>
+                  </form>
+                </div>
+                <div class="mail-settings-columns mail-rules-columns">
+                  <div class="mail-settings-column">
+                    <div class="actions setting-actions">
+                      <button id="btn-settings-mail-script-new" class="cmd-btn cmd-btn--dense" type="button">New Script</button>
+                    </div>
+                    <div id="settings-mail-script-list" class="settings-list"></div>
+                  </div>
+                  <div class="mail-settings-form">
+                    <div class="mail-rules-status-copy">
+                      <strong id="settings-mail-script-name">Script</strong>
+                      <p id="settings-mail-script-note" class="hint">Choose a script to preview or edit it.</p>
+                    </div>
+                    <textarea id="settings-mail-script-body" class="mail-script-editor" rows="14" spellcheck="false"></textarea>
+                    <div class="actions setting-actions">
+                      <button id="btn-settings-mail-script-validate" class="cmd-btn cmd-btn--dense" type="button">Validate</button>
+                      <button id="btn-settings-mail-script-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Script</button>
+                      <button id="btn-settings-mail-script-activate" class="cmd-btn cmd-btn--dense" type="button">Activate</button>
+                      <button id="btn-settings-mail-script-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Script</button>
+                    </div>
+                  </div>
                 </div>
               </section>
             </section>
@@ -621,6 +733,8 @@
             </div>
             <div class="mail-commandbar-group" role="group" aria-label="Mailbox actions">
               <button id="btn-archive" class="cmd-btn cmd-btn--dense" type="button">Archive</button>
+              <button id="btn-spam" class="cmd-btn cmd-btn--dense" type="button">Spam</button>
+              <button id="btn-not-spam" class="cmd-btn cmd-btn--dense" type="button">Not Spam</button>
               <select id="mail-move-target" aria-label="Move selected messages to mailbox">
                 <option value="">Move to…</option>
               </select>
@@ -688,6 +802,30 @@
             <button id="btn-mail-delete-search" class="cmd-btn cmd-btn--dense cmd-btn--ghost hidden" type="button">Delete View</button>
           </div>
         </article>
+        <section id="mail-health-panel" class="panel mail-health-panel hidden" aria-label="Mail account health">
+          <button id="btn-mail-health-toggle" class="mail-health-toggle" type="button" aria-expanded="false" aria-controls="mail-health-body">
+            <span class="mail-health-toggle-copy">
+              <strong>Account Health</strong>
+              <span id="mail-health-toggle-summary" class="mail-health-toggle-summary">No accounts configured.</span>
+            </span>
+            <span id="mail-health-toggle-caret" class="mail-health-toggle-caret" aria-hidden="true">+</span>
+          </button>
+          <div id="mail-health-body" class="mail-health-body hidden">
+            <div id="mail-health-summary-strip" class="mail-health-summary-strip hidden"></div>
+            <div id="mail-health-list" class="mail-health-list"></div>
+          </div>
+        </section>
+        <div id="mail-junk-suggestion" class="panel mail-junk-suggestion hidden" aria-live="polite">
+          <div class="mail-junk-suggestion-copy">
+            <strong id="mail-junk-suggestion-title">Rule suggestion</strong>
+            <p id="mail-junk-suggestion-text" class="hint">Create a follow-up rule from this action.</p>
+          </div>
+          <div class="mail-junk-suggestion-actions">
+            <button id="btn-mail-junk-rule-primary" class="cmd-btn cmd-btn--dense" type="button">Block Sender</button>
+            <button id="btn-mail-junk-rule-secondary" class="cmd-btn cmd-btn--dense" type="button">Block Domain</button>
+            <button id="btn-mail-junk-activate-managed" class="cmd-btn cmd-btn--dense cmd-btn--primary hidden" type="button">Activate Despatch Rules</button>
+          </div>
+        </div>
 
         <div class="mail-layout">
           <aside id="mail-pane-mailboxes" class="panel mail-pane mail-pane--mailboxes" tabindex="-1">
@@ -737,12 +875,12 @@
               <button id="btn-reader-view-html" class="cmd-btn cmd-btn--dense" type="button">HTML</button>
               <button id="btn-reader-view-plain" class="cmd-btn cmd-btn--dense" type="button">Plain</button>
               <details id="reader-inspect-menu" class="row-menu reader-inspect-menu">
-                <summary id="reader-inspect-summary">Inspect</summary>
+                <summary id="reader-inspect-summary" class="cmd-btn cmd-btn--dense cmd-btn--ghost reader-inspect-summary">Inspect</summary>
                 <div class="row-menu-body reader-inspect-menu-body">
-                  <button id="btn-reader-view-source" class="reader-inspect-action" type="button">View Source</button>
-                  <button id="btn-reader-view-headers" class="reader-inspect-action" type="button">View Headers</button>
-                  <button id="btn-reader-print" class="reader-inspect-action" type="button">Print</button>
-                  <button id="btn-reader-download-eml" class="reader-inspect-action" type="button">Download .eml</button>
+                  <button id="btn-reader-view-source" class="menu-action-btn reader-inspect-action" type="button">View Source</button>
+                  <button id="btn-reader-view-headers" class="menu-action-btn reader-inspect-action" type="button">View Headers</button>
+                  <button id="btn-reader-print" class="menu-action-btn reader-inspect-action" type="button">Print</button>
+                  <button id="btn-reader-download-eml" class="menu-action-btn reader-inspect-action" type="button">Download .eml</button>
                 </div>
               </details>
             </div>
@@ -754,6 +892,127 @@
             </div>
             <div id="attachment-list" class="attachments"></div>
           </section>
+        </div>
+      </section>
+
+      <section id="view-contacts" class="contacts-shell hidden">
+        <div class="contacts-layout">
+          <aside class="panel contacts-nav">
+            <h2>Contacts</h2>
+            <p class="hint">Global address book shared across all mail accounts.</p>
+            <button id="contacts-nav-people" class="settings-nav-btn is-active" type="button">People</button>
+            <button id="contacts-nav-groups" class="settings-nav-btn" type="button">Groups</button>
+          </aside>
+
+          <div class="contacts-main">
+            <p id="contacts-note" class="hint">Contacts are loading.</p>
+
+            <section id="contacts-section-people" class="panel contacts-section">
+              <header class="settings-page-head">
+                <h3>People</h3>
+                <p class="hint">Manage names, nicknames, email addresses, and compose defaults.</p>
+              </header>
+              <div class="contacts-workbench">
+                <div class="contacts-column">
+                  <div class="contacts-actions">
+                    <input id="contacts-people-search" type="text" placeholder="Search people">
+                    <button id="btn-contact-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Contact</button>
+                    <button id="btn-contacts-import" class="cmd-btn cmd-btn--dense" type="button">Import</button>
+                    <button id="btn-contacts-export-csv" class="cmd-btn cmd-btn--dense" type="button">Export CSV</button>
+                    <button id="btn-contacts-export-vcf" class="cmd-btn cmd-btn--dense" type="button">Export VCF</button>
+                    <input id="contacts-import-input" class="hidden" type="file" accept=".csv,.vcf,text/csv,text/vcard">
+                  </div>
+                  <div id="contacts-people-list" class="settings-list"></div>
+                </div>
+                <form id="contact-form" class="contacts-form" novalidate>
+                  <div class="contacts-form-grid">
+                    <label class="mail-settings-field contacts-field contacts-field--full">
+                      <span>Display Name</span>
+                      <input id="contact-name" type="text" autocomplete="name" placeholder="Full name">
+                    </label>
+
+                    <div class="contacts-field contacts-field--full">
+                      <div class="contacts-field-head">
+                        <span>Nicknames</span>
+                        <button id="btn-contact-add-nickname" class="cmd-btn cmd-btn--dense" type="button">Add Nickname</button>
+                      </div>
+                      <div id="contact-nicknames-list" class="contacts-repeat-list"></div>
+                    </div>
+
+                    <div class="contacts-field contacts-field--full">
+                      <div class="contacts-field-head">
+                        <span>Email Addresses</span>
+                        <button id="btn-contact-add-email" class="cmd-btn cmd-btn--dense" type="button">Add Email</button>
+                      </div>
+                      <div id="contact-emails-list" class="contacts-repeat-list"></div>
+                    </div>
+
+                    <div class="contacts-field contacts-field--full">
+                      <span>Groups</span>
+                      <div id="contact-groups-list" class="contacts-checklist"></div>
+                    </div>
+
+                    <label class="mail-settings-field contacts-field contacts-field--full">
+                      <span>Notes</span>
+                      <textarea id="contact-notes" rows="4" placeholder="Notes, context, or reminders"></textarea>
+                    </label>
+
+                    <label class="mail-settings-field contacts-field">
+                      <span>Preferred Account</span>
+                      <select id="contact-preferred-account" autocomplete="off"></select>
+                    </label>
+
+                    <label class="mail-settings-field contacts-field">
+                      <span>Preferred Sender</span>
+                      <select id="contact-preferred-sender" autocomplete="off"></select>
+                    </label>
+                  </div>
+                  <div class="actions setting-actions">
+                    <button id="btn-contact-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Contact</button>
+                    <button id="btn-contact-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Contact</button>
+                  </div>
+                </form>
+              </div>
+            </section>
+
+            <section id="contacts-section-groups" class="panel contacts-section hidden">
+              <header class="settings-page-head">
+                <h3>Groups</h3>
+                <p class="hint">Build reusable lists that expand into visible recipients during compose.</p>
+              </header>
+              <div class="contacts-workbench">
+                <div class="contacts-column">
+                  <div class="contacts-actions">
+                    <input id="contacts-groups-search" type="text" placeholder="Search groups">
+                    <button id="btn-contact-group-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Group</button>
+                  </div>
+                  <div id="contacts-groups-list" class="settings-list"></div>
+                </div>
+                <form id="contact-group-form" class="contacts-form" novalidate>
+                  <div class="contacts-form-grid">
+                    <label class="mail-settings-field contacts-field contacts-field--full">
+                      <span>Name</span>
+                      <input id="contact-group-name" type="text" autocomplete="off" placeholder="Press list">
+                    </label>
+
+                    <label class="mail-settings-field contacts-field contacts-field--full">
+                      <span>Description</span>
+                      <textarea id="contact-group-description" rows="4" placeholder="Who this group is for"></textarea>
+                    </label>
+
+                    <div class="contacts-field contacts-field--full">
+                      <span>Members</span>
+                      <div id="contact-group-members-list" class="contacts-checklist"></div>
+                    </div>
+                  </div>
+                  <div class="actions setting-actions">
+                    <button id="btn-contact-group-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Group</button>
+                    <button id="btn-contact-group-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Group</button>
+                  </div>
+                </form>
+              </div>
+            </section>
+          </div>
         </div>
       </section>
 
@@ -989,10 +1248,8 @@
       <form id="form-compose" class="compose-form" novalidate>
         <input id="compose-body-text" name="body" type="hidden">
         <input id="compose-body-html" name="body_html" type="hidden">
-        <input id="compose-from-mode" name="from_mode" type="hidden" value="default">
-        <input id="compose-identity-id" name="identity_id" type="hidden" value="">
+        <input id="compose-sender-profile-id" name="sender_profile_id" type="hidden" value="">
         <input id="compose-account-id" name="account_id" type="hidden" value="">
-        <input id="compose-from-manual-hidden" name="from_manual" type="hidden" value="">
         <input id="compose-attachments-input" name="attachments" type="file" multiple class="hidden">
 
         <header id="compose-toolbar-layer" class="compose-toolbar-layer">
@@ -1065,12 +1322,9 @@
             <span class="compose-meta-tail"></span>
           </div>
           <div id="compose-from-row" class="compose-meta-row compose-meta-row--from hidden">
-            <div class="compose-meta-label">From</div>
+            <div class="compose-meta-label">Sender</div>
             <div class="compose-meta-value compose-meta-value--from">
               <select id="compose-from-select" autocomplete="off"></select>
-              <label id="compose-from-manual-wrap" class="compose-from-manual hidden">
-                <input id="compose-from-manual" type="email" autocomplete="email" placeholder="you@example.com">
-              </label>
               <p id="compose-from-note" class="compose-inline-note hidden"></p>
             </div>
             <span class="compose-meta-tail"></span>
@@ -1079,6 +1333,7 @@
 
         <section class="compose-body-layer">
           <p id="compose-draft-note" class="compose-inline-note hidden" aria-live="polite"></p>
+          <p id="compose-recipient-note" class="compose-inline-note hidden" aria-live="polite"></p>
           <section id="compose-assets" class="compose-assets hidden" aria-label="Draft attachments">
             <div class="compose-assets-head">
               <span class="compose-assets-title">Attachments</span>
@@ -1096,7 +1351,7 @@
             <button id="compose-tool-clear" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Clear formatting">Clear</button>
           </div>
           <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write your message"></div>
-          <datalist id="compose-recipient-suggestions"></datalist>
+          <div id="compose-recipient-suggestions" class="compose-recipient-menu hidden" role="listbox" aria-label="Recipient suggestions"></div>
         </section>
       </form>
     </article>

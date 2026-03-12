@@ -1,6 +1,7 @@
 package mail
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"github.com/emersion/go-imap"
+	imapquota "github.com/emersion/go-imap-quota"
 	imapclient "github.com/emersion/go-imap/client"
 	"github.com/emersion/go-message/mail"
 
@@ -94,6 +96,54 @@ func (c *IMAPSMTPClient) DeleteMailbox(ctx context.Context, user, pass, mailbox 
 	}
 	defer cli.Logout()
 	return cli.Delete(name)
+}
+
+func (c *IMAPSMTPClient) GetQuota(ctx context.Context, user, pass string) (Quota, error) {
+	cli, err := c.connectIMAP(ctx, user, pass)
+	if err != nil {
+		return Quota{}, err
+	}
+	defer cli.Logout()
+
+	quotaClient := imapquota.NewClient(cli)
+	supported, err := quotaClient.SupportQuota()
+	if err != nil {
+		return Quota{}, err
+	}
+	if !supported {
+		return Quota{}, ErrQuotaUnsupported
+	}
+	statuses, err := quotaClient.GetQuotaRoot("INBOX")
+	if err != nil {
+		return Quota{}, err
+	}
+	var out Quota
+	for _, status := range statuses {
+		if status == nil {
+			continue
+		}
+		for name, usage := range status.Resources {
+			switch strings.ToUpper(strings.TrimSpace(name)) {
+			case "STORAGE":
+				used := int64(usage[0]) * 1024
+				total := int64(usage[1]) * 1024
+				if used > out.UsedBytes {
+					out.UsedBytes = used
+				}
+				if total > out.TotalBytes {
+					out.TotalBytes = total
+				}
+			case "MESSAGE":
+				if int64(usage[0]) > out.UsedMessages {
+					out.UsedMessages = int64(usage[0])
+				}
+				if int64(usage[1]) > out.TotalMessages {
+					out.TotalMessages = int64(usage[1])
+				}
+			}
+		}
+	}
+	return out, nil
 }
 
 func (c *IMAPSMTPClient) listMailboxesWithClient(cli *imapclient.Client, withStatus bool) ([]Mailbox, error) {
@@ -174,7 +224,21 @@ func (c *IMAPSMTPClient) ListMessages(ctx context.Context, user, pass, mailbox s
 		Peek:    true,
 		Partial: []int{0, previewSampleBytes},
 	}
-	items := []imap.FetchItem{imap.FetchEnvelope, imap.FetchFlags, imap.FetchUid, imap.FetchInternalDate, previewSection.FetchItem()}
+	threadHeaderSection := &imap.BodySectionName{
+		Peek: true,
+		BodyPartName: imap.BodyPartName{
+			Specifier: imap.HeaderSpecifier,
+			Fields:    []string{"Message-Id", "In-Reply-To", "References"},
+		},
+	}
+	items := []imap.FetchItem{
+		imap.FetchEnvelope,
+		imap.FetchFlags,
+		imap.FetchUid,
+		imap.FetchInternalDate,
+		previewSection.FetchItem(),
+		threadHeaderSection.FetchItem(),
+	}
 	messages := make(chan *imap.Message, pageSize)
 	done := make(chan error, 1)
 	go func() {
@@ -195,7 +259,7 @@ func (c *IMAPSMTPClient) ListMessages(ctx context.Context, user, pass, mailbox s
 				date = msg.Envelope.Date
 			}
 		}
-		out = append(out, buildMessageSummary(msg, mailbox, from, subject, date, previewSection))
+		out = append(out, buildMessageSummary(msg, mailbox, from, subject, date, previewSection, threadHeaderSection))
 	}
 	if err := <-done; err != nil {
 		return nil, err
@@ -295,7 +359,21 @@ func (c *IMAPSMTPClient) Search(ctx context.Context, user, pass, mailbox, query 
 		Peek:    true,
 		Partial: []int{0, previewSampleBytes},
 	}
-	items := []imap.FetchItem{imap.FetchEnvelope, imap.FetchFlags, imap.FetchUid, imap.FetchInternalDate, previewSection.FetchItem()}
+	threadHeaderSection := &imap.BodySectionName{
+		Peek: true,
+		BodyPartName: imap.BodyPartName{
+			Specifier: imap.HeaderSpecifier,
+			Fields:    []string{"Message-Id", "In-Reply-To", "References"},
+		},
+	}
+	items := []imap.FetchItem{
+		imap.FetchEnvelope,
+		imap.FetchFlags,
+		imap.FetchUid,
+		imap.FetchInternalDate,
+		previewSection.FetchItem(),
+		threadHeaderSection.FetchItem(),
+	}
 	messages := make(chan *imap.Message, len(selected))
 	done := make(chan error, 1)
 	go func() {
@@ -313,7 +391,7 @@ func (c *IMAPSMTPClient) Search(ctx context.Context, user, pass, mailbox, query 
 			from = envelopeFirstAddress(msg.Envelope.From)
 			subject = DecodeHeaderText(msg.Envelope.Subject)
 		}
-		s := buildMessageSummary(msg, mailbox, from, subject, msg.InternalDate, previewSection)
+		s := buildMessageSummary(msg, mailbox, from, subject, msg.InternalDate, previewSection, threadHeaderSection)
 		if msg.Envelope != nil && !msg.Envelope.Date.IsZero() {
 			s.Date = msg.Envelope.Date
 		}
@@ -1161,7 +1239,7 @@ func envelopeFirstAddress(addrs []*imap.Address) string {
 	return FormatDisplayAddress(addrs[0].PersonalName, addrs[0].Address())
 }
 
-func buildMessageSummary(msg *imap.Message, mailbox, from, subject string, date time.Time, section *imap.BodySectionName) MessageSummary {
+func buildMessageSummary(msg *imap.Message, mailbox, from, subject string, date time.Time, previewSection, threadHeaderSection *imap.BodySectionName) MessageSummary {
 	if msg == nil {
 		return MessageSummary{
 			Mailbox:  mailbox,
@@ -1172,20 +1250,15 @@ func buildMessageSummary(msg *imap.Message, mailbox, from, subject string, date 
 		}
 	}
 	preview := ""
-	if section != nil {
-		body := msg.GetBody(section)
+	if previewSection != nil {
+		body := msg.GetBody(previewSection)
 		if body != nil {
 			if raw, err := io.ReadAll(io.LimitReader(body, int64(previewSampleBytes*2))); err == nil {
 				preview = BuildPreviewFromMIMERawSample(raw, DefaultPreviewMaxChars)
 			}
 		}
 	}
-	if strings.TrimSpace(preview) == "" {
-		preview = BuildPreviewFromBodySample(subject, 96)
-		if strings.TrimSpace(preview) == "" {
-			preview = "Message content unavailable."
-		}
-	}
+	threadID := deriveLiveThreadID(msg, mailbox, subject, from, threadHeaderSection)
 	return MessageSummary{
 		ID:       EncodeMessageID(mailbox, msg.Uid),
 		Mailbox:  mailbox,
@@ -1196,8 +1269,44 @@ func buildMessageSummary(msg *imap.Message, mailbox, from, subject string, date 
 		Flagged:  hasFlag(msg.Flags, imap.FlaggedFlag),
 		Answered: hasFlag(msg.Flags, imap.AnsweredFlag),
 		Preview:  preview,
-		ThreadID: DeriveThreadID(mailbox, subject, from),
+		ThreadID: threadID,
 	}
+}
+
+func deriveLiveThreadID(msg *imap.Message, mailbox, subject, from string, threadHeaderSection *imap.BodySectionName) string {
+	if msg == nil {
+		return DeriveThreadID(mailbox, subject, from)
+	}
+	messageID := ""
+	inReplyTo := ""
+	if msg.Envelope != nil {
+		messageID = msg.Envelope.MessageId
+		inReplyTo = msg.Envelope.InReplyTo
+	}
+	references := liveThreadReferences(msg, threadHeaderSection)
+	if strings.TrimSpace(messageID) == "" && strings.TrimSpace(inReplyTo) == "" && len(references) == 0 {
+		return DeriveThreadID(mailbox, subject, from)
+	}
+	return DeriveIndexedThreadID(messageID, inReplyTo, references, subject, from)
+}
+
+func liveThreadReferences(msg *imap.Message, threadHeaderSection *imap.BodySectionName) []string {
+	if msg == nil || threadHeaderSection == nil {
+		return nil
+	}
+	body := msg.GetBody(threadHeaderSection)
+	if body == nil {
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, 4096))
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	header, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(raw))).ReadMIMEHeader()
+	if err != nil {
+		return nil
+	}
+	return ParseMessageIDList(header.Get("References"))
 }
 
 func hasFlag(flags []string, flag string) bool {

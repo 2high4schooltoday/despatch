@@ -30,7 +30,7 @@ func (s *Service) BuildDraftSendRequest(ctx context.Context, u models.User, logi
 		return mail.SendRequest{}, "", false, err
 	}
 	req.Attachments = attachments
-	sender, err := s.ResolveComposeSender(ctx, u, draft.FromMode, draft.IdentityID, draft.FromManual)
+	sender, err := s.ResolveComposeSender(ctx, u, draft.SenderProfileID, draft.FromMode, draft.IdentityID, draft.FromManual)
 	if err != nil {
 		return mail.SendRequest{}, "", false, err
 	}
@@ -54,22 +54,22 @@ func (s *Service) BuildDraftSendRequest(ctx context.Context, u models.User, logi
 		if err != nil {
 			return mail.SendRequest{}, "", false, err
 		}
-		req.InReplyToID = strings.TrimSpace(original.MessageIDHeader)
-		req.References = append(req.References, parseJSONStringOrMessageIDList(original.ReferencesHeader)...)
-		if replyTo := strings.TrimSpace(original.InReplyToHeader); replyTo != "" && len(req.References) == 0 {
-			req.References = append(req.References, replyTo)
-		}
-		if req.InReplyToID != "" && len(req.References) == 0 {
-			req.References = append(req.References, req.InReplyToID)
-		}
+		req.InReplyToID, req.References = mail.BuildReplyHeaders(
+			original.MessageIDHeader,
+			original.InReplyToHeader,
+			parseJSONStringOrMessageIDList(original.ReferencesHeader),
+		)
 		return req, sendAccountID, true, nil
 	}
 	original, err := s.mail.GetMessage(ctx, login, pass, strings.TrimSpace(draft.ContextMessageID))
 	if err != nil {
 		return mail.SendRequest{}, "", false, err
 	}
-	req.InReplyToID = strings.TrimSpace(original.MessageID)
-	req.References = append([]string{}, original.References...)
+	req.InReplyToID, req.References = mail.BuildReplyHeaders(
+		original.MessageID,
+		original.InReplyTo,
+		original.References,
+	)
 	return req, sendAccountID, true, nil
 }
 

@@ -161,3 +161,17 @@ func TestMailboxRoleResolutionSupportsAttributesAndCommonNames(t *testing.T) {
 		t.Fatalf("expected Sent Messages mailbox resolution, got %q", got)
 	}
 }
+
+func TestBuildReplyHeadersAppendsParentMessageID(t *testing.T) {
+	inReplyTo, references := BuildReplyHeaders(
+		"<parent@example.com>",
+		"<older@example.com>",
+		[]string{"<root@example.com>"},
+	)
+	if inReplyTo != "parent@example.com" {
+		t.Fatalf("expected normalized in-reply-to, got %q", inReplyTo)
+	}
+	if len(references) != 2 || references[0] != "root@example.com" || references[1] != "parent@example.com" {
+		t.Fatalf("unexpected reply references: %#v", references)
+	}
+}

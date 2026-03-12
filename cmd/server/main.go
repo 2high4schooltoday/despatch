@@ -85,6 +85,9 @@ func main() {
 		"migrations/024_draft_attachments_and_send_errors.sql",
 		"migrations/025_session_mail_profiles.sql",
 		"migrations/026_draft_context_account.sql",
+		"migrations/027_sender_profiles.sql",
+		"migrations/028_contacts.sql",
+		"migrations/029_mail_rules.sql",
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			log.Fatalf("migration %s: %v", migration, err)
@@ -94,6 +97,9 @@ func main() {
 	st := store.New(sqdb)
 	if err := st.EnsureScopedIndexedIDs(context.Background()); err != nil {
 		log.Fatalf("scoped indexed id migration: %v", err)
+	}
+	if err := st.EnsureIndexedThreadHeadersRepaired(context.Background()); err != nil {
+		log.Fatalf("indexed thread repair: %v", err)
 	}
 	if cfg.BootstrapAdminEmail != "" && cfg.BootstrapAdminPassword != "" {
 		hash, err := auth.HashPassword(cfg.BootstrapAdminPassword)
@@ -118,7 +124,8 @@ func main() {
 	} else {
 		log.Printf("password_reset_sender_status status=%s reason=%s address=%s", senderState.Status, senderState.Reason, senderState.Address)
 	}
-	workers.StartMailWorkers(context.Background(), cfg, st)
+	mailWorkers := workers.StartMailWorkers(context.Background(), cfg, st)
+	svc.SetMailHealthCoordinator(mailWorkers)
 	workers.StartUpdateWorkers(context.Background(), cfg, st)
 	r := api.NewRouter(cfg, svc)
 

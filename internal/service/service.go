@@ -31,6 +31,8 @@ var (
 	ErrPendingApproval            = errors.New("pending approval")
 	ErrSuspended                  = errors.New("account suspended")
 	ErrForbidden                  = errors.New("forbidden")
+	ErrMailHealthUnavailable      = errors.New("mail health unavailable")
+	ErrMailHealthActionInProgress = errors.New("mail health action already in progress")
 	ErrPAMVerifierDown            = errors.New("cannot reach Dovecot IMAP for PAM verification")
 	ErrPasswordResetUnavailable   = errors.New("password reset is currently unavailable")
 	ErrPasswordResetDelivery      = errors.New("password_reset_delivery_failed")
@@ -97,6 +99,13 @@ func (e *PAMCredentialsInvalidError) Error() string {
 	return fmt.Sprintf("admin credentials are not valid for Dovecot/PAM (attempted logins: %s)", strings.Join(e.Attempts, ", "))
 }
 
+type MailHealthCoordinator interface {
+	QueueAccountSync(ctx context.Context, account models.MailAccount) (models.MailHealthActionState, error)
+	QueueQuotaRefresh(ctx context.Context, account models.MailAccount) (models.MailHealthActionState, error)
+	QueueAccountReindex(ctx context.Context, account models.MailAccount) (models.MailHealthActionState, error)
+	ActionState(accountID string) (models.MailHealthActionState, bool)
+}
+
 type Service struct {
 	cfg           config.Config
 	st            *store.Store
@@ -106,6 +115,7 @@ type Service struct {
 	pamResetter   pamPasswordResetter
 	encryptKey    []byte
 	mailAccountMu sync.Mutex
+	mailHealth    MailHealthCoordinator
 }
 
 type pamPasswordResetter interface {
@@ -1110,8 +1120,10 @@ func normalizePasswordResetSender(raw string) string {
 	}
 }
 
-func (s *Service) Mail() mail.Client   { return s.mail }
-func (s *Service) Store() *store.Store { return s.st }
+func (s *Service) Mail() mail.Client                                { return s.mail }
+func (s *Service) Store() *store.Store                              { return s.st }
+func (s *Service) SetMailHealthCoordinator(c MailHealthCoordinator) { s.mailHealth = c }
+func (s *Service) MailHealthCoordinator() MailHealthCoordinator     { return s.mailHealth }
 
 func (s *Service) SetupStatus(ctx context.Context) (SetupStatus, error) {
 	baseDomain, err := s.baseDomain(ctx)

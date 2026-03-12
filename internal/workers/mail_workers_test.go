@@ -41,6 +41,37 @@ func (f *fakeMailSyncClient) ListMailboxSnapshots(ctx context.Context, user, pas
 	return out, nil
 }
 
+type scheduledSendTestClient struct {
+	mail.NoopClient
+	sendUsers    []string
+	updateTarget []string
+}
+
+type quotaRefreshTestClient struct {
+	mail.NoopClient
+	quota mail.Quota
+	err   error
+	calls int
+}
+
+func (c *scheduledSendTestClient) Send(ctx context.Context, user, pass string, req mail.SendRequest) (mail.SendResult, error) {
+	c.sendUsers = append(c.sendUsers, strings.TrimSpace(user))
+	return mail.SendResult{SavedCopy: true, SavedCopyMailbox: "Sent"}, nil
+}
+
+func (c *scheduledSendTestClient) UpdateFlags(ctx context.Context, user, pass, id string, patch mail.FlagPatch) error {
+	c.updateTarget = append(c.updateTarget, strings.TrimSpace(user)+":"+strings.TrimSpace(id))
+	return nil
+}
+
+func (c *quotaRefreshTestClient) GetQuota(ctx context.Context, user, pass string) (mail.Quota, error) {
+	c.calls++
+	if c.err != nil {
+		return mail.Quota{}, c.err
+	}
+	return c.quota, nil
+}
+
 func (f *fakeMailSyncClient) ListRecentUIDs(ctx context.Context, user, pass, mailbox string, limit int) ([]uint32, error) {
 	f.recentUIDCalls++
 	return append([]uint32(nil), f.recentUIDs[mailbox]...), nil
@@ -177,6 +208,130 @@ func TestMailWorkersDeltaSyncRefreshesOnlyTouchedThreads(t *testing.T) {
 	}
 	if total != 2 || len(items) != 2 {
 		t.Fatalf("expected untouched and touched threads to both exist, got total=%d items=%d", total, len(items))
+	}
+}
+
+func TestMailWorkersRefreshAccountQuotaWritesCache(t *testing.T) {
+	ctx := context.Background()
+	st, _, account := newMailWorkerTestEnv(t)
+	quotaClient := &quotaRefreshTestClient{
+		quota: mail.Quota{
+			UsedBytes:     4096,
+			TotalBytes:    8192,
+			UsedMessages:  12,
+			TotalMessages: 24,
+		},
+	}
+	worker := newTestMailWorker(st, &fakeMailSyncClient{}, time.Now)
+	worker.mailClientFactory = func(config.Config) mail.Client { return quotaClient }
+
+	if err := worker.refreshAccountQuota(ctx, account); err != nil {
+		t.Fatalf("refreshAccountQuota: %v", err)
+	}
+	item, err := st.GetQuotaCacheByAccount(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("GetQuotaCacheByAccount: %v", err)
+	}
+	if item.UsedBytes != 4096 || item.TotalBytes != 8192 || item.UsedMessages != 12 || item.TotalMessages != 24 {
+		t.Fatalf("unexpected quota cache contents: %+v", item)
+	}
+	if item.LastError != "" {
+		t.Fatalf("expected empty quota error, got %q", item.LastError)
+	}
+}
+
+func TestMailWorkersRefreshAccountQuotaMarksUnsupported(t *testing.T) {
+	ctx := context.Background()
+	st, _, account := newMailWorkerTestEnv(t)
+	quotaClient := &quotaRefreshTestClient{err: mail.ErrQuotaUnsupported}
+	worker := newTestMailWorker(st, &fakeMailSyncClient{}, time.Now)
+	worker.mailClientFactory = func(config.Config) mail.Client { return quotaClient }
+
+	if err := worker.refreshAccountQuota(ctx, account); err != nil {
+		t.Fatalf("refreshAccountQuota unsupported: %v", err)
+	}
+	item, err := st.GetQuotaCacheByAccount(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("GetQuotaCacheByAccount: %v", err)
+	}
+	if item.LastError != mail.ErrQuotaUnsupported.Error() {
+		t.Fatalf("expected unsupported quota sentinel, got %q", item.LastError)
+	}
+}
+
+func TestScheduledSendUsesResolvedIdentityAccount(t *testing.T) {
+	ctx := context.Background()
+	st, _, primary := newMailWorkerTestEnv(t)
+	secondarySecret, err := util.EncryptString(util.Derive32ByteKey(workerTestSessionEncryptKey), "mail-secret-secondary")
+	if err != nil {
+		t.Fatalf("encrypt secondary secret: %v", err)
+	}
+	secondary, err := st.CreateMailAccount(ctx, models.MailAccount{
+		UserID:       primary.UserID,
+		DisplayName:  "Secondary",
+		Login:        "alias@example.com",
+		SecretEnc:    secondarySecret,
+		IMAPHost:     "imap.example.com",
+		IMAPPort:     993,
+		IMAPTLS:      true,
+		SMTPHost:     "smtp.example.com",
+		SMTPPort:     587,
+		SMTPStartTLS: true,
+		Status:       "active",
+	})
+	if err != nil {
+		t.Fatalf("create secondary account: %v", err)
+	}
+	identity, err := st.CreateMailIdentity(ctx, models.MailIdentity{
+		AccountID:   secondary.ID,
+		DisplayName: "Alias",
+		FromEmail:   "alias@example.com",
+		IsDefault:   true,
+	})
+	if err != nil {
+		t.Fatalf("create identity: %v", err)
+	}
+	draft, err := st.CreateDraft(ctx, models.Draft{
+		UserID:       primary.UserID,
+		AccountID:    primary.ID,
+		IdentityID:   identity.ID,
+		FromMode:     "identity",
+		ToValue:      "person@example.com",
+		Subject:      "Scheduled",
+		BodyText:     "Hello later",
+		SendMode:     "scheduled",
+		ScheduledFor: time.Now().UTC().Add(-time.Minute),
+		Status:       "scheduled",
+	})
+	if err != nil {
+		t.Fatalf("create draft: %v", err)
+	}
+	if err := st.QueueScheduledSend(ctx, draft); err != nil {
+		t.Fatalf("queue scheduled send: %v", err)
+	}
+	items, err := st.ListDueScheduledSends(ctx, time.Now().UTC(), 10)
+	if err != nil {
+		t.Fatalf("list due scheduled sends: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one queued item, got %+v", items)
+	}
+
+	sendClient := &scheduledSendTestClient{}
+	worker := newTestMailWorker(st, &fakeMailSyncClient{}, time.Now)
+	worker.mailClientFactory = func(config.Config) mail.Client { return sendClient }
+	if err := worker.processScheduledSendItem(ctx, items[0]); err != nil {
+		t.Fatalf("processScheduledSendItem: %v", err)
+	}
+	if len(sendClient.sendUsers) != 1 || sendClient.sendUsers[0] != secondary.Login {
+		t.Fatalf("expected scheduled send to use resolved identity account %q, got %+v", secondary.Login, sendClient.sendUsers)
+	}
+	updated, err := st.GetDraftByID(ctx, primary.UserID, draft.ID)
+	if err != nil {
+		t.Fatalf("reload draft: %v", err)
+	}
+	if updated.Status != "sent" {
+		t.Fatalf("expected scheduled draft to be marked sent, got %+v", updated)
 	}
 }
 
@@ -394,6 +549,8 @@ func newMailWorkerTestEnv(t *testing.T) (*store.Store, *sql.DB, models.MailAccou
 		filepath.Join("..", "..", "migrations", "024_draft_attachments_and_send_errors.sql"),
 		filepath.Join("..", "..", "migrations", "025_session_mail_profiles.sql"),
 		filepath.Join("..", "..", "migrations", "026_draft_context_account.sql"),
+		filepath.Join("..", "..", "migrations", "027_sender_profiles.sql"),
+		filepath.Join("..", "..", "migrations", "028_contacts.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -440,6 +597,7 @@ func newTestMailWorker(st *store.Store, client mailSyncClient, now func() time.T
 		encryptKey:        util.Derive32ByteKey(workerTestSessionEncryptKey),
 		now:               now,
 		syncClientFactory: func(config.Config) mailSyncClient { return client },
+		mailClientFactory: func(config.Config) mail.Client { return mail.NoopClient{} },
 		schedules:         map[string]accountSyncSchedule{},
 	}
 }

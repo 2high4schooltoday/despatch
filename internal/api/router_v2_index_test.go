@@ -24,9 +24,22 @@ import (
 
 type indexedBulkTestMailClient struct {
 	mail.NoopClient
-	mu      sync.Mutex
-	patches map[string]mail.FlagPatch
-	moves   map[string]string
+	mu        sync.Mutex
+	patches   map[string]mail.FlagPatch
+	moves     map[string]string
+	mailboxes []mail.Mailbox
+}
+
+func (m *indexedBulkTestMailClient) ListMailboxes(ctx context.Context, user, pass string) ([]mail.Mailbox, error) {
+	if len(m.mailboxes) > 0 {
+		return append([]mail.Mailbox(nil), m.mailboxes...), nil
+	}
+	return []mail.Mailbox{
+		{Name: "INBOX"},
+		{Name: "Archive"},
+		{Name: "Trash"},
+		{Name: "Junk"},
+	}, nil
 }
 
 func (m *indexedBulkTestMailClient) UpdateFlags(ctx context.Context, user, pass, id string, patch mail.FlagPatch) error {
@@ -117,6 +130,44 @@ func TestV2ListMessagesUsesIndexedSummaries(t *testing.T) {
 	}
 	if payload.Items[0].AccountID != account.ID {
 		t.Fatalf("expected summary account id %q, got %+v", account.ID, payload.Items[0])
+	}
+	if payload.Items[0].Source != "indexed" {
+		t.Fatalf("expected indexed source tag, got %+v", payload.Items[0])
+	}
+}
+
+func TestV2SearchTreatsFilterLikeQueryTextAsPlainSearch(t *testing.T) {
+	router, st, account := newIndexedRouterWithStore(t)
+	seedIndexedTestMessage(t, st, models.IndexedMessage{
+		ID:           "msg-filter-like-query",
+		AccountID:    account.ID,
+		Mailbox:      "INBOX",
+		UID:          3,
+		ThreadID:     mail.ScopeIndexedThreadID(account.ID, "thread-filter-like-query"),
+		FromValue:    "Alice <alice@example.com>",
+		ToValue:      "account@example.com",
+		Subject:      "Status Update",
+		Snippet:      "Deployment completed successfully.",
+		Seen:         false,
+		DateHeader:   time.Date(2026, 3, 10, 9, 30, 0, 0, time.UTC),
+		InternalDate: time.Date(2026, 3, 10, 9, 30, 0, 0, time.UTC),
+	})
+
+	sessionCookie, csrfCookie := loginForSend(t, router)
+	rec := authedV1Get(t, router, "/api/v2/search?account_id="+url.QueryEscape(account.ID)+"&mailbox=INBOX&q="+url.QueryEscape("from:alice@example.com"), sessionCookie, csrfCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Items []mail.MessageSummary `json:"items"`
+		Total int                   `json:"total"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode search payload: %v body=%s", err, rec.Body.String())
+	}
+	if payload.Total != 1 || len(payload.Items) != 1 || payload.Items[0].ID != "msg-filter-like-query" {
+		t.Fatalf("expected plain-text filter-like search to return the message, got %+v", payload)
 	}
 }
 
@@ -302,6 +353,104 @@ func TestV2ListAccountMailboxesIncludesCapabilities(t *testing.T) {
 	}
 }
 
+func TestV2SuggestRecipientsPrefersContactsAndGroups(t *testing.T) {
+	router, st, account := newIndexedRouterWithStore(t)
+	ctx := context.Background()
+
+	alice, err := st.CreateContact(ctx, models.Contact{
+		UserID:             account.UserID,
+		Name:               "Alice Example",
+		Nicknames:          []string{"ally"},
+		PreferredAccountID: account.ID,
+		Emails: []models.ContactEmail{
+			{Email: "alice@example.com", IsPrimary: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create contact alice: %v", err)
+	}
+	bob, err := st.CreateContact(ctx, models.Contact{
+		UserID: account.UserID,
+		Name:   "Bob Example",
+		Emails: []models.ContactEmail{
+			{Email: "bob@example.com", IsPrimary: true},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create contact bob: %v", err)
+	}
+	if _, err := st.CreateContactGroup(ctx, models.ContactGroup{
+		UserID:           account.UserID,
+		Name:             "Project Team",
+		Description:      "Launch crew",
+		MemberContactIDs: []string{alice.ID, bob.ID},
+	}); err != nil {
+		t.Fatalf("create contact group: %v", err)
+	}
+
+	seedIndexedTestMessage(t, st, models.IndexedMessage{
+		ID:           "sent-alice-history",
+		AccountID:    account.ID,
+		Mailbox:      "Sent",
+		UID:          90,
+		ThreadID:     mail.ScopeIndexedThreadID(account.ID, "thread-alice-history"),
+		FromValue:    "account@example.com",
+		ToValue:      "alice@example.com",
+		Subject:      "History item",
+		Snippet:      "Sent before",
+		DateHeader:   time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC),
+		InternalDate: time.Date(2026, 3, 11, 12, 0, 0, 0, time.UTC),
+	})
+
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	rec := authedV1Get(t, router, "/api/v2/recipients/suggest?account_id="+url.QueryEscape(account.ID)+"&q=ali&limit=8", sessionCookie, csrfCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for contacts suggest, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var contactsPayload struct {
+		Items []models.RecipientSuggestion `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &contactsPayload); err != nil {
+		t.Fatalf("decode contacts suggest payload: %v body=%s", err, rec.Body.String())
+	}
+	if len(contactsPayload.Items) == 0 {
+		t.Fatalf("expected recipient suggestions, got none")
+	}
+	if contactsPayload.Items[0].Kind != "contact_email" || contactsPayload.Items[0].Email != "alice@example.com" || contactsPayload.Items[0].Source != "contacts" {
+		t.Fatalf("expected first suggestion to be Alice from contacts, got %+v", contactsPayload.Items[0])
+	}
+	aliceCount := 0
+	for _, item := range contactsPayload.Items {
+		if item.Email == "alice@example.com" {
+			aliceCount++
+		}
+	}
+	if aliceCount != 1 {
+		t.Fatalf("expected alice@example.com to appear once, got %+v", contactsPayload.Items)
+	}
+
+	rec = authedV1Get(t, router, "/api/v2/recipients/suggest?account_id="+url.QueryEscape(account.ID)+"&q=project&limit=8", sessionCookie, csrfCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for group suggest, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var groupPayload struct {
+		Items []models.RecipientSuggestion `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &groupPayload); err != nil {
+		t.Fatalf("decode group suggest payload: %v body=%s", err, rec.Body.String())
+	}
+	if len(groupPayload.Items) == 0 {
+		t.Fatalf("expected group suggestions, got none")
+	}
+	if groupPayload.Items[0].Kind != "group" || groupPayload.Items[0].Label != "Project Team" {
+		t.Fatalf("expected project team group suggestion first, got %+v", groupPayload.Items[0])
+	}
+	if len(groupPayload.Items[0].Emails) != 2 {
+		t.Fatalf("expected group suggestion to include member primary emails, got %+v", groupPayload.Items[0])
+	}
+}
+
 func TestV2RenameAccountMailboxUpdatesIndexedState(t *testing.T) {
 	client := &mailRouterTestClient{
 		mailboxes: []mail.Mailbox{
@@ -364,11 +513,78 @@ func TestV2RenameAccountMailboxUpdatesIndexedState(t *testing.T) {
 	}
 }
 
-func TestV2DeleteAccountMailboxRejectsNonEmpty(t *testing.T) {
+func TestV2DeleteAccountMailboxMovesMessagesToTrashThenDeletes(t *testing.T) {
 	client := &mailRouterTestClient{
 		mailboxes: []mail.Mailbox{
 			{Name: "INBOX", Role: "inbox", Unread: 1, Messages: 2},
+			{Name: "Trash", Role: "trash", Unread: 0, Messages: 0},
 			{Name: "Projects", Unread: 0, Messages: 3},
+		},
+		listByMailboxPage: map[string]map[int][]mail.MessageSummary{
+			"Projects": {
+				1: {
+					{ID: mail.EncodeMessageID("Projects", 1), Subject: "One"},
+					{ID: mail.EncodeMessageID("Projects", 2), Subject: "Two"},
+				},
+			},
+		},
+	}
+	withMailClientFactory(t, func(cfg config.Config) mail.Client { return client })
+	router, st, account := newIndexedRouterWithStore(t)
+	seedIndexedTestMessage(t, st, models.IndexedMessage{
+		ID:        mail.EncodeMessageID("Projects", 1),
+		AccountID: account.ID,
+		Mailbox:   "Projects",
+		UID:       1,
+		ThreadID:  "thread-projects-1",
+	})
+	seedIndexedTestMessage(t, st, models.IndexedMessage{
+		ID:        mail.EncodeMessageID("Projects", 2),
+		AccountID: account.ID,
+		Mailbox:   "Projects",
+		UID:       2,
+		ThreadID:  "thread-projects-2",
+	})
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	del := doV2AuthedJSON(t, router, http.MethodDelete, "/api/v2/accounts/"+account.ID+"/mailboxes", map[string]any{
+		"mailbox_name": "Projects",
+	}, sessionCookie, csrfCookie)
+	if del.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", del.Code, del.Body.String())
+	}
+	if len(client.deletedMailboxes) != 1 || client.deletedMailboxes[0] != "Projects" {
+		t.Fatalf("expected Projects mailbox deleted, got %+v", client.deletedMailboxes)
+	}
+	if len(client.movedMessages) != 2 {
+		t.Fatalf("expected messages moved before delete, got %+v", client.movedMessages)
+	}
+	for _, legacyID := range []string{
+		mail.EncodeMessageID("Projects", 1),
+		mail.EncodeMessageID("Projects", 2),
+	} {
+		msg, err := st.GetIndexedMessageByID(context.Background(), account.ID, legacyID)
+		if err != nil {
+			t.Fatalf("load moved indexed message %q: %v", legacyID, err)
+		}
+		if msg.Mailbox != "Trash" {
+			t.Fatalf("expected indexed message moved to Trash, got %q", msg.Mailbox)
+		}
+	}
+}
+
+func TestV2DeleteAccountMailboxRequiresTrashMailboxWhenMessagesExist(t *testing.T) {
+	client := &mailRouterTestClient{
+		mailboxes: []mail.Mailbox{
+			{Name: "INBOX", Role: "inbox", Unread: 1, Messages: 2},
+			{Name: "Projects", Unread: 0, Messages: 1},
+		},
+		listByMailboxPage: map[string]map[int][]mail.MessageSummary{
+			"Projects": {
+				1: {
+					{ID: mail.EncodeMessageID("Projects", 1), Subject: "One"},
+				},
+			},
 		},
 	}
 	withMailClientFactory(t, func(cfg config.Config) mail.Client { return client })
@@ -381,8 +597,8 @@ func TestV2DeleteAccountMailboxRejectsNonEmpty(t *testing.T) {
 	if del.Code != http.StatusConflict {
 		t.Fatalf("expected delete 409, got %d body=%s", del.Code, del.Body.String())
 	}
-	if !strings.Contains(del.Body.String(), "mailbox_not_empty") {
-		t.Fatalf("expected mailbox_not_empty error, got body=%s", del.Body.String())
+	if !strings.Contains(del.Body.String(), "special_mailbox_required") {
+		t.Fatalf("expected special_mailbox_required error, got body=%s", del.Body.String())
 	}
 }
 
@@ -889,7 +1105,14 @@ func TestV2SearchRejectsForeignFilterAccount(t *testing.T) {
 }
 
 func TestV2BulkMessagesUsesIMAPAndPatchesIndex(t *testing.T) {
-	client := &indexedBulkTestMailClient{}
+	client := &indexedBulkTestMailClient{
+		mailboxes: []mail.Mailbox{
+			{Name: "INBOX"},
+			{Name: "Archive"},
+			{Name: "Trash"},
+			{Name: "Junk"},
+		},
+	}
 	previousFactory := mailClientFactory
 	mailClientFactory = func(cfg config.Config) mail.Client { return client }
 	t.Cleanup(func() {
@@ -953,6 +1176,108 @@ func TestV2BulkMessagesUsesIMAPAndPatchesIndex(t *testing.T) {
 	if moved.Mailbox != "Archive" {
 		t.Fatalf("expected indexed mailbox updated to Archive, got %q", moved.Mailbox)
 	}
+
+	trashID := mail.EncodeMessageID("INBOX", 8)
+	seedIndexedTestMessage(t, st, models.IndexedMessage{
+		ID:           trashID,
+		AccountID:    account.ID,
+		Mailbox:      "INBOX",
+		UID:          8,
+		ThreadID:     mail.ScopeIndexedThreadID(account.ID, "thread-bulk-trash"),
+		FromValue:    "Sender <sender@example.com>",
+		ToValue:      "indexed@example.com",
+		Subject:      "Bulk trash target",
+		Snippet:      "bulk trash",
+		DateHeader:   time.Date(2026, 3, 10, 10, 5, 0, 0, time.UTC),
+		InternalDate: time.Date(2026, 3, 10, 10, 5, 0, 0, time.UTC),
+	})
+	trash := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/messages/bulk", map[string]any{
+		"account_id":  account.ID,
+		"ids":         []string{trashID},
+		"action":      "move",
+		"target_role": "trash",
+	}, sess, csrf)
+	if trash.Code != http.StatusOK {
+		t.Fatalf("expected trash bulk 200, got %d body=%s", trash.Code, trash.Body.String())
+	}
+	if target, ok := client.moveFor(trashID); !ok || target != "Trash" {
+		t.Fatalf("expected IMAP move to Trash, got target=%q ok=%v", target, ok)
+	}
+	trashed, err := st.GetIndexedMessageByID(context.Background(), account.ID, trashID)
+	if err != nil {
+		t.Fatalf("load trashed indexed message: %v", err)
+	}
+	if trashed.Mailbox != "Trash" {
+		t.Fatalf("expected indexed mailbox updated to Trash, got %q", trashed.Mailbox)
+	}
+
+	junkID := mail.EncodeMessageID("INBOX", 9)
+	seedIndexedTestMessage(t, st, models.IndexedMessage{
+		ID:           junkID,
+		AccountID:    account.ID,
+		Mailbox:      "INBOX",
+		UID:          9,
+		ThreadID:     mail.ScopeIndexedThreadID(account.ID, "thread-bulk-junk"),
+		FromValue:    "Sender <sender@example.com>",
+		ToValue:      "indexed@example.com",
+		Subject:      "Bulk junk target",
+		Snippet:      "bulk junk",
+		DateHeader:   time.Date(2026, 3, 10, 10, 10, 0, 0, time.UTC),
+		InternalDate: time.Date(2026, 3, 10, 10, 10, 0, 0, time.UTC),
+	})
+	junk := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/messages/bulk", map[string]any{
+		"account_id":  account.ID,
+		"ids":         []string{junkID},
+		"action":      "move",
+		"target_role": "junk",
+	}, sess, csrf)
+	if junk.Code != http.StatusOK {
+		t.Fatalf("expected junk bulk 200, got %d body=%s", junk.Code, junk.Body.String())
+	}
+	if target, ok := client.moveFor(junkID); !ok || target != "Junk" {
+		t.Fatalf("expected IMAP move to Junk, got target=%q ok=%v", target, ok)
+	}
+	junked, err := st.GetIndexedMessageByID(context.Background(), account.ID, junkID)
+	if err != nil {
+		t.Fatalf("load junked indexed message: %v", err)
+	}
+	if junked.Mailbox != "Junk" {
+		t.Fatalf("expected indexed mailbox updated to Junk, got %q", junked.Mailbox)
+	}
+
+	inboxID := mail.EncodeMessageID("Junk", 10)
+	seedIndexedTestMessage(t, st, models.IndexedMessage{
+		ID:           inboxID,
+		AccountID:    account.ID,
+		Mailbox:      "Junk",
+		UID:          10,
+		ThreadID:     mail.ScopeIndexedThreadID(account.ID, "thread-bulk-inbox"),
+		FromValue:    "Sender <sender@example.com>",
+		ToValue:      "indexed@example.com",
+		Subject:      "Bulk inbox target",
+		Snippet:      "bulk inbox",
+		DateHeader:   time.Date(2026, 3, 10, 10, 15, 0, 0, time.UTC),
+		InternalDate: time.Date(2026, 3, 10, 10, 15, 0, 0, time.UTC),
+	})
+	inbox := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/messages/bulk", map[string]any{
+		"account_id":  account.ID,
+		"ids":         []string{inboxID},
+		"action":      "move",
+		"target_role": "inbox",
+	}, sess, csrf)
+	if inbox.Code != http.StatusOK {
+		t.Fatalf("expected inbox bulk 200, got %d body=%s", inbox.Code, inbox.Body.String())
+	}
+	if target, ok := client.moveFor(inboxID); !ok || target != "INBOX" {
+		t.Fatalf("expected IMAP move to INBOX, got target=%q ok=%v", target, ok)
+	}
+	inboxed, err := st.GetIndexedMessageByID(context.Background(), account.ID, inboxID)
+	if err != nil {
+		t.Fatalf("load inboxed indexed message: %v", err)
+	}
+	if inboxed.Mailbox != "INBOX" {
+		t.Fatalf("expected indexed mailbox updated to INBOX, got %q", inboxed.Mailbox)
+	}
 }
 
 func newIndexedRouterWithStore(t *testing.T) (http.Handler, *store.Store, models.MailAccount) {
@@ -990,6 +1315,9 @@ func newIndexedRouterWithStore(t *testing.T) (http.Handler, *store.Store, models
 		filepath.Join("..", "..", "migrations", "024_draft_attachments_and_send_errors.sql"),
 		filepath.Join("..", "..", "migrations", "025_session_mail_profiles.sql"),
 		filepath.Join("..", "..", "migrations", "026_draft_context_account.sql"),
+		filepath.Join("..", "..", "migrations", "027_sender_profiles.sql"),
+		filepath.Join("..", "..", "migrations", "028_contacts.sql"),
+		filepath.Join("..", "..", "migrations", "029_mail_rules.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)

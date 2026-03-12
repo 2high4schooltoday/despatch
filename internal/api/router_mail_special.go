@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -23,9 +24,11 @@ type specialMailboxMappingDTO struct {
 	MailboxName string `json:"mailbox_name"`
 }
 
-var specialMailboxRoles = []string{"sent", "archive", "trash"}
+var specialMailboxRoles = []string{"sent", "archive", "trash", "junk"}
 
 const appDraftsMailboxName = "__despatch_app_drafts__"
+
+const mailboxMutationMovePageSize = 100
 
 var reservedMailboxNames = map[string]struct{}{
 	"inbox":              {},
@@ -44,6 +47,27 @@ var reservedMailboxNames = map[string]struct{}{
 type mailboxMutationRequest struct {
 	MailboxName    string `json:"mailbox_name"`
 	NewMailboxName string `json:"new_mailbox_name"`
+}
+
+type specialMailboxRequiredError struct {
+	Role string
+}
+
+func (e specialMailboxRequiredError) Error() string {
+	label := aggregateMailboxDisplayName(e.Role)
+	if label == "" {
+		label = strings.TrimSpace(e.Role)
+	}
+	if label == "" {
+		label = "Required"
+	}
+	return fmt.Sprintf("%s mailbox must be configured before continuing", label)
+}
+
+type mailboxDeleteResult struct {
+	MovedCount   int
+	TrashMailbox string
+	ThreadIDs    []string
 }
 
 func normalizeAggregateMailboxRole(rawRole, mailboxName string) string {
@@ -278,6 +302,60 @@ func writeMailboxMutationIMAPError(w http.ResponseWriter, r *http.Request, err e
 		return
 	}
 	util.WriteError(w, http.StatusBadGateway, "imap_error", err.Error(), middleware.RequestID(r.Context()))
+}
+
+func writeSpecialMailboxRequired(w http.ResponseWriter, r *http.Request, role string) {
+	err := specialMailboxRequiredError{Role: strings.ToLower(strings.TrimSpace(role))}
+	util.WriteError(w, http.StatusConflict, "special_mailbox_required", err.Error(), middleware.RequestID(r.Context()))
+}
+
+func (h *Handlers) moveMailboxMessagesToTrash(
+	ctx context.Context,
+	cli mail.Client,
+	login, pass, sourceMailbox string,
+	resolveTrash func() (string, error),
+	afterMove func(mail.MessageSummary, string) error,
+) (mailboxDeleteResult, error) {
+	result := mailboxDeleteResult{}
+	for {
+		items, err := cli.ListMessages(ctx, login, pass, sourceMailbox, 1, mailboxMutationMovePageSize)
+		if err != nil {
+			return result, err
+		}
+		if len(items) == 0 {
+			return result, nil
+		}
+		if strings.TrimSpace(result.TrashMailbox) == "" {
+			trashMailbox, err := resolveTrash()
+			if err != nil {
+				return result, err
+			}
+			if strings.TrimSpace(trashMailbox) == "" {
+				return result, specialMailboxRequiredError{Role: "trash"}
+			}
+			result.TrashMailbox = strings.TrimSpace(trashMailbox)
+		}
+		movedThisPage := 0
+		for _, item := range items {
+			id := strings.TrimSpace(item.ID)
+			if id == "" {
+				continue
+			}
+			if err := cli.Move(ctx, login, pass, id, result.TrashMailbox); err != nil {
+				return result, err
+			}
+			movedThisPage++
+			result.MovedCount++
+			if afterMove != nil {
+				if err := afterMove(item, result.TrashMailbox); err != nil {
+					return result, err
+				}
+			}
+		}
+		if movedThisPage == 0 {
+			return result, fmt.Errorf("mailbox contains messages without ids")
+		}
+	}
 }
 
 func (h *Handlers) listMailboxesWithSpecialRoles(r *http.Request) ([]mail.Mailbox, map[string]string, string, string, error) {
@@ -610,6 +688,7 @@ func (h *Handlers) RenameMailbox(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) DeleteMailbox(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
 	var req mailboxMutationRequest
 	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
 		writeJSONDecodeError(w, r, err)
@@ -639,8 +718,24 @@ func (h *Handlers) DeleteMailbox(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, http.StatusBadRequest, "mailbox_protected", "mailbox is protected", middleware.RequestID(r.Context()))
 		return
 	}
-	if current.Messages > 0 {
-		util.WriteError(w, http.StatusConflict, "mailbox_not_empty", "mailbox must be empty before deletion", middleware.RequestID(r.Context()))
+	result, err := h.moveMailboxMessagesToTrash(
+		r.Context(),
+		h.svc.Mail(),
+		mailLogin,
+		pass,
+		current.Name,
+		func() (string, error) {
+			return h.resolveSessionSpecialMailboxByRole(r.Context(), u, pass, "trash")
+		},
+		nil,
+	)
+	if err != nil {
+		var required specialMailboxRequiredError
+		if errors.As(err, &required) {
+			writeSpecialMailboxRequired(w, r, required.Role)
+			return
+		}
+		writeMailboxMutationIMAPError(w, r, err)
 		return
 	}
 	if err := h.svc.Mail().DeleteMailbox(r.Context(), mailLogin, pass, current.Name); err != nil {
@@ -658,17 +753,22 @@ func (h *Handlers) DeleteMailbox(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, http.StatusInternalServerError, "special_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	util.WriteJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"status":       "ok",
 		"mailbox_name": strings.TrimSpace(current.Name),
 		"mailboxes":    items,
-	})
+	}
+	if result.MovedCount > 0 {
+		payload["moved_count"] = result.MovedCount
+		payload["trash_mailbox"] = result.TrashMailbox
+	}
+	util.WriteJSON(w, http.StatusOK, payload)
 }
 
 func (h *Handlers) UpsertSpecialMailbox(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
 	role := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "role")))
-	if role != "sent" && role != "archive" && role != "trash" {
+	if role != "sent" && role != "archive" && role != "trash" && role != "junk" {
 		util.WriteError(w, 400, "bad_request", "unsupported mailbox role", middleware.RequestID(r.Context()))
 		return
 	}
@@ -946,11 +1046,39 @@ func (h *Handlers) V2DeleteAccountMailbox(w http.ResponseWriter, r *http.Request
 		util.WriteError(w, http.StatusBadRequest, "mailbox_protected", "mailbox is protected", middleware.RequestID(r.Context()))
 		return
 	}
-	if current.Messages > 0 {
-		util.WriteError(w, http.StatusConflict, "mailbox_not_empty", "mailbox must be empty before deletion", middleware.RequestID(r.Context()))
+	cli := h.accountMailClient(account)
+	movedThreadIDs := make([]string, 0, 8)
+	result, err := h.moveMailboxMessagesToTrash(
+		r.Context(),
+		cli,
+		account.Login,
+		pass,
+		current.Name,
+		func() (string, error) {
+			return h.resolveAccountSpecialMailboxByRole(r.Context(), account, pass, "trash", cli)
+		},
+		func(item mail.MessageSummary, trashMailbox string) error {
+			msg, msgErr := h.svc.Store().GetIndexedMessageByID(r.Context(), account.ID, item.ID)
+			if msgErr == nil && strings.TrimSpace(msg.ThreadID) != "" {
+				movedThreadIDs = append(movedThreadIDs, msg.ThreadID)
+			} else if msgErr != nil && !errors.Is(msgErr, store.ErrNotFound) {
+				return msgErr
+			}
+			if moveErr := h.svc.Store().MoveIndexedMessageMailbox(r.Context(), account.ID, item.ID, trashMailbox); moveErr != nil && !errors.Is(moveErr, store.ErrNotFound) {
+				return moveErr
+			}
+			return nil
+		},
+	)
+	if err != nil {
+		var required specialMailboxRequiredError
+		if errors.As(err, &required) {
+			writeSpecialMailboxRequired(w, r, required.Role)
+			return
+		}
+		writeMailboxMutationIMAPError(w, r, err)
 		return
 	}
-	cli := h.accountMailClient(account)
 	if err := cli.DeleteMailbox(r.Context(), account.Login, pass, current.Name); err != nil {
 		writeMailboxMutationIMAPError(w, r, err)
 		return
@@ -962,6 +1090,7 @@ func (h *Handlers) V2DeleteAccountMailbox(w http.ResponseWriter, r *http.Request
 		util.WriteError(w, http.StatusInternalServerError, "index_update_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	threadIDs = append(threadIDs, movedThreadIDs...)
 	if err := h.svc.Store().DeleteSyncState(r.Context(), account.ID, current.Name); err != nil {
 		util.WriteError(w, http.StatusInternalServerError, "index_update_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
@@ -976,17 +1105,22 @@ func (h *Handlers) V2DeleteAccountMailbox(w http.ResponseWriter, r *http.Request
 		util.WriteError(w, http.StatusInternalServerError, "account_mailboxes_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	util.WriteJSON(w, http.StatusOK, map[string]any{
+	payload := map[string]any{
 		"status":       "ok",
 		"mailbox_name": strings.TrimSpace(current.Name),
 		"mailboxes":    items,
-	})
+	}
+	if result.MovedCount > 0 {
+		payload["moved_count"] = result.MovedCount
+		payload["trash_mailbox"] = result.TrashMailbox
+	}
+	util.WriteJSON(w, http.StatusOK, payload)
 }
 
 func (h *Handlers) V2UpsertAccountSpecialMailbox(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
 	role := strings.ToLower(strings.TrimSpace(chi.URLParam(r, "role")))
-	if role != "sent" && role != "archive" && role != "trash" {
+	if role != "sent" && role != "archive" && role != "trash" && role != "junk" {
 		util.WriteError(w, http.StatusBadRequest, "bad_request", "unsupported mailbox role", middleware.RequestID(r.Context()))
 		return
 	}

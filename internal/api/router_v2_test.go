@@ -61,6 +61,10 @@ func newV2RouterWithMailClientAndStore(t *testing.T, despatch mail.Client, mutat
 }
 
 func newV2RouterWithMailClientAndStoreDB(t *testing.T, despatch mail.Client, mutate func(*config.Config)) (http.Handler, *store.Store, *sql.DB) {
+	return newV2RouterWithMailClientStoreAndHook(t, despatch, mutate, nil)
+}
+
+func newV2RouterWithMailClientStoreAndHook(t *testing.T, despatch mail.Client, mutate func(*config.Config), hook func(*service.Service, *store.Store, *sql.DB, *config.Config)) (http.Handler, *store.Store, *sql.DB) {
 	t.Helper()
 	sqdb, err := db.OpenSQLite(filepath.Join(t.TempDir(), "app.db"), 1, 1, time.Minute)
 	if err != nil {
@@ -95,6 +99,9 @@ func newV2RouterWithMailClientAndStoreDB(t *testing.T, despatch mail.Client, mut
 		filepath.Join("..", "..", "migrations", "024_draft_attachments_and_send_errors.sql"),
 		filepath.Join("..", "..", "migrations", "025_session_mail_profiles.sql"),
 		filepath.Join("..", "..", "migrations", "026_draft_context_account.sql"),
+		filepath.Join("..", "..", "migrations", "027_sender_profiles.sql"),
+		filepath.Join("..", "..", "migrations", "028_contacts.sql"),
+		filepath.Join("..", "..", "migrations", "029_mail_rules.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -136,6 +143,9 @@ func newV2RouterWithMailClientAndStoreDB(t *testing.T, despatch mail.Client, mut
 		mutate(&cfg)
 	}
 	svc := service.New(cfg, st, despatch, mail.NoopProvisioner{}, nil)
+	if hook != nil {
+		hook(svc, st, sqdb, &cfg)
+	}
 	return NewRouter(cfg, svc), st, sqdb
 }
 
@@ -1830,6 +1840,57 @@ func TestV2SendDraftSchedulesFutureDraft(t *testing.T) {
 	}
 }
 
+func TestV2ScheduledDraftQueuesResolvedIdentityAccount(t *testing.T) {
+	router, st := newV2RouterWithConfigAndStore(t, nil)
+	sess, csrf := loginV2(t, router)
+	primary := createV2TestAccount(t, router, sess, csrf, "primary@example.com")
+	secondary := createV2TestAccount(t, router, sess, csrf, "alias@example.com")
+	identity := createV2TestIdentity(t, router, sess, csrf, secondary.ID, "alias@example.com")
+
+	scheduledFor := time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339)
+	createDraft := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts", map[string]any{
+		"account_id":    primary.ID,
+		"identity_id":   identity.ID,
+		"from_mode":     "identity",
+		"to":            "someone@example.com",
+		"subject":       "Scheduled alias",
+		"body_text":     "Hello future",
+		"send_mode":     "scheduled",
+		"scheduled_for": scheduledFor,
+	}, sess, csrf)
+	if createDraft.Code != http.StatusCreated {
+		t.Fatalf("expected draft create 201, got %d body=%s", createDraft.Code, createDraft.Body.String())
+	}
+	var draft models.Draft
+	if err := json.Unmarshal(createDraft.Body.Bytes(), &draft); err != nil {
+		t.Fatalf("decode draft response: %v", err)
+	}
+
+	send := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/drafts/"+draft.ID+"/send", nil, sess, csrf)
+	if send.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for scheduled send, got %d body=%s", send.Code, send.Body.String())
+	}
+
+	items, err := st.ListDueScheduledSends(context.Background(), time.Now().UTC().Add(15*time.Minute), 10)
+	if err != nil {
+		t.Fatalf("list scheduled sends: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected one queued scheduled send, got %+v", items)
+	}
+	if items[0].AccountID != secondary.ID {
+		t.Fatalf("expected queue to use resolved identity account %q, got %+v", secondary.ID, items[0])
+	}
+
+	storedDraft, err := st.GetDraftByID(context.Background(), draft.UserID, draft.ID)
+	if err != nil {
+		t.Fatalf("reload scheduled draft: %v", err)
+	}
+	if storedDraft.AccountID != secondary.ID {
+		t.Fatalf("expected scheduled draft account to be normalized to sender account %q, got %+v", secondary.ID, storedDraft)
+	}
+}
+
 func TestV2DraftCRUDPersistsComposeContext(t *testing.T) {
 	router := newV2Router(t)
 	sess, csrf := loginV2(t, router)
@@ -2115,7 +2176,7 @@ func TestV2SendDraftReplyUsesIndexedContextHeadersWithoutSessionGetMessage(t *te
 	if req.InReplyToID != "indexed-original@example.com" {
 		t.Fatalf("expected indexed in-reply-to header, got %+v", req)
 	}
-	if len(req.References) != 1 || req.References[0] != "root@example.com" {
+	if len(req.References) != 2 || req.References[0] != "root@example.com" || req.References[1] != "indexed-original@example.com" {
 		t.Fatalf("expected indexed references header, got %+v", req.References)
 	}
 }
@@ -2158,10 +2219,10 @@ func TestV2SendDraftReplyWithoutContextAccountUsesSessionFallback(t *testing.T) 
 		t.Fatalf("expected session fallback GetMessage call, got %d", client.getMessageCallCount())
 	}
 	_, req := client.snapshot()
-	if req.InReplyToID != "<legacy@example.com>" {
+	if req.InReplyToID != "legacy@example.com" {
 		t.Fatalf("expected session fallback in-reply-to header, got %+v", req)
 	}
-	if len(req.References) != 1 || req.References[0] != "<seed@example.com>" {
+	if len(req.References) != 2 || req.References[0] != "seed@example.com" || req.References[1] != "legacy@example.com" {
 		t.Fatalf("expected session fallback references, got %+v", req.References)
 	}
 }

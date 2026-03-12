@@ -19,10 +19,12 @@ type mailRouterTestClient struct {
 	listByMailboxPage map[string]map[int][]mail.MessageSummary
 	search            []mail.MessageSummary
 	mailboxes         []mail.Mailbox
+	messageByID       map[string]mail.Message
 	rawByID           map[string][]byte
 	createdMailboxes  []string
 	renamedMailboxes  [][2]string
 	deletedMailboxes  []string
+	movedMessages     map[string]string
 	createMailboxErr  error
 	renameMailboxErr  error
 	deleteMailboxErr  error
@@ -97,6 +99,9 @@ func (m *mailRouterTestClient) ListMessages(ctx context.Context, user, pass, mai
 }
 
 func (m *mailRouterTestClient) GetMessage(ctx context.Context, user, pass, id string) (mail.Message, error) {
+	if msg, ok := m.messageByID[id]; ok {
+		return msg, nil
+	}
 	return mail.Message{ID: id}, nil
 }
 
@@ -124,6 +129,42 @@ func (m *mailRouterTestClient) UpdateFlags(ctx context.Context, user, pass, id s
 }
 
 func (m *mailRouterTestClient) Move(ctx context.Context, user, pass, id, mailbox string) error {
+	if m.movedMessages == nil {
+		m.movedMessages = map[string]string{}
+	}
+	m.movedMessages[id] = mailbox
+	removeSummary := func(items []mail.MessageSummary) []mail.MessageSummary {
+		filtered := items[:0]
+		for _, item := range items {
+			if strings.TrimSpace(item.ID) == strings.TrimSpace(id) {
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		return filtered
+	}
+	if sourceMailbox, _, err := mail.DecodeMessageID(id); err == nil {
+		for i := range m.mailboxes {
+			switch {
+			case strings.EqualFold(strings.TrimSpace(m.mailboxes[i].Name), strings.TrimSpace(sourceMailbox)) && m.mailboxes[i].Messages > 0:
+				m.mailboxes[i].Messages--
+			case strings.EqualFold(strings.TrimSpace(m.mailboxes[i].Name), strings.TrimSpace(mailbox)):
+				m.mailboxes[i].Messages++
+			}
+		}
+	}
+	if m.listByMailboxPage != nil {
+		for _, byPage := range m.listByMailboxPage {
+			for page, items := range byPage {
+				byPage[page] = removeSummary(items)
+			}
+		}
+	}
+	if m.listByPage != nil {
+		for page, items := range m.listByPage {
+			m.listByPage[page] = removeSummary(items)
+		}
+	}
 	return nil
 }
 
@@ -185,7 +226,7 @@ func TestV1ListMessagesIncludesPreviewAndThreadID(t *testing.T) {
 	if len(payload.Items) != 1 {
 		t.Fatalf("expected 1 item, got %d", len(payload.Items))
 	}
-	if payload.Items[0].Preview == "" || payload.Items[0].ThreadID == "" {
+	if payload.Items[0].Preview == "" || payload.Items[0].ThreadID == "" || payload.Items[0].Source != "live" {
 		t.Fatalf("expected preview and thread_id in payload item: %+v", payload.Items[0])
 	}
 }
@@ -216,8 +257,36 @@ func TestV1SearchIncludesPreviewAndThreadID(t *testing.T) {
 	if len(payload.Items) != 1 {
 		t.Fatalf("expected 1 search item, got %d", len(payload.Items))
 	}
-	if payload.Items[0].Preview == "" || payload.Items[0].ThreadID == "" {
+	if payload.Items[0].Preview == "" || payload.Items[0].ThreadID == "" || payload.Items[0].Source != "live" {
 		t.Fatalf("expected preview and thread_id in search item: %+v", payload.Items[0])
+	}
+}
+
+func TestV1GetMessageIncludesLiveSource(t *testing.T) {
+	messageID := mail.EncodeMessageID("INBOX", 42)
+	router := newSendRouter(t, &mailRouterTestClient{
+		messageByID: map[string]mail.Message{
+			messageID: {
+				ID:      messageID,
+				Mailbox: "INBOX",
+				From:    "alice@example.com",
+				To:      []string{"bob@example.com"},
+				Subject: "Detail",
+				Body:    "hello",
+			},
+		},
+	}, "")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+	rec := authedV1Get(t, router, "/api/v1/messages/"+url.PathEscape(messageID), sessionCookie, csrfCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload mail.Message
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode message payload: %v body=%s", err, rec.Body.String())
+	}
+	if payload.Source != "live" {
+		t.Fatalf("expected source=live, got %+v", payload)
 	}
 }
 
@@ -366,22 +435,34 @@ func TestV1RenameMailboxRejectsProtected(t *testing.T) {
 	}
 }
 
-func TestV1DeleteMailboxRejectsNonEmpty(t *testing.T) {
+func TestV1DeleteMailboxMovesMessagesToTrashThenDeletes(t *testing.T) {
 	client := &mailRouterTestClient{
 		mailboxes: []mail.Mailbox{
 			{Name: "INBOX", Role: "inbox", Unread: 1, Messages: 5},
+			{Name: "Trash", Role: "trash", Unread: 0, Messages: 0},
 			{Name: "Projects", Unread: 0, Messages: 2},
+		},
+		listByMailboxPage: map[string]map[int][]mail.MessageSummary{
+			"Projects": {
+				1: {
+					{ID: mail.EncodeMessageID("Projects", 1), Subject: "One"},
+					{ID: mail.EncodeMessageID("Projects", 2), Subject: "Two"},
+				},
+			},
 		},
 	}
 	router := newSendRouter(t, client, "")
 	sessionCookie, csrfCookie := loginForSend(t, router)
 
 	del := authedV1JSON(t, router, http.MethodDelete, "/api/v1/mailboxes", sessionCookie, csrfCookie, []byte(`{"mailbox_name":"Projects"}`))
-	if del.Code != http.StatusConflict {
-		t.Fatalf("expected delete 409, got %d body=%s", del.Code, del.Body.String())
+	if del.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", del.Code, del.Body.String())
 	}
-	if !strings.Contains(del.Body.String(), "mailbox_not_empty") {
-		t.Fatalf("expected mailbox_not_empty error, got body=%s", del.Body.String())
+	if len(client.deletedMailboxes) != 1 || client.deletedMailboxes[0] != "Projects" {
+		t.Fatalf("expected Projects mailbox to be deleted, got %+v", client.deletedMailboxes)
+	}
+	if len(client.movedMessages) != 2 {
+		t.Fatalf("expected messages moved to trash before delete, got %+v", client.movedMessages)
 	}
 }
 
@@ -431,6 +512,9 @@ func TestV1ThreadMessagesFiltersAndPaginates(t *testing.T) {
 	}
 	if len(payload.Items) != 2 || payload.Items[0].ID != "m1" || payload.Items[1].ID != "m3" {
 		t.Fatalf("unexpected filtered items: %+v", payload.Items)
+	}
+	if payload.Items[0].Source != "live" || payload.Items[1].Source != "live" {
+		t.Fatalf("expected live source in thread items, got %+v", payload.Items)
 	}
 
 	path = "/api/v1/threads/" + url.PathEscape(threadID) + "/messages?mailbox=INBOX&page=2&page_size=1"

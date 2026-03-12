@@ -101,6 +101,20 @@ func FormatMessageIDList(values []string) string {
 	return strings.Join(normalized, " ")
 }
 
+func BuildReplyHeaders(parentMessageID, parentInReplyTo string, parentReferences []string) (string, []string) {
+	inReplyTo := NormalizeMessageIDHeader(parentMessageID)
+	references := NormalizeMessageIDHeaders(parentReferences)
+	if len(references) == 0 {
+		if seeded := NormalizeMessageIDHeader(parentInReplyTo); seeded != "" {
+			references = append(references, seeded)
+		}
+	}
+	if inReplyTo != "" {
+		references = append(references, inReplyTo)
+	}
+	return inReplyTo, NormalizeMessageIDHeaders(references)
+}
+
 func DeriveIndexedThreadID(messageID, inReplyTo string, references []string, subject, from string) string {
 	root := ""
 	normalizedRefs := NormalizeMessageIDHeaders(references)

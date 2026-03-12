@@ -46,6 +46,9 @@ func newV2ScopedStore(t *testing.T) *Store {
 		filepath.Join("..", "..", "migrations", "024_draft_attachments_and_send_errors.sql"),
 		filepath.Join("..", "..", "migrations", "025_session_mail_profiles.sql"),
 		filepath.Join("..", "..", "migrations", "026_draft_context_account.sql"),
+		filepath.Join("..", "..", "migrations", "027_sender_profiles.sql"),
+		filepath.Join("..", "..", "migrations", "028_contacts.sql"),
+		filepath.Join("..", "..", "migrations", "029_mail_rules.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -151,6 +154,93 @@ func TestEnsureScopedIndexedIDsRewritesReferences(t *testing.T) {
 	defer rows.Close()
 	if rows.Next() {
 		t.Fatalf("expected no foreign key violations after migration")
+	}
+}
+
+func TestEnsureIndexedThreadHeadersRepairedRebuildsHistoricalThreads(t *testing.T) {
+	st := newV2ScopedStore(t)
+	ctx := context.Background()
+	user, err := st.CreateUser(ctx, "thread-repair@example.com", "hash", "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	createMailAccountForTest(t, st, user.ID, "acct-thread-repair", "thread-repair-login")
+
+	now := time.Now().UTC()
+	rootRaw := "From: Alice <alice@example.com>\r\nTo: user@example.com\r\nSubject: Topic\r\nMessage-ID: <root@example.com>\r\n\r\nRoot body"
+	replyRaw := "From: Bob <bob@example.com>\r\nTo: user@example.com\r\nSubject: Re: Topic\r\nMessage-ID: <reply@example.com>\r\nIn-Reply-To: <root@example.com>\r\nReferences: <root@example.com>\r\n\r\nReply body"
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO thread_index(
+			id,account_id,mailbox,subject_norm,participants_json,message_count,unread_count,has_attachments,has_flagged,importance,latest_message_id,latest_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"legacy-thread-a", "acct-thread-repair", "INBOX", "topic", "[]", 1, 0, 0, 0, 0, "msg-root", now, now,
+	); err != nil {
+		t.Fatalf("insert legacy thread a: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO thread_index(
+			id,account_id,mailbox,subject_norm,participants_json,message_count,unread_count,has_attachments,has_flagged,importance,latest_message_id,latest_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"legacy-thread-b", "acct-thread-repair", "INBOX", "topic", "[]", 1, 0, 0, 0, 0, "msg-reply", now.Add(time.Minute), now.Add(time.Minute), now.Add(time.Minute),
+	); err != nil {
+		t.Fatalf("insert legacy thread b: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO message_index(
+			id,account_id,mailbox,uid,thread_id,message_id_header,in_reply_to_header,references_header,
+			from_value,to_value,cc_value,bcc_value,subject,snippet,body_text,body_html_sanitized,raw_source,
+			seen,flagged,answered,draft,has_attachments,importance,dkim_status,spf_status,dmarc_status,phishing_score,
+			remote_images_blocked,remote_images_allowed,date_header,internal_date,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"msg-root", "acct-thread-repair", "INBOX", 1, "legacy-thread-a", "", "", "",
+		"Alice <alice@example.com>", "user@example.com", "", "", "Topic", "Root body", "Root body", "", rootRaw,
+		0, 0, 0, 0, 0, 0, "unknown", "unknown", "unknown", 0.0,
+		1, 0, now, now, now, now,
+	); err != nil {
+		t.Fatalf("insert root message: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO message_index(
+			id,account_id,mailbox,uid,thread_id,message_id_header,in_reply_to_header,references_header,
+			from_value,to_value,cc_value,bcc_value,subject,snippet,body_text,body_html_sanitized,raw_source,
+			seen,flagged,answered,draft,has_attachments,importance,dkim_status,spf_status,dmarc_status,phishing_score,
+			remote_images_blocked,remote_images_allowed,date_header,internal_date,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"msg-reply", "acct-thread-repair", "INBOX", 2, "legacy-thread-b", "", "", "",
+		"Bob <bob@example.com>", "user@example.com", "", "", "Re: Topic", "Reply body", "Reply body", "", replyRaw,
+		0, 0, 0, 0, 0, 0, "unknown", "unknown", "unknown", 0.0,
+		1, 0, now.Add(time.Minute), now.Add(time.Minute), now.Add(time.Minute), now.Add(time.Minute),
+	); err != nil {
+		t.Fatalf("insert reply message: %v", err)
+	}
+
+	if err := st.EnsureIndexedThreadHeadersRepaired(ctx); err != nil {
+		t.Fatalf("EnsureIndexedThreadHeadersRepaired: %v", err)
+	}
+	if err := st.EnsureIndexedThreadHeadersRepaired(ctx); err != nil {
+		t.Fatalf("EnsureIndexedThreadHeadersRepaired second run: %v", err)
+	}
+
+	root, err := st.GetIndexedMessageByID(ctx, "acct-thread-repair", "msg-root")
+	if err != nil {
+		t.Fatalf("load repaired root: %v", err)
+	}
+	reply, err := st.GetIndexedMessageByID(ctx, "acct-thread-repair", "msg-reply")
+	if err != nil {
+		t.Fatalf("load repaired reply: %v", err)
+	}
+	if root.ThreadID == "" || reply.ThreadID == "" || root.ThreadID != reply.ThreadID {
+		t.Fatalf("expected repaired messages to share one thread, got root=%q reply=%q", root.ThreadID, reply.ThreadID)
+	}
+	if root.MessageIDHeader != "root@example.com" || reply.InReplyToHeader != "root@example.com" {
+		t.Fatalf("expected repaired headers to be backfilled, got root=%+v reply=%+v", root, reply)
+	}
+	threads, total, err := st.ListThreads(ctx, "acct-thread-repair", "", "", 10, 0)
+	if err != nil {
+		t.Fatalf("list rebuilt threads: %v", err)
+	}
+	if total != 1 || len(threads) != 1 || threads[0].MessageCount != 2 {
+		t.Fatalf("expected one rebuilt historical thread, got total=%d threads=%+v", total, threads)
 	}
 }
 

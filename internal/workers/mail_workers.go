@@ -35,6 +35,10 @@ var newMailSyncClient = func(cfg config.Config) mailSyncClient {
 	return mail.NewIMAPSMTPClient(cfg)
 }
 
+var newMailClientFactory = func(cfg config.Config) mail.Client {
+	return mail.NewIMAPSMTPClient(cfg)
+}
+
 var (
 	mailSyncLoopInterval  = 10 * time.Second
 	mailSyncBaseInterval  = 60 * time.Second
@@ -57,25 +61,35 @@ type syncAccountResult struct {
 
 type MailWorkers struct {
 	cfg               config.Config
+	baseCtx           context.Context
 	st                *store.Store
 	encryptKey        []byte
 	now               func() time.Time
 	syncClientFactory func(config.Config) mailSyncClient
+	mailClientFactory func(config.Config) mail.Client
 	scheduleMu        sync.Mutex
 	schedules         map[string]accountSyncSchedule
+	actionMu          sync.Mutex
+	activeAccounts    map[string]struct{}
+	healthActions     map[string]models.MailHealthActionState
 }
 
-func StartMailWorkers(ctx context.Context, cfg config.Config, st *store.Store) {
+func StartMailWorkers(ctx context.Context, cfg config.Config, st *store.Store) *MailWorkers {
 	w := &MailWorkers{
 		cfg:               cfg,
+		baseCtx:           ctx,
 		st:                st,
 		encryptKey:        util.Derive32ByteKey(cfg.SessionEncryptKey),
 		now:               time.Now,
 		syncClientFactory: newMailSyncClient,
+		mailClientFactory: newMailClientFactory,
 		schedules:         map[string]accountSyncSchedule{},
+		activeAccounts:    map[string]struct{}{},
+		healthActions:     map[string]models.MailHealthActionState{},
 	}
 	go w.runSyncLoop(ctx)
 	go w.runScheduledSendLoop(ctx)
+	return w
 }
 
 func (w *MailWorkers) runSyncLoop(ctx context.Context) {
@@ -103,18 +117,86 @@ func (w *MailWorkers) syncDueAccounts(ctx context.Context) {
 		if !w.accountSyncDue(account.ID, now) {
 			continue
 		}
-		accountCtx, cancel := context.WithTimeout(ctx, 55*time.Second)
-		_, err := w.syncAccount(accountCtx, account)
-		cancel()
-		if err != nil {
-			log.Printf("mail_sync account=%s status=error error=%v", account.ID, err)
-			_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, w.now().UTC(), err.Error())
-			w.recordAccountSyncFailure(account.ID, now)
+		if !w.tryBeginAccountAction(account.ID) {
 			continue
 		}
-		_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, w.now().UTC(), "")
-		w.recordAccountSyncSuccess(account.ID, now)
+		accountCtx, cancel := context.WithTimeout(ctx, 55*time.Second)
+		err := w.runAccountSync(accountCtx, account)
+		cancel()
+		w.finishAccountAction(account.ID)
+		if err != nil {
+			log.Printf("mail_sync account=%s status=error error=%v", account.ID, err)
+			continue
+		}
 	}
+}
+
+func (w *MailWorkers) QueueAccountSync(ctx context.Context, account models.MailAccount) (models.MailHealthActionState, error) {
+	return w.queueHealthAction(account, "sync", 55*time.Second, func(actionCtx context.Context) error {
+		return w.runAccountSync(actionCtx, account)
+	})
+}
+
+func (w *MailWorkers) QueueQuotaRefresh(ctx context.Context, account models.MailAccount) (models.MailHealthActionState, error) {
+	return w.queueHealthAction(account, "quota_refresh", 30*time.Second, func(actionCtx context.Context) error {
+		return w.refreshAccountQuota(actionCtx, account)
+	})
+}
+
+func (w *MailWorkers) QueueAccountReindex(ctx context.Context, account models.MailAccount) (models.MailHealthActionState, error) {
+	return w.queueHealthAction(account, "reindex", 2*time.Minute, func(actionCtx context.Context) error {
+		return w.reindexAccount(actionCtx, account)
+	})
+}
+
+func (w *MailWorkers) ActionState(accountID string) (models.MailHealthActionState, bool) {
+	w.actionMu.Lock()
+	defer w.actionMu.Unlock()
+	state, ok := w.healthActions[strings.TrimSpace(accountID)]
+	return state, ok
+}
+
+func (w *MailWorkers) queueHealthAction(account models.MailAccount, kind string, timeout time.Duration, run func(context.Context) error) (models.MailHealthActionState, error) {
+	accountID := strings.TrimSpace(account.ID)
+	if accountID == "" {
+		return models.MailHealthActionState{}, service.ErrMailHealthUnavailable
+	}
+	if !w.tryBeginAccountAction(accountID) {
+		return models.MailHealthActionState{}, service.ErrMailHealthActionInProgress
+	}
+	queued := models.MailHealthActionState{
+		Kind:      kind,
+		Status:    "queued",
+		UpdatedAt: w.now().UTC(),
+	}
+	w.setHealthActionState(accountID, queued)
+	go func() {
+		running := queued
+		running.Status = "running"
+		running.UpdatedAt = w.now().UTC()
+		w.setHealthActionState(accountID, running)
+		ctx := w.baseCtx
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		actionCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+		err := run(actionCtx)
+		if err != nil {
+			failed := models.MailHealthActionState{
+				Kind:      kind,
+				Status:    "failed",
+				Error:     err.Error(),
+				UpdatedAt: w.now().UTC(),
+			}
+			w.setHealthActionState(accountID, failed)
+			w.finishAccountAction(accountID)
+			return
+		}
+		w.clearHealthActionState(accountID)
+		w.finishAccountAction(accountID)
+	}()
+	return queued, nil
 }
 
 func (w *MailWorkers) syncAccount(ctx context.Context, account models.MailAccount) (syncAccountResult, error) {
@@ -160,6 +242,124 @@ func (w *MailWorkers) syncAccount(ctx context.Context, account models.MailAccoun
 		threadIDs = append(threadIDs, threadID)
 	}
 	return syncAccountResult{touchedThreadIDs: threadIDs, fullRebuild: fullRebuild}, nil
+}
+
+func (w *MailWorkers) runAccountSync(ctx context.Context, account models.MailAccount) error {
+	now := w.now().UTC()
+	_, err := w.syncAccount(ctx, account)
+	if err != nil {
+		_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, now, err.Error())
+		w.recordAccountSyncFailure(account.ID, now)
+		return err
+	}
+	_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, now, "")
+	w.recordAccountSyncSuccess(account.ID, now)
+	return nil
+}
+
+func (w *MailWorkers) reindexAccount(ctx context.Context, account models.MailAccount) error {
+	if strings.TrimSpace(account.SecretEnc) == "" || strings.TrimSpace(account.Login) == "" {
+		return errors.New("missing account credentials")
+	}
+	pass, err := util.DecryptString(w.encryptKey, account.SecretEnc)
+	if err != nil {
+		return err
+	}
+	cli := w.syncClientFactory(w.accountMailConfig(account))
+	snapshots, err := cli.ListMailboxSnapshots(ctx, account.Login, pass)
+	if err != nil {
+		now := w.now().UTC()
+		_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, now, err.Error())
+		w.recordAccountSyncFailure(account.ID, now)
+		return err
+	}
+	if err := w.st.DeleteIndexedDataByAccount(ctx, account.ID); err != nil {
+		return err
+	}
+	touchedThreadIDs := map[string]struct{}{}
+	fullRebuild := false
+	for _, snapshot := range snapshots {
+		name := strings.TrimSpace(snapshot.Mailbox.Name)
+		if name == "" {
+			continue
+		}
+		if err := w.syncMailbox(ctx, cli, account, pass, snapshot, touchedThreadIDs, &fullRebuild); err != nil {
+			now := w.now().UTC()
+			_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, now, err.Error())
+			w.recordAccountSyncFailure(account.ID, now)
+			return err
+		}
+	}
+	if err := w.st.RebuildThreadIndex(ctx, account.ID); err != nil {
+		now := w.now().UTC()
+		_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, now, err.Error())
+		w.recordAccountSyncFailure(account.ID, now)
+		return err
+	}
+	now := w.now().UTC()
+	_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, now, "")
+	w.recordAccountSyncSuccess(account.ID, now)
+	return nil
+}
+
+func (w *MailWorkers) refreshAccountQuota(ctx context.Context, account models.MailAccount) error {
+	if strings.TrimSpace(account.SecretEnc) == "" || strings.TrimSpace(account.Login) == "" {
+		return errors.New("missing account credentials")
+	}
+	pass, err := util.DecryptString(w.encryptKey, account.SecretEnc)
+	if err != nil {
+		return err
+	}
+	var cached models.QuotaCache
+	cached, err = w.st.GetQuotaCacheByAccount(ctx, account.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	client := w.mailClientFactory(w.accountMailConfig(account))
+	reader, ok := client.(mail.QuotaReader)
+	if !ok {
+		return w.writeQuotaCache(ctx, account.ID, cached, mail.Quota{}, mail.ErrQuotaUnsupported)
+	}
+	quota, err := reader.GetQuota(ctx, account.Login, pass)
+	if err != nil {
+		if errors.Is(err, mail.ErrQuotaUnsupported) {
+			return w.writeQuotaCache(ctx, account.ID, cached, mail.Quota{}, mail.ErrQuotaUnsupported)
+		}
+		if writeErr := w.writeQuotaCache(ctx, account.ID, cached, mail.Quota{}, err); writeErr != nil {
+			return writeErr
+		}
+		return err
+	}
+	return w.writeQuotaCache(ctx, account.ID, cached, quota, nil)
+}
+
+func (w *MailWorkers) writeQuotaCache(ctx context.Context, accountID string, cached models.QuotaCache, quota mail.Quota, quotaErr error) error {
+	item := cached
+	item.AccountID = accountID
+	if quotaErr == nil {
+		item.UsedBytes = quota.UsedBytes
+		item.TotalBytes = quota.TotalBytes
+		item.UsedMessages = quota.UsedMessages
+		item.TotalMessages = quota.TotalMessages
+		item.LastError = ""
+	} else if errors.Is(quotaErr, mail.ErrQuotaUnsupported) {
+		item.UsedBytes = 0
+		item.TotalBytes = 0
+		item.UsedMessages = 0
+		item.TotalMessages = 0
+		item.LastError = mail.ErrQuotaUnsupported.Error()
+	} else {
+		item.LastError = quotaErr.Error()
+	}
+	item.RefreshedAt = w.now().UTC()
+	_, err := w.st.UpsertQuotaCache(ctx, item)
+	if err != nil {
+		return err
+	}
+	if errors.Is(quotaErr, mail.ErrQuotaUnsupported) {
+		return nil
+	}
+	return nil
 }
 
 func (w *MailWorkers) syncMailbox(ctx context.Context, cli mailSyncClient, account models.MailAccount, pass string, snapshot mail.MailboxSnapshot, touchedThreadIDs map[string]struct{}, fullRebuild *bool) error {
@@ -361,6 +561,56 @@ func (w *MailWorkers) resolveIndexedThreadID(ctx context.Context, accountID stri
 	return mail.DeriveIndexedThreadID(msg.MessageID, msg.InReplyTo, normalizedRefs, subject, from)
 }
 
+func (w *MailWorkers) tryBeginAccountAction(accountID string) bool {
+	key := strings.TrimSpace(accountID)
+	if key == "" {
+		return false
+	}
+	w.actionMu.Lock()
+	defer w.actionMu.Unlock()
+	if w.activeAccounts == nil {
+		w.activeAccounts = map[string]struct{}{}
+	}
+	if _, ok := w.activeAccounts[key]; ok {
+		return false
+	}
+	w.activeAccounts[key] = struct{}{}
+	return true
+}
+
+func (w *MailWorkers) finishAccountAction(accountID string) {
+	key := strings.TrimSpace(accountID)
+	if key == "" {
+		return
+	}
+	w.actionMu.Lock()
+	defer w.actionMu.Unlock()
+	delete(w.activeAccounts, key)
+}
+
+func (w *MailWorkers) setHealthActionState(accountID string, state models.MailHealthActionState) {
+	key := strings.TrimSpace(accountID)
+	if key == "" {
+		return
+	}
+	w.actionMu.Lock()
+	defer w.actionMu.Unlock()
+	if w.healthActions == nil {
+		w.healthActions = map[string]models.MailHealthActionState{}
+	}
+	w.healthActions[key] = state
+}
+
+func (w *MailWorkers) clearHealthActionState(accountID string) {
+	key := strings.TrimSpace(accountID)
+	if key == "" {
+		return
+	}
+	w.actionMu.Lock()
+	defer w.actionMu.Unlock()
+	delete(w.healthActions, key)
+}
+
 func (w *MailWorkers) accountSyncDue(accountID string, now time.Time) bool {
 	w.scheduleMu.Lock()
 	defer w.scheduleMu.Unlock()
@@ -422,7 +672,7 @@ func (w *MailWorkers) processScheduledSendItem(ctx context.Context, item models.
 		}
 		return err
 	}
-	account, err := w.st.GetMailAccountByID(ctx, item.UserID, item.AccountID)
+	queueAccount, err := w.st.GetMailAccountByID(ctx, item.UserID, item.AccountID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			_ = w.st.MarkScheduledSendFailed(ctx, item.ID, "mail account not found")
@@ -435,13 +685,13 @@ func (w *MailWorkers) processScheduledSendItem(ctx context.Context, item models.
 	if err != nil {
 		return err
 	}
-	pass, err := util.DecryptString(w.encryptKey, account.SecretEnc)
+	queuePass, err := util.DecryptString(w.encryptKey, queueAccount.SecretEnc)
 	if err != nil {
 		return err
 	}
-	cli := mail.NewIMAPSMTPClient(w.accountMailConfig(account))
-	svc := service.New(w.cfg, w.st, cli, mail.NoopProvisioner{}, nil)
-	sendReq, _, markAnswered, err := svc.BuildDraftSendRequest(ctx, user, account.Login, pass, draft)
+	buildClient := w.mailClientFactory(w.accountMailConfig(queueAccount))
+	svc := service.New(w.cfg, w.st, buildClient, mail.NoopProvisioner{}, nil)
+	sendReq, sendAccountID, markAnswered, err := svc.BuildDraftSendRequest(ctx, user, queueAccount.Login, queuePass, draft)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			_ = w.st.MarkScheduledSendFailed(ctx, item.ID, err.Error())
@@ -458,7 +708,26 @@ func (w *MailWorkers) processScheduledSendItem(ctx context.Context, item models.
 		_ = w.st.SetDraftSendState(ctx, item.UserID, item.DraftID, "failed", "no recipients")
 		return nil
 	}
-	if _, err := cli.Send(ctx, account.Login, pass, sendReq); err != nil {
+	sendAccount := queueAccount
+	sendPass := queuePass
+	sendClient := buildClient
+	if resolvedAccountID := strings.TrimSpace(sendAccountID); resolvedAccountID != "" && resolvedAccountID != queueAccount.ID {
+		sendAccount, err = w.st.GetMailAccountByID(ctx, item.UserID, resolvedAccountID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				_ = w.st.MarkScheduledSendFailed(ctx, item.ID, "send account not found")
+				_ = w.st.SetDraftSendState(ctx, item.UserID, item.DraftID, "failed", "send account not found")
+				return nil
+			}
+			return err
+		}
+		sendPass, err = util.DecryptString(w.encryptKey, sendAccount.SecretEnc)
+		if err != nil {
+			return err
+		}
+		sendClient = w.mailClientFactory(w.accountMailConfig(sendAccount))
+	}
+	if _, err := sendClient.Send(ctx, sendAccount.Login, sendPass, sendReq); err != nil {
 		retryCount := item.RetryCount + 1
 		if retryCount >= 3 {
 			_ = w.st.MarkScheduledSendFailed(ctx, item.ID, err.Error())
@@ -474,7 +743,17 @@ func (w *MailWorkers) processScheduledSendItem(ctx context.Context, item models.
 	_ = w.st.MarkScheduledSendSent(ctx, item.ID)
 	_ = w.st.SetDraftSendState(ctx, item.UserID, item.DraftID, "sent", "")
 	if markAnswered && strings.TrimSpace(draft.ContextMessageID) != "" {
-		_ = cli.UpdateFlags(ctx, account.Login, pass, draft.ContextMessageID, mail.FlagPatch{Add: []string{"\\Answered"}})
+		if contextAccountID := strings.TrimSpace(draft.ContextAccountID); contextAccountID != "" {
+			if contextAccount, contextErr := w.st.GetMailAccountByID(ctx, item.UserID, contextAccountID); contextErr == nil {
+				if contextPass, decryptErr := util.DecryptString(w.encryptKey, contextAccount.SecretEnc); decryptErr == nil {
+					contextClient := w.mailClientFactory(w.accountMailConfig(contextAccount))
+					_ = contextClient.UpdateFlags(ctx, contextAccount.Login, contextPass, draft.ContextMessageID, mail.FlagPatch{Add: []string{"\\Answered"}})
+				}
+			}
+			_ = w.st.SetIndexedMessageAnswered(ctx, contextAccountID, draft.ContextMessageID, true)
+		} else {
+			_ = sendClient.UpdateFlags(ctx, sendAccount.Login, sendPass, draft.ContextMessageID, mail.FlagPatch{Add: []string{"\\Answered"}})
+		}
 	}
 	return nil
 }

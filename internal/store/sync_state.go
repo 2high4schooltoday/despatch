@@ -102,6 +102,31 @@ func (s *Store) DeleteIndexedMessagesByMailbox(ctx context.Context, accountID, m
 	return tx.Commit()
 }
 
+func (s *Store) DeleteIndexedDataByAccount(ctx context.Context, accountID string) error {
+	accountID = strings.TrimSpace(accountID)
+	if accountID == "" {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM attachment_index WHERE account_id=?`, accountID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM message_index WHERE account_id=?`, accountID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM thread_index WHERE account_id=?`, accountID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sync_state WHERE account_id=?`, accountID); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) listMailboxThreadIDs(ctx context.Context, accountID string, mailboxes []string) ([]string, error) {
 	normalizedMailboxes := make([]string, 0, len(mailboxes))
 	seen := map[string]struct{}{}

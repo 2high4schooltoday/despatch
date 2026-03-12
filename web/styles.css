@@ -1169,6 +1169,220 @@ a:focus-visible {
   justify-content: flex-end;
 }
 
+.mail-health-panel {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.mail-health-toggle {
+  appearance: none;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--fg-0);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 0;
+  text-align: left;
+  cursor: pointer;
+}
+
+.mail-health-toggle-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mail-health-toggle-summary {
+  color: var(--fg-muted);
+  font-size: 0.82rem;
+}
+
+.mail-health-toggle-caret {
+  color: var(--fg-muted);
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+.mail-health-body {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.mail-health-summary-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-2);
+}
+
+.mail-health-summary-card {
+  border: var(--border-w) solid var(--line-2);
+  background: color-mix(in srgb, var(--bg-2) 84%, transparent);
+  padding: var(--space-2);
+  display: grid;
+  gap: 4px;
+}
+
+.mail-health-summary-label {
+  color: var(--fg-muted);
+  font-size: 0.73rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mail-health-summary-value {
+  color: var(--fg-0);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.mail-health-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.mail-health-row {
+  border: var(--border-w) solid var(--line-2);
+  background: color-mix(in srgb, var(--bg-1) 88%, transparent);
+  padding: var(--space-2);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.mail-health-row--ok {
+  border-color: color-mix(in srgb, var(--sig-ok) 38%, var(--line-2) 62%);
+}
+
+.mail-health-row--attention {
+  border-color: color-mix(in srgb, var(--sig-accent) 44%, var(--line-2) 56%);
+}
+
+.mail-health-row--error {
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--line-2) 52%);
+}
+
+.mail-health-row-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.mail-health-row-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mail-health-row-title {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mail-health-row-title strong {
+  font-size: 0.94rem;
+}
+
+.mail-health-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 18px;
+  padding: 0 6px;
+  border: var(--border-w) solid var(--line-1);
+  color: var(--fg-muted);
+  font-size: 0.65rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.mail-health-badge--ok {
+  border-color: color-mix(in srgb, var(--sig-ok) 55%, var(--line-2) 45%);
+  color: color-mix(in srgb, var(--sig-ok) 75%, var(--fg-0) 25%);
+}
+
+.mail-health-badge--attention {
+  border-color: color-mix(in srgb, var(--sig-accent) 55%, var(--line-2) 45%);
+  color: color-mix(in srgb, var(--sig-accent) 75%, var(--fg-0) 25%);
+}
+
+.mail-health-badge--error {
+  border-color: color-mix(in srgb, var(--danger) 60%, var(--line-2) 40%);
+  color: color-mix(in srgb, var(--danger) 75%, var(--fg-0) 25%);
+}
+
+.mail-health-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: var(--space-2);
+}
+
+.mail-health-meta-block {
+  display: grid;
+  gap: 2px;
+}
+
+.mail-health-meta-label {
+  color: var(--fg-muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.mail-health-meta-value {
+  color: var(--fg-0);
+  font-size: 0.86rem;
+}
+
+.mail-health-error {
+  color: color-mix(in srgb, var(--danger) 75%, var(--fg-0) 25%);
+  font-size: 0.82rem;
+}
+
+.mail-health-action-status {
+  color: var(--fg-muted);
+  font-size: 0.8rem;
+}
+
+.mail-health-actions {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.mail-health-empty {
+  border: var(--border-w) dashed var(--line-2);
+  padding: var(--space-3);
+  color: var(--fg-muted);
+  font-size: 0.86rem;
+}
+
+.mail-junk-suggestion {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+}
+
+.mail-junk-suggestion-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.mail-junk-suggestion-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .mail-index-status {
   color: var(--fg-muted);
   font-size: 0.75rem;
@@ -1353,8 +1567,13 @@ a:focus-visible {
   background: color-mix(in srgb, var(--line-2) 60%, transparent);
 }
 
+.menu-action-btn,
 .mailbox-row-menu-btn {
   min-height: var(--ctrl-h-dense);
+  width: 100%;
+  appearance: none;
+  display: flex;
+  align-items: center;
   border: var(--border-w) solid var(--line-1);
   background: transparent;
   color: inherit;
@@ -1364,10 +1583,19 @@ a:focus-visible {
   cursor: pointer;
 }
 
+.menu-action-btn:hover,
+.menu-action-btn:focus-visible,
 .mailbox-row-menu-btn:hover {
   background: color-mix(in srgb, var(--line-2) 60%, transparent);
+  outline: none;
 }
 
+.menu-action-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.menu-action-btn--danger,
 .mailbox-row-menu-btn--danger {
   color: var(--sig-err);
 }
@@ -1813,7 +2041,11 @@ a:focus-visible {
 }
 
 .reader-inspect-menu summary {
-  min-height: 28px;
+  min-height: var(--ctrl-h-dense);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  list-style: none;
 }
 
 .reader-inspect-menu.is-disabled summary {
@@ -1826,24 +2058,9 @@ a:focus-visible {
 }
 
 .reader-inspect-action {
-  width: 100%;
-  border: var(--border-w) solid transparent;
-  background: transparent;
-  color: var(--fg-0);
-  text-align: left;
-  padding: var(--space-2);
-  cursor: pointer;
-}
-
-.reader-inspect-action:hover:not(:disabled),
-.reader-inspect-action:focus-visible {
-  border-color: var(--line-1);
-  outline: none;
-}
-
-.reader-inspect-action:disabled {
-  opacity: 0.5;
-  cursor: default;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-weight: 600;
 }
 
 .reader-body-host {
@@ -2356,6 +2573,7 @@ a:focus-visible {
   gap: 4px;
   flex-wrap: wrap;
   padding: 1px 0;
+  position: relative;
 }
 
 .compose-token-field > input {
@@ -2474,6 +2692,54 @@ a:focus-visible {
 .compose-inline-note--warn,
 .compose-inline-note--error {
   color: var(--sig-err);
+}
+
+.compose-recipient-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 12;
+  display: grid;
+  gap: 0;
+  border: var(--border-w) solid var(--line-1);
+  background: var(--bg-1);
+}
+
+.compose-recipient-suggestion {
+  width: 100%;
+  border: 0;
+  border-top: var(--border-w) solid var(--line-1);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  padding: var(--space-2);
+  display: grid;
+  gap: 3px;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.compose-recipient-suggestion:first-child {
+  border-top: 0;
+}
+
+.compose-recipient-suggestion:hover,
+.compose-recipient-suggestion:focus-visible,
+.compose-recipient-suggestion.is-active {
+  background: var(--line-2);
+}
+
+.compose-recipient-suggestion-label {
+  color: var(--fg-0);
+  font-size: 0.82rem;
+}
+
+.compose-recipient-suggestion-meta {
+  color: var(--fg-muted);
+  font-size: 0.72rem;
 }
 
 .compose-body-layer {
@@ -2879,12 +3145,14 @@ a:focus-visible {
 }
 
 .settings-shell,
-.admin-shell {
+.admin-shell,
+.contacts-shell {
   width: min(1200px, 100%);
 }
 
 .settings-layout,
-.admin-layout {
+.admin-layout,
+.contacts-layout {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
   border: var(--border-w) solid var(--line-1);
@@ -2893,7 +3161,8 @@ a:focus-visible {
 }
 
 .settings-nav,
-.admin-nav {
+.admin-nav,
+.contacts-nav {
   border-right: var(--border-w) solid var(--line-1);
   padding: var(--space-3);
   display: grid;
@@ -2902,7 +3171,8 @@ a:focus-visible {
 }
 
 .settings-nav h2,
-.admin-nav h2 {
+.admin-nav h2,
+.contacts-nav h2 {
   margin-bottom: var(--space-1);
 }
 
@@ -2967,13 +3237,15 @@ a:focus-visible {
 }
 
 .settings-main,
-.admin-main {
+.admin-main,
+.contacts-main {
   min-width: 0;
   padding: var(--space-3);
 }
 
 .settings-section,
-.admin-section {
+.admin-section,
+.contacts-section {
   min-height: 100%;
   display: grid;
   align-content: start;
@@ -3278,6 +3550,126 @@ button.setting-list-item {
   color: var(--fg-muted);
 }
 
+.contacts-workbench {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  gap: var(--space-3);
+  align-items: start;
+}
+
+.contacts-column {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.contacts-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.contacts-actions input {
+  flex: 1 1 180px;
+  min-width: 180px;
+}
+
+.contacts-form {
+  display: grid;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-w) solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-2) 74%, transparent);
+}
+
+.contacts-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.contacts-field {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.contacts-field--full {
+  grid-column: 1 / -1;
+}
+
+.contacts-field-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  color: var(--fg-muted);
+  font-size: 0.73rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.contacts-repeat-list,
+.contacts-checklist {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.contacts-repeat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 180px) auto auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.contacts-repeat-row--nickname {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.contacts-primary-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-1);
+  font-size: 0.8rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.contacts-primary-toggle input[type="radio"] {
+  width: auto;
+  min-height: auto;
+}
+
+.contacts-checklist {
+  max-height: 240px;
+  overflow: auto;
+  padding: var(--space-2);
+  border: var(--border-w) solid var(--line-1);
+  background: var(--bg-1);
+}
+
+.contacts-checklist label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--ctrl-h-dense);
+  color: var(--fg-1);
+  font-size: 0.84rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.contacts-checklist input[type="checkbox"] {
+  width: auto;
+  min-height: auto;
+}
+
+.contacts-empty {
+  padding: var(--space-2);
+  color: var(--fg-muted);
+  border: var(--border-w) dashed var(--line-1);
+}
+
 .mail-settings-columns {
   display: grid;
   grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
@@ -3371,6 +3763,72 @@ button.setting-list-item {
   margin-bottom: 0;
 }
 
+.mail-rules-status-card,
+.mail-rules-warning {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: var(--border-w) solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-2) 72%, transparent);
+}
+
+.mail-rules-warning {
+  border-color: var(--sig-accent);
+}
+
+.mail-rules-status-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.rules-list-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.rules-list-toggle {
+  margin: 0;
+}
+
+.rules-list-main {
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  padding: 0;
+  cursor: pointer;
+}
+
+.rules-list-main strong {
+  font-size: 0.92rem;
+}
+
+.rules-list-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.rules-list-actions .menu-action-btn {
+  width: auto;
+  min-height: 28px;
+  padding-inline: var(--space-2);
+}
+
+.mail-script-editor {
+  min-height: 280px;
+  font-family: var(--font-ui);
+  line-height: 1.45;
+  white-space: pre;
+}
+
 .security-badges {
   display: flex;
   gap: 6px;
@@ -3397,7 +3855,11 @@ button.setting-list-item {
     margin: var(--space-4) auto;
   }
 
-  .mail-settings-columns {
+  .mail-settings-columns,
+  .contacts-workbench,
+  .contacts-form-grid,
+  .contacts-repeat-row,
+  .contacts-repeat-row--nickname {
     grid-template-columns: 1fr;
   }
 
@@ -3419,6 +3881,14 @@ button.setting-list-item {
   }
 
   .mail-commandbar-meta {
+    justify-content: flex-start;
+  }
+
+  .mail-health-row-head {
+    flex-direction: column;
+  }
+
+  .mail-health-actions {
     justify-content: flex-start;
   }
 
@@ -3455,19 +3925,22 @@ button.setting-list-item {
   }
 
   .settings-layout,
-  .admin-layout {
+  .admin-layout,
+  .contacts-layout {
     grid-template-columns: 1fr;
   }
 
   .settings-nav,
-  .admin-nav {
+  .admin-nav,
+  .contacts-nav {
     border-right: 0;
     border-bottom: var(--border-w) solid var(--line-1);
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .settings-nav h2,
-  .admin-nav h2 {
+  .admin-nav h2,
+  .contacts-nav h2 {
     grid-column: 1 / -1;
   }
 
@@ -3575,6 +4048,10 @@ button.setting-list-item {
 
   .mail-commandbar select {
     min-width: 112px;
+  }
+
+  .mail-health-meta {
+    grid-template-columns: 1fr;
   }
 
   .workspace-header {
