@@ -166,39 +166,47 @@ h3 {
 }
 
 .app-shell {
-  width: min(1360px, calc(100% - (var(--space-6) * 2)));
-  margin: var(--space-6) auto;
+  width: min(1420px, calc(100% - (var(--space-5) * 2)));
+  margin: var(--space-4) auto;
   border: var(--border-w) solid var(--line-1);
   background: var(--bg-1);
 }
 
 .topbar {
   border-bottom: var(--border-w) solid var(--line-1);
-  padding: var(--space-3) var(--space-4);
+  padding: 10px var(--space-4);
 }
 
 .topbar-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-4);
 }
 
-.topbar-branding {
+.topbar-primary {
   display: flex;
   align-items: center;
   gap: var(--space-4);
   min-width: 0;
 }
 
+.topbar-branding {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
 .brand-mark {
   display: inline-flex;
   align-items: center;
   min-height: calc(var(--ctrl-h-dense) + 2px);
-  padding: 0 var(--space-2);
+  padding: 0 14px;
   border: var(--border-w) solid var(--line-1);
   color: var(--fg-0);
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
@@ -221,13 +229,13 @@ h3 {
 .workspace-title {
   margin: 0;
   color: var(--fg-0);
-  font-size: 1.2rem;
+  font-size: 1rem;
   font-weight: 700;
   letter-spacing: -0.02em;
 }
 
 .topbar-branding .workspace-title {
-  font-size: 1.05rem;
+  font-size: 0.98rem;
   line-height: 1;
   letter-spacing: -0.01em;
 }
@@ -235,20 +243,20 @@ h3 {
 .tabs {
   display: flex;
   align-items: center;
-  gap: var(--space-1);
+  gap: var(--space-2);
   min-height: var(--ctrl-h-dense);
-  justify-self: start;
+  min-width: 0;
 }
 
 .tab {
   min-height: var(--ctrl-h-dense);
-  padding: 0 var(--space-3);
+  padding: 0 14px;
   border: 0;
   border-bottom: var(--border-w) solid transparent;
   background: transparent;
   color: var(--fg-1);
   font: inherit;
-  font-size: 0.9rem;
+  font-size: 0.86rem;
   cursor: pointer;
 }
 
@@ -263,11 +271,11 @@ h3 {
 }
 
 .topbar-utility {
-  min-height: calc(var(--ctrl-h-dense) - 2px);
-  padding: 0 var(--space-2);
+  min-height: var(--ctrl-h-dense);
+  padding: 0 14px;
   border: var(--border-w) solid var(--line-2);
   color: var(--fg-muted);
-  font-size: 0.78rem;
+  font-size: 0.74rem;
   letter-spacing: 0.06em;
   text-transform: uppercase;
 }
@@ -287,7 +295,7 @@ h3 {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
 }
 
@@ -297,8 +305,9 @@ h3 {
 }
 
 .theme-toggle {
-  border-color: var(--line-1);
-  color: var(--fg-1);
+  border-color: var(--line-2);
+  color: var(--fg-muted);
+  font-size: 0.74rem;
 }
 
 .theme-toggle:hover {
@@ -306,7 +315,7 @@ h3 {
 }
 
 main {
-  padding: var(--space-4);
+  padding: var(--space-3);
   display: grid;
   gap: var(--space-3);
 }
@@ -1194,13 +1203,13 @@ a:focus-visible {
 
 .workspace-header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-3);
 }
 
 .workspace-header--mail {
-  padding-bottom: var(--space-2);
+  padding: var(--space-2) var(--space-3);
 }
 
 .workspace-header > div {
@@ -1209,7 +1218,7 @@ a:focus-visible {
 }
 
 .workspace-header .hint {
-  max-width: 72ch;
+  max-width: 64ch;
 }
 
 .workspace-header--mail {
@@ -1217,13 +1226,26 @@ a:focus-visible {
 }
 
 .workspace-header--mail h2 {
-  font-size: 1.5rem;
+  font-size: 1.34rem;
+}
+
+.page-head-copy {
+  min-width: 0;
+}
+
+.page-head--compact .workspace-kicker {
+  font-size: 0.66rem;
+  letter-spacing: 0.1em;
+}
+
+.page-head--compact .hint {
+  font-size: 0.86rem;
 }
 
 .mail-commandbar {
   display: grid;
-  gap: var(--space-3);
-  padding: var(--space-3);
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   border: var(--border-w) solid var(--line-2);
   position: relative;
 }
@@ -1241,16 +1263,34 @@ a:focus-visible {
   display: grid;
   grid-template-columns: auto minmax(320px, 1fr);
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-2);
   padding-bottom: var(--space-2);
   border-bottom: var(--border-w) solid var(--line-2);
 }
 
 .mail-toolbar-secondary {
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
+  gap: var(--space-2);
   padding-bottom: var(--space-2);
   border-bottom: var(--border-w) solid var(--line-2);
+}
+
+.mail-toolbar-secondary-main,
+.mail-toolbar-secondary-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.mail-toolbar-secondary-main {
+  flex: 1 1 auto;
+}
+
+.mail-toolbar-secondary-tools {
+  flex: 0 0 auto;
+  justify-content: flex-end;
 }
 
 .mail-toolbar-cluster {
@@ -1266,9 +1306,8 @@ a:focus-visible {
 }
 
 .mail-toolbar-cluster--context {
-  margin-left: auto;
   justify-content: flex-end;
-  align-items: flex-start;
+  align-items: center;
   flex-wrap: nowrap;
 }
 
@@ -1414,9 +1453,9 @@ a:focus-visible {
 
 .mail-health-panel {
   position: relative;
-  flex: 0 1 360px;
-  width: min(360px, 100%);
-  min-width: 260px;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 0;
   display: grid;
   gap: 0;
   padding: 0;
@@ -1429,7 +1468,8 @@ a:focus-visible {
 
 .mail-health-toggle {
   appearance: none;
-  width: 100%;
+  width: min(320px, 100%);
+  min-width: 240px;
   min-height: var(--ctrl-h-dense);
   border: var(--border-w) solid var(--line-1);
   background: color-mix(in srgb, var(--bg-2) 82%, transparent);
@@ -1465,9 +1505,9 @@ a:focus-visible {
 
 .mail-health-body {
   position: absolute;
-  top: calc(100% + var(--space-2));
+  top: calc(100% + 6px);
   right: 0;
-  width: min(760px, calc(100vw - (var(--space-6) * 2)));
+  width: min(620px, calc(100vw - (var(--space-6) * 2)));
   max-height: min(62vh, 520px);
   overflow: auto;
   display: grid;
@@ -1675,7 +1715,7 @@ a:focus-visible {
   grid-template-columns: 220px minmax(300px, 1fr) minmax(360px, 1.2fr);
   border: var(--border-w) solid var(--line-1);
   min-height: 620px;
-  height: clamp(560px, calc(100vh - 220px), 760px);
+  height: clamp(600px, calc(100vh - 172px), 780px);
 }
 
 .mail-pane {
@@ -1896,7 +1936,7 @@ a:focus-visible {
 .message-row-btn,
 .thread-row-btn {
   width: 100%;
-  min-height: 64px;
+  min-height: 68px;
   border: 0;
   background: transparent;
   color: inherit;
@@ -1977,7 +2017,7 @@ a:focus-visible {
 .thread-row-top {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 84px;
+  grid-template-columns: minmax(0, 1fr) 92px;
   align-items: baseline;
   gap: var(--space-2);
 }
@@ -2069,7 +2109,7 @@ a:focus-visible {
 
 .message-date,
 .thread-row-date {
-  min-width: 84px;
+  min-width: 92px;
   color: color-mix(in srgb, var(--fg-muted) 88%, transparent);
   font-size: 0.76rem;
   text-align: right;
@@ -2160,14 +2200,14 @@ a:focus-visible {
 }
 
 .reader-header {
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--space-3) 10px;
   border-bottom: var(--border-w) solid var(--line-2);
   display: grid;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .reader-subject {
-  font-size: 1.18rem;
+  font-size: 1.12rem;
   font-weight: 700;
   color: var(--fg-0);
   letter-spacing: 0.005em;
@@ -2301,9 +2341,10 @@ a:focus-visible {
 .reader-view-controls {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
-  padding: var(--space-2) var(--space-3);
+  padding: 10px var(--space-3);
   border-bottom: var(--border-w) solid var(--line-2);
 }
 
@@ -2313,12 +2354,19 @@ a:focus-visible {
   letter-spacing: 0.02em;
 }
 
+.reader-tools-main {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .reader-action-controls {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  padding-left: var(--space-2);
+  padding-left: var(--space-3);
   margin-left: auto;
   border-left: var(--border-w) solid var(--line-2);
 }
@@ -3465,7 +3513,7 @@ a:focus-visible {
   display: grid;
   grid-template-columns: 240px minmax(0, 1fr);
   border: var(--border-w) solid var(--line-1);
-  min-height: 680px;
+  min-height: 620px;
   background: var(--bg-1);
 }
 
@@ -3549,7 +3597,7 @@ a:focus-visible {
 .admin-main,
 .contacts-main {
   min-width: 0;
-  padding: var(--space-3);
+  padding: var(--space-2);
 }
 
 .settings-section,
@@ -3574,7 +3622,7 @@ a:focus-visible {
 .setting-section {
   border: var(--border-w) solid var(--line-1);
   background: var(--bg-2);
-  padding: var(--space-3);
+  padding: var(--space-2);
   display: grid;
   gap: var(--space-2);
 }
@@ -3597,11 +3645,11 @@ a:focus-visible {
 
 .setting-list-item {
   border-top: var(--border-w) solid var(--line-1);
-  padding: var(--space-2) var(--space-3);
+  padding: 10px var(--space-3);
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   gap: var(--space-2);
-  align-items: start;
+  align-items: center;
   background: var(--bg-2);
 }
 
@@ -3641,12 +3689,13 @@ button.setting-list-item {
 .setting-list-main {
   min-width: 0;
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
 
 .setting-list-title {
   color: var(--fg-0);
   font-weight: 600;
+  font-size: 0.92rem;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -3654,13 +3703,13 @@ button.setting-list-item {
 
 .setting-list-meta {
   color: var(--fg-muted);
-  font-size: 0.85rem;
-  line-height: 1.3;
+  font-size: 0.76rem;
+  line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
   display: -webkit-box;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   white-space: normal;
 }
 
@@ -3827,12 +3876,12 @@ button.setting-list-item {
 
 .settings-detail {
   border: var(--border-w) solid var(--line-1);
-  background: var(--bg-2);
+  background: color-mix(in srgb, var(--bg-2) 74%, var(--bg-1));
   padding: var(--space-3);
   display: grid;
   gap: var(--space-2);
   align-content: start;
-  min-height: 180px;
+  min-height: 160px;
 }
 
 .settings-detail h4 {
@@ -3871,16 +3920,25 @@ button.setting-list-item {
 }
 
 .settings-list-empty {
-  min-height: 108px;
+  min-height: 84px;
   padding: var(--space-3);
   display: flex;
   align-items: center;
   color: var(--fg-muted);
 }
 
+.settings-detail--placeholder {
+  align-content: center;
+  min-height: 152px;
+}
+
+.settings-detail--placeholder .hint {
+  max-width: 52ch;
+}
+
 .contacts-workbench {
   display: grid;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
   gap: var(--space-3);
   align-items: start;
 }
@@ -3898,16 +3956,16 @@ button.setting-list-item {
   gap: var(--space-2);
 }
 
-.contacts-actions {
+.contacts-list-toolbar {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.contacts-list-actions {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  align-items: flex-start;
-}
-
-.contacts-actions input {
-  flex: 1 1 180px;
-  min-width: 180px;
+  align-items: center;
 }
 
 .contacts-form {
@@ -3934,8 +3992,9 @@ button.setting-list-item {
 }
 
 .contacts-field-head {
-  display: grid;
-  justify-items: start;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
   color: var(--fg-muted);
   font-size: 0.73rem;
@@ -3953,7 +4012,7 @@ button.setting-list-item {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(0, 0.95fr) 110px auto;
   gap: var(--space-2);
-  align-items: start;
+  align-items: center;
 }
 
 .contacts-repeat-row--nickname {
@@ -3963,6 +4022,7 @@ button.setting-list-item {
 .contacts-primary-toggle {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   min-height: var(--ctrl-h-std);
   padding: 0 var(--space-2);
@@ -4043,15 +4103,15 @@ button.setting-list-item {
 .mail-settings-field--toggle {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  padding: var(--space-2);
+  padding: 10px var(--space-3);
   border: var(--border-w) solid var(--line-1);
   background: var(--bg-1);
   min-height: var(--ctrl-h-std);
 }
 
 .mail-settings-field--toggle input[type="checkbox"] {
-  justify-self: start;
-  margin-top: 2px;
+  justify-self: end;
+  margin: 0;
 }
 
 .mail-settings-field > span {
@@ -4133,10 +4193,7 @@ button.setting-list-item {
 }
 
 .rules-list-item {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: center;
-  gap: var(--space-2);
+  grid-template-columns: auto minmax(0, 1fr);
 }
 
 .rules-list-toggle {
@@ -4159,23 +4216,45 @@ button.setting-list-item {
   font-size: 0.92rem;
 }
 
-.rules-list-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.rules-list-actions .menu-action-btn {
-  width: auto;
-  min-height: 28px;
-  padding-inline: var(--space-2);
-}
-
 .mail-script-editor {
   min-height: 180px;
   font-family: var(--font-ui);
   line-height: 1.45;
   white-space: pre;
+}
+
+.mail-settings-form-section {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.mail-settings-form-section + .mail-settings-form-section {
+  padding-top: var(--space-2);
+  border-top: var(--border-w) solid var(--line-1);
+}
+
+.mail-settings-form-section-head {
+  display: grid;
+  gap: 3px;
+}
+
+.mail-settings-form-grid--rules-top {
+  grid-template-columns: minmax(0, 1.4fr) minmax(160px, 0.6fr) minmax(180px, 0.8fr);
+}
+
+.mail-settings-form-grid--rules-conditions,
+.mail-settings-form-grid--rules-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.mail-settings-detail-shell--rules,
+.mail-settings-detail-shell--scripts {
+  min-width: 0;
+}
+
+.mail-script-panel-head {
+  display: grid;
+  gap: var(--space-2);
 }
 
 .mail-settings-form--scripts .actions {
@@ -4184,7 +4263,12 @@ button.setting-list-item {
 }
 
 .mail-settings-form--scripts.is-empty .mail-script-editor {
-  min-height: 120px;
+  display: none;
+}
+
+.mail-settings-form--scripts.is-empty .actions {
+  border-top: 0;
+  padding-top: 0;
 }
 
 .security-badges {
@@ -4240,12 +4324,23 @@ button.setting-list-item {
   .mail-health-body {
     width: min(620px, calc(100vw - (var(--space-4) * 2)));
   }
+
+  .mail-settings-form-grid--rules-top,
+  .mail-settings-form-grid--rules-conditions,
+  .mail-settings-form-grid--rules-actions {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 1080px) {
   .topbar-row {
     grid-template-columns: 1fr;
     gap: var(--space-2);
+  }
+
+  .topbar-primary {
+    flex-direction: column;
+    align-items: flex-start;
   }
 
   .topbar-branding {
@@ -4258,6 +4353,7 @@ button.setting-list-item {
 
   .topbar-tools {
     justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .auth-reset-stack,
@@ -4326,6 +4422,16 @@ button.setting-list-item {
 
   .mail-toolbar-primary {
     grid-template-columns: 1fr;
+  }
+
+  .mail-toolbar-secondary {
+    align-items: stretch;
+  }
+
+  .mail-toolbar-secondary-main,
+  .mail-toolbar-secondary-tools {
+    width: 100%;
+    justify-content: flex-start;
   }
 
   .mail-pane {
@@ -4400,7 +4506,6 @@ button.setting-list-item {
   }
 
   .mail-toolbar-cluster--context {
-    margin-left: 0;
     justify-content: space-between;
     flex-wrap: wrap;
   }

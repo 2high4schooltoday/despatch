@@ -210,6 +210,7 @@ const state = {
       rulesAccountID: "",
       rules: [],
       selectedRuleID: "",
+      ruleEditorOpen: false,
       rulesMailboxes: [],
       rulesJunkMailboxName: "",
       managedScriptName: "",
@@ -217,6 +218,7 @@ const state = {
       customScriptActive: false,
       ruleScripts: [],
       selectedScriptName: "",
+      scriptEditorOpen: false,
     },
     devices: {
       items: [],
@@ -537,6 +539,7 @@ const el = {
   btnSettingsMailRulesActivate: document.getElementById("btn-settings-mail-rules-activate"),
   btnSettingsMailRuleNew: document.getElementById("btn-settings-mail-rule-new"),
   settingsMailRuleList: document.getElementById("settings-mail-rule-list"),
+  settingsMailRuleDetail: document.getElementById("settings-mail-rule-detail"),
   settingsMailRuleForm: document.getElementById("settings-mail-rule-form"),
   settingsMailRuleName: document.getElementById("settings-mail-rule-name"),
   settingsMailRuleEnabled: document.getElementById("settings-mail-rule-enabled"),
@@ -552,9 +555,11 @@ const el = {
   settingsMailRuleRedirect: document.getElementById("settings-mail-rule-redirect"),
   settingsMailRuleStop: document.getElementById("settings-mail-rule-stop"),
   btnSettingsMailRuleSave: document.getElementById("btn-settings-mail-rule-save"),
+  btnSettingsMailRuleCancel: document.getElementById("btn-settings-mail-rule-cancel"),
   btnSettingsMailRuleDelete: document.getElementById("btn-settings-mail-rule-delete"),
   btnSettingsMailScriptNew: document.getElementById("btn-settings-mail-script-new"),
   settingsMailScriptList: document.getElementById("settings-mail-script-list"),
+  settingsMailScriptDetail: document.getElementById("settings-mail-script-detail"),
   settingsMailScriptPanel: document.getElementById("settings-mail-script-panel"),
   settingsMailScriptName: document.getElementById("settings-mail-script-name"),
   settingsMailScriptNote: document.getElementById("settings-mail-script-note"),
@@ -562,6 +567,7 @@ const el = {
   btnSettingsMailScriptValidate: document.getElementById("btn-settings-mail-script-validate"),
   btnSettingsMailScriptSave: document.getElementById("btn-settings-mail-script-save"),
   btnSettingsMailScriptActivate: document.getElementById("btn-settings-mail-script-activate"),
+  btnSettingsMailScriptCancel: document.getElementById("btn-settings-mail-script-cancel"),
   btnSettingsMailScriptDelete: document.getElementById("btn-settings-mail-script-delete"),
   passkeysNote: document.getElementById("passkeys-note"),
   passkeysList: document.getElementById("passkeys-list"),
@@ -5838,6 +5844,7 @@ function renderListItem(opts = {}) {
 function renderDetailView(container, item, renderContent) {
   if (!container) return;
   container.replaceChildren();
+  container.classList.remove("settings-detail--placeholder");
   if (!item) {
     container.classList.add("hidden");
     return;
@@ -5845,6 +5852,40 @@ function renderDetailView(container, item, renderContent) {
   container.classList.remove("hidden");
   if (typeof renderContent === "function") {
     renderContent(container, item);
+  }
+}
+
+function renderPlaceholderDetail(container, opts = {}) {
+  if (!container) return;
+  container.replaceChildren();
+  container.classList.remove("hidden");
+  container.classList.add("settings-detail--placeholder");
+
+  const title = document.createElement("h4");
+  title.textContent = String(opts.title || "Select an item");
+  container.appendChild(title);
+
+  const note = document.createElement("p");
+  note.className = "hint";
+  note.textContent = String(opts.body || "").trim() || "Choose an item from the list to review it here.";
+  container.appendChild(note);
+
+  const actions = Array.isArray(opts.actions) ? opts.actions : [];
+  if (actions.length > 0) {
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "settings-detail-actions";
+    for (const action of actions) {
+      if (!action || typeof action.onClick !== "function") continue;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = String(action.className || "cmd-btn cmd-btn--dense cmd-btn--primary");
+      button.textContent = String(action.label || "Open");
+      button.addEventListener("click", action.onClick);
+      actionsWrap.appendChild(button);
+    }
+    if (actionsWrap.children.length > 0) {
+      container.appendChild(actionsWrap);
+    }
   }
 }
 
@@ -6196,29 +6237,20 @@ function renderContactDetail() {
   }
   const contact = selectedContactRecord();
   if (!contact) {
-    el.contactDetail.classList.remove("hidden");
-    el.contactDetail.replaceChildren();
-    const title = document.createElement("h4");
-    title.textContent = "Select a contact";
-    el.contactDetail.appendChild(title);
-    const note = document.createElement("p");
-    note.className = "hint";
-    note.textContent = "Choose someone from the list to review their details, or create a new contact.";
-    el.contactDetail.appendChild(note);
-    const actions = document.createElement("div");
-    actions.className = "settings-detail-actions";
-    const create = document.createElement("button");
-    create.type = "button";
-    create.className = "cmd-btn cmd-btn--dense cmd-btn--primary";
-    create.textContent = "New Contact";
-    create.onclick = () => {
-      state.contacts.detailId = "";
-      fillContactForm(null);
-      setContactEditorOpen(true);
-      setContactsNote("Create a new contact.", "info");
-    };
-    actions.appendChild(create);
-    el.contactDetail.appendChild(actions);
+    renderPlaceholderDetail(el.contactDetail, {
+      title: "Select a contact",
+      body: "Choose someone from the list to review their details, or create a new contact.",
+      actions: [{
+        label: "New Contact",
+        className: "cmd-btn cmd-btn--dense cmd-btn--primary",
+        onClick: () => {
+          state.contacts.detailId = "";
+          fillContactForm(null);
+          setContactEditorOpen(true);
+          setContactsNote("Create a new contact.", "info");
+        },
+      }],
+    });
     return;
   }
   renderDetailView(el.contactDetail, contact, (detail, item) => {
@@ -6268,29 +6300,20 @@ function renderContactGroupDetail() {
   }
   const group = selectedContactGroupRecord();
   if (!group) {
-    el.contactGroupDetail.classList.remove("hidden");
-    el.contactGroupDetail.replaceChildren();
-    const title = document.createElement("h4");
-    title.textContent = "Select a group";
-    el.contactGroupDetail.appendChild(title);
-    const note = document.createElement("p");
-    note.className = "hint";
-    note.textContent = "Choose a group to review its members, or create a new reusable recipient list.";
-    el.contactGroupDetail.appendChild(note);
-    const actions = document.createElement("div");
-    actions.className = "settings-detail-actions";
-    const create = document.createElement("button");
-    create.type = "button";
-    create.className = "cmd-btn cmd-btn--dense cmd-btn--primary";
-    create.textContent = "New Group";
-    create.onclick = () => {
-      state.contacts.groupDetailId = "";
-      fillContactGroupForm(null);
-      setContactGroupEditorOpen(true);
-      setContactsNote("Create a new group.", "info");
-    };
-    actions.appendChild(create);
-    el.contactGroupDetail.appendChild(actions);
+    renderPlaceholderDetail(el.contactGroupDetail, {
+      title: "Select a group",
+      body: "Choose a group to review its members, or create a new reusable recipient list.",
+      actions: [{
+        label: "New Group",
+        className: "cmd-btn cmd-btn--dense cmd-btn--primary",
+        onClick: () => {
+          state.contacts.groupDetailId = "";
+          fillContactGroupForm(null);
+          setContactGroupEditorOpen(true);
+          setContactsNote("Create a new group.", "info");
+        },
+      }],
+    });
     return;
   }
   renderDetailView(el.contactGroupDetail, group, (detail, item) => {
@@ -6693,17 +6716,10 @@ function renderTrustedDevices(items) {
       markerText: item.is_current ? "Current" : "Trusted",
       title: String(item.display_label || item.device_label || "Trusted device"),
       meta: [lastUsed, expires].join(" • "),
-      actionText: "View",
       onSelect: () => {
         state.settings.devices.detailId = itemID;
-        state.ui.settingsNav.page = "list";
-        state.ui.settingsNav.detailId = itemID;
-        renderTrustedDevices(state.settings.devices.items);
-      },
-      onAction: () => {
-        state.settings.devices.detailId = itemID;
         state.ui.settingsNav.page = "detail";
-        state.ui.settingsNav.detailId = state.settings.devices.detailId;
+        state.ui.settingsNav.detailId = itemID;
         renderTrustedDevices(state.settings.devices.items);
       },
     });
@@ -6904,17 +6920,10 @@ function renderSessions(items) {
       markerText: item.is_current ? "Current" : String(item.auth_method || "password"),
       title: String(item.device_label || item.ua_summary || "Session"),
       meta: `Last seen ${formatDateTimeOrNA(item.last_seen_at)} • Expires ${formatDateTimeOrNA(item.expires_at)}`,
-      actionText: "View",
       onSelect: () => {
         state.settings.sessions.detailId = sessionID;
-        state.ui.settingsNav.page = "list";
-        state.ui.settingsNav.detailId = sessionID;
-        renderSessions(state.settings.sessions.items);
-      },
-      onAction: () => {
-        state.settings.sessions.detailId = sessionID;
         state.ui.settingsNav.page = "detail";
-        state.ui.settingsNav.detailId = state.settings.sessions.detailId;
+        state.ui.settingsNav.detailId = sessionID;
         renderSessions(state.settings.sessions.items);
       },
     });
@@ -7081,6 +7090,44 @@ function selectedMailSettingsScript() {
   return (Array.isArray(state.settings.mail.ruleScripts) ? state.settings.mail.ruleScripts : []).find((item) => String(item?.script_name || item?.scriptName || "") === name) || null;
 }
 
+function formatMailRuleConditionList(rule) {
+  const conditions = rule?.conditions || {};
+  const items = [];
+  if (String(conditions.from_contains || "").trim()) items.push(`From contains ${String(conditions.from_contains || "").trim()}`);
+  if (String(conditions.from_domain_is || "").trim()) items.push(`From domain ${String(conditions.from_domain_is || "").trim()}`);
+  if (String(conditions.to_contains || "").trim()) items.push(`To contains ${String(conditions.to_contains || "").trim()}`);
+  if (String(conditions.subject_contains || "").trim()) items.push(`Subject contains ${String(conditions.subject_contains || "").trim()}`);
+  if (String(conditions.body_contains || "").trim()) items.push(`Body contains ${String(conditions.body_contains || "").trim()}`);
+  return items;
+}
+
+function formatMailRuleActionList(rule) {
+  const actions = rule?.actions || {};
+  const items = [];
+  if (String(actions.move_to_role || "").trim()) items.push(`Move to ${String(actions.move_to_role || "").trim()}`);
+  if (String(actions.move_to_mailbox || "").trim()) items.push(`Move to ${String(actions.move_to_mailbox || "").trim()}`);
+  if (actions.mark_read) items.push("Mark read");
+  if (String(actions.redirect || "").trim()) items.push(`Redirect to ${String(actions.redirect || "").trim()}`);
+  if (actions.stop) items.push("Stop processing");
+  return items;
+}
+
+function setMailRuleEditorOpen(open) {
+  state.settings.mail.ruleEditorOpen = !!open;
+  if (el.settingsMailRuleForm) {
+    el.settingsMailRuleForm.classList.toggle("hidden", !state.settings.mail.ruleEditorOpen);
+  }
+  renderMailRuleDetail();
+}
+
+function setMailScriptEditorOpen(open) {
+  state.settings.mail.scriptEditorOpen = !!open;
+  if (el.settingsMailScriptPanel) {
+    el.settingsMailScriptPanel.classList.toggle("hidden", !state.settings.mail.scriptEditorOpen);
+  }
+  renderMailScriptDetail();
+}
+
 function populateMailRulesAccountSelect() {
   if (!el.settingsMailRulesAccount) return;
   el.settingsMailRulesAccount.replaceChildren();
@@ -7178,6 +7225,108 @@ function renderMailRulesJunkStatus() {
   }
 }
 
+function renderMailRuleDetail() {
+  if (!el.settingsMailRuleDetail) return;
+  if (state.settings.mail.ruleEditorOpen) {
+    renderDetailView(el.settingsMailRuleDetail, null);
+    return;
+  }
+  const rule = selectedMailSettingsRule();
+  if (!rule) {
+    const canCreate = !!selectedMailRulesAccountID();
+    renderPlaceholderDetail(el.settingsMailRuleDetail, {
+      title: "Select a rule",
+      body: "Choose an inbox rule to review its conditions and actions, or create a new one.",
+      actions: canCreate ? [{
+        label: "New Rule",
+        className: "cmd-btn cmd-btn--dense cmd-btn--primary",
+        onClick: () => {
+          state.settings.mail.selectedRuleID = "";
+          fillMailRuleForm(null);
+          setMailRuleEditorOpen(true);
+          setMailSettingsNote("Create a new inbox rule.", "info");
+        },
+      }] : [],
+    });
+    return;
+  }
+  renderDetailView(el.settingsMailRuleDetail, rule, (detail, item) => {
+    const conditions = formatMailRuleConditionList(item);
+    const actions = formatMailRuleActionList(item);
+    const items = Array.isArray(state.settings.mail.rules) ? state.settings.mail.rules : [];
+    const index = items.findIndex((entry) => String(entry?.id || "") === String(item?.id || ""));
+
+    const title = document.createElement("h4");
+    title.textContent = String(item?.name || "Inbox rule");
+    detail.appendChild(title);
+
+    const intro = document.createElement("p");
+    intro.className = "hint";
+    intro.textContent = "Rules run from top to bottom for this account and stop when their actions say to stop.";
+    detail.appendChild(intro);
+
+    appendDetailFact(detail, "Status", item?.enabled ? "Enabled" : "Disabled");
+    appendDetailFact(detail, "Match", String(item?.match_mode || item?.matchMode || "all").trim() === "any" ? "Any condition" : "All conditions");
+    appendDetailFact(detail, "Conditions", conditions.join(" • ") || "No conditions yet");
+    appendDetailFact(detail, "Actions", actions.join(" • ") || "Leave in place");
+    appendDetailFact(detail, "Order", index >= 0 ? `#${index + 1}` : "Not ordered");
+
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "settings-detail-actions";
+
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "cmd-btn cmd-btn--dense cmd-btn--primary";
+    edit.textContent = "Edit Rule";
+    edit.addEventListener("click", () => {
+      fillMailRuleForm(item);
+      setMailRuleEditorOpen(true);
+      setMailSettingsNote("Editing inbox rule.", "info");
+    });
+    actionsWrap.appendChild(edit);
+
+    const duplicate = document.createElement("button");
+    duplicate.type = "button";
+    duplicate.className = "cmd-btn cmd-btn--dense";
+    duplicate.textContent = "Duplicate";
+    duplicate.addEventListener("click", () => {
+      void duplicateMailRule(item);
+    });
+    actionsWrap.appendChild(duplicate);
+
+    const moveUp = document.createElement("button");
+    moveUp.type = "button";
+    moveUp.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    moveUp.textContent = "Move Up";
+    moveUp.disabled = index <= 0;
+    moveUp.addEventListener("click", () => {
+      void reorderMailRule(item.id, -1);
+    });
+    actionsWrap.appendChild(moveUp);
+
+    const moveDown = document.createElement("button");
+    moveDown.type = "button";
+    moveDown.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    moveDown.textContent = "Move Down";
+    moveDown.disabled = index < 0 || index >= items.length - 1;
+    moveDown.addEventListener("click", () => {
+      void reorderMailRule(item.id, 1);
+    });
+    actionsWrap.appendChild(moveDown);
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "cmd-btn cmd-btn--dense cmd-btn--danger";
+    remove.textContent = "Delete Rule";
+    remove.addEventListener("click", () => {
+      void deleteMailRule(item);
+    });
+    actionsWrap.appendChild(remove);
+
+    detail.appendChild(actionsWrap);
+  });
+}
+
 function renderMailRuleList() {
   if (!el.settingsMailRuleList) return;
   const items = Array.isArray(state.settings.mail.rules) ? [...state.settings.mail.rules] : [];
@@ -7187,6 +7336,7 @@ function renderMailRuleList() {
     empty.className = "settings-list-empty";
     empty.textContent = "No inbox rules yet.";
     el.settingsMailRuleList.appendChild(empty);
+    renderMailRuleDetail();
     return;
   }
   for (const item of items) {
@@ -7207,31 +7357,19 @@ function renderMailRuleList() {
     const main = document.createElement("button");
     main.type = "button";
     main.className = "rules-list-main";
-    main.innerHTML = `<strong>${escapeHtml(String(item.name || "Rule"))}</strong><span class="hint">${String(item.match_mode || "all").toUpperCase()} match</span>`;
+    const conditions = formatMailRuleConditionList(item);
+    const actions = formatMailRuleActionList(item);
+    main.innerHTML = `<strong>${escapeHtml(String(item.name || "Rule"))}</strong><span class="hint">${escapeHtml((conditions[0] || actions[0] || (String(item.match_mode || "all").trim() === "any" ? "Any condition" : "All conditions")))}</span>`;
     main.addEventListener("click", () => {
       state.settings.mail.selectedRuleID = String(item.id || "");
-      fillMailRuleForm(item);
+      setMailRuleEditorOpen(false);
       renderMailRuleList();
+      renderMailRuleDetail();
     });
     row.appendChild(main);
-
-    const actions = document.createElement("div");
-    actions.className = "rules-list-actions";
-    const makeBtn = (label, onClick, danger = false) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = `menu-action-btn${danger ? " menu-action-btn--danger" : ""}`;
-      btn.textContent = label;
-      btn.addEventListener("click", onClick);
-      return btn;
-    };
-    actions.appendChild(makeBtn("Up", () => void reorderMailRule(item.id, -1)));
-    actions.appendChild(makeBtn("Down", () => void reorderMailRule(item.id, 1)));
-    actions.appendChild(makeBtn("Duplicate", () => void duplicateMailRule(item)));
-    actions.appendChild(makeBtn("Delete", () => void deleteMailRule(item), true));
-    row.appendChild(actions);
     el.settingsMailRuleList.appendChild(row);
   }
+  renderMailRuleDetail();
 }
 
 function fillMailScriptEditor(script = null) {
@@ -7266,6 +7404,92 @@ function fillMailScriptEditor(script = null) {
   }
 }
 
+function renderMailScriptDetail() {
+  if (!el.settingsMailScriptDetail) return;
+  if (state.settings.mail.scriptEditorOpen) {
+    renderDetailView(el.settingsMailScriptDetail, null);
+    return;
+  }
+  const script = selectedMailSettingsScript();
+  if (!script) {
+    const canCreate = !!selectedMailRulesAccountID();
+    renderPlaceholderDetail(el.settingsMailScriptDetail, {
+      title: "Select a script",
+      body: "Choose a cached script to review it here, or create a new raw Sieve script for this account.",
+      actions: canCreate ? [{
+        label: "New Script",
+        className: "cmd-btn cmd-btn--dense",
+        onClick: () => {
+          void createMailRuleScript();
+        },
+      }] : [],
+    });
+    return;
+  }
+  renderDetailView(el.settingsMailScriptDetail, script, (detail, item) => {
+    const name = String(item?.script_name || item?.scriptName || "Script").trim() || "Script";
+    const managedName = String(state.settings.mail.managedScriptName || "").trim();
+    const isManaged = name === managedName;
+    const isActive = !!item?.is_active;
+    const body = String(item?.script_body || item?.scriptBody || "").trim();
+
+    const title = document.createElement("h4");
+    title.textContent = name;
+    detail.appendChild(title);
+
+    const intro = document.createElement("p");
+    intro.className = "hint";
+    intro.textContent = isManaged
+      ? "Despatch Rules is generated from the inbox rule builder and can be previewed here."
+      : (isActive ? "This custom script is currently active for the selected account." : "This custom script is saved for the selected account.");
+    detail.appendChild(intro);
+
+    appendDetailFact(detail, "Type", isManaged ? "Managed script" : "Custom script");
+    appendDetailFact(detail, "Status", isActive ? "Active" : "Inactive");
+    appendDetailFact(detail, "Preview", body ? `${body.split("\n").slice(0, 4).join(" ").slice(0, 180)}${body.length > 180 ? "…" : ""}` : "Empty script");
+
+    const actionsWrap = document.createElement("div");
+    actionsWrap.className = "settings-detail-actions";
+
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = isManaged ? "cmd-btn cmd-btn--dense" : "cmd-btn cmd-btn--dense cmd-btn--primary";
+    open.textContent = isManaged ? "Preview Script" : "Open Script";
+    open.addEventListener("click", () => {
+      state.settings.mail.selectedScriptName = name;
+      fillMailScriptEditor(item);
+      setMailScriptEditorOpen(true);
+      setMailSettingsNote(isManaged ? "Previewing managed script." : "Editing script.", "info");
+    });
+    actionsWrap.appendChild(open);
+
+    const activate = document.createElement("button");
+    activate.type = "button";
+    activate.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    activate.textContent = isManaged ? "Activate Despatch Rules" : "Activate";
+    activate.disabled = !!(isManaged && isActive);
+    activate.addEventListener("click", () => {
+      state.settings.mail.selectedScriptName = name;
+      void activateSelectedMailScript();
+    });
+    actionsWrap.appendChild(activate);
+
+    if (!isManaged) {
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "cmd-btn cmd-btn--dense cmd-btn--danger";
+      remove.textContent = "Delete Script";
+      remove.addEventListener("click", () => {
+        state.settings.mail.selectedScriptName = name;
+        void deleteSelectedMailScript();
+      });
+      actionsWrap.appendChild(remove);
+    }
+
+    detail.appendChild(actionsWrap);
+  });
+}
+
 function renderMailScriptList() {
   if (!el.settingsMailScriptList) return;
   const scripts = Array.isArray(state.settings.mail.ruleScripts) ? state.settings.mail.ruleScripts : [];
@@ -7276,6 +7500,7 @@ function renderMailScriptList() {
     empty.className = "settings-list-empty";
     empty.textContent = "No scripts cached for this account yet.";
     el.settingsMailScriptList.appendChild(empty);
+    renderMailScriptDetail();
     return;
   }
   for (const item of scripts) {
@@ -7289,12 +7514,14 @@ function renderMailScriptList() {
       meta: isManaged ? "Managed preview" : String(item?.source || "script"),
       onSelect: () => {
         state.settings.mail.selectedScriptName = name;
-        fillMailScriptEditor(item);
+        setMailScriptEditorOpen(false);
         renderMailScriptList();
+        renderMailScriptDetail();
       },
     });
     el.settingsMailScriptList.appendChild(row);
   }
+  renderMailScriptDetail();
 }
 
 async function loadMailRulesSection(accountID = "") {
@@ -7308,12 +7535,16 @@ async function loadMailRulesSection(accountID = "") {
     state.settings.mail.rulesJunkMailboxName = "";
     state.settings.mail.ruleScripts = [];
     state.settings.mail.selectedScriptName = "";
+    state.settings.mail.ruleEditorOpen = false;
+    state.settings.mail.scriptEditorOpen = false;
     renderMailRuleList();
     renderMailRulesJunkStatus();
     renderMailRulesWarning();
     renderMailScriptList();
     fillMailRuleForm(null);
     fillMailScriptEditor(null);
+    renderMailRuleDetail();
+    renderMailScriptDetail();
     return;
   }
   const [rulesPayload, scriptsPayload] = await Promise.all([
@@ -7340,9 +7571,15 @@ async function loadMailRulesSection(accountID = "") {
   renderMailRulesJunkStatus();
   renderMailRulesWarning();
   renderMailRuleList();
-  fillMailRuleForm(selectedMailSettingsRule());
+  if (state.settings.mail.ruleEditorOpen) {
+    fillMailRuleForm(selectedMailSettingsRule());
+  }
   renderMailScriptList();
-  fillMailScriptEditor(selectedMailSettingsScript());
+  if (state.settings.mail.scriptEditorOpen) {
+    fillMailScriptEditor(selectedMailSettingsScript());
+  }
+  renderMailRuleDetail();
+  renderMailScriptDetail();
 }
 
 function collectMailRuleFormPayload(existing = null) {
@@ -7398,6 +7635,9 @@ async function saveMailRule(existing = null, options = {}) {
       ? String(current.id || "")
       : String(state.settings.mail.rules[0]?.id || "");
   }
+  if (!options.preserveSelection) {
+    state.settings.mail.ruleEditorOpen = false;
+  }
   await loadMailRulesSection(accountID);
   setMailSettingsNote(isUpdate ? "Rule updated." : "Rule saved.", "ok");
 }
@@ -7421,6 +7661,7 @@ async function deleteMailRule(rule = null) {
   });
   state.settings.mail.selectedRuleID = "";
   state.settings.mail.rules = Array.isArray(response?.items) ? response.items : [];
+  state.settings.mail.ruleEditorOpen = false;
   await loadMailRulesSection(accountID);
   setMailSettingsNote("Rule deleted.", "ok");
 }
@@ -7441,6 +7682,7 @@ async function reorderMailRule(ruleID, delta) {
   });
   state.settings.mail.rules = Array.isArray(response?.items) ? response.items : [];
   state.settings.mail.selectedRuleID = String(ruleID || "");
+  state.settings.mail.ruleEditorOpen = false;
   await loadMailRulesSection(accountID);
 }
 
@@ -7459,6 +7701,7 @@ async function duplicateMailRule(rule) {
     },
     logErrors: false,
   });
+  state.settings.mail.ruleEditorOpen = false;
   await loadMailRulesSection(accountID);
   setMailSettingsNote("Rule duplicated.", "ok");
 }
@@ -7511,6 +7754,7 @@ async function createMailRuleScript() {
   state.settings.mail.selectedScriptName = scriptName;
   await loadMailRulesSection(accountID);
   fillMailScriptEditor(selectedMailSettingsScript());
+  setMailScriptEditorOpen(true);
   setMailSettingsNote("Script created.", "ok");
 }
 
@@ -7541,6 +7785,8 @@ async function saveSelectedMailScript() {
     logErrors: false,
   });
   await loadMailRulesSection(accountID);
+  fillMailScriptEditor(selectedMailSettingsScript());
+  setMailScriptEditorOpen(true);
   setMailSettingsNote("Script saved.", "ok");
 }
 
@@ -7561,6 +7807,7 @@ async function activateSelectedMailScript() {
     logErrors: false,
   });
   await loadMailRulesSection(accountID);
+  fillMailScriptEditor(selectedMailSettingsScript());
   setMailSettingsNote("Script activated.", "ok");
 }
 
@@ -7585,6 +7832,7 @@ async function deleteSelectedMailScript() {
     logErrors: false,
   });
   state.settings.mail.selectedScriptName = "";
+  state.settings.mail.scriptEditorOpen = false;
   await loadMailRulesSection(accountID);
   setMailSettingsNote("Script deleted.", "ok");
 }
@@ -7660,29 +7908,20 @@ function renderMailSettingsAccountDetail() {
   }
   const account = selectedMailSettingsAccount();
   if (!account) {
-    el.settingsMailAccountDetail.classList.remove("hidden");
-    el.settingsMailAccountDetail.replaceChildren();
-    const title = document.createElement("h4");
-    title.textContent = "Select an account";
-    el.settingsMailAccountDetail.appendChild(title);
-    const note = document.createElement("p");
-    note.className = "hint";
-    note.textContent = "Choose a delivery account to review its routing and sync details, or create a new one.";
-    el.settingsMailAccountDetail.appendChild(note);
-    const actions = document.createElement("div");
-    actions.className = "settings-detail-actions";
-    const create = document.createElement("button");
-    create.type = "button";
-    create.className = "cmd-btn cmd-btn--dense cmd-btn--primary";
-    create.textContent = "New Account";
-    create.onclick = () => {
-      state.settings.mail.selectedAccountID = "";
-      fillMailSettingsAccountForm(null);
-      setMailSettingsAccountEditorOpen(true);
-      setMailSettingsNote("Create a new mail account.", "info");
-    };
-    actions.appendChild(create);
-    el.settingsMailAccountDetail.appendChild(actions);
+    renderPlaceholderDetail(el.settingsMailAccountDetail, {
+      title: "Select an account",
+      body: "Choose a delivery account to review its routing and sync details, or create a new one.",
+      actions: [{
+        label: "New Account",
+        className: "cmd-btn cmd-btn--dense cmd-btn--primary",
+        onClick: () => {
+          state.settings.mail.selectedAccountID = "";
+          fillMailSettingsAccountForm(null);
+          setMailSettingsAccountEditorOpen(true);
+          setMailSettingsNote("Create a new mail account.", "info");
+        },
+      }],
+    });
     return;
   }
   renderDetailView(el.settingsMailAccountDetail, account, (detail, item) => {
@@ -7722,30 +7961,24 @@ function renderMailSettingsSenderDetail() {
   }
   const sender = selectedMailSettingsSender();
   if (!sender) {
-    el.settingsMailSenderDetail.classList.remove("hidden");
-    el.settingsMailSenderDetail.replaceChildren();
-    const title = document.createElement("h4");
-    title.textContent = "Select a sender";
-    el.settingsMailSenderDetail.appendChild(title);
-    const note = document.createElement("p");
-    note.className = "hint";
-    note.textContent = "Choose a sender to review the visible sender address, Reply-To, signature, and send-via account.";
-    el.settingsMailSenderDetail.appendChild(note);
-    const actions = document.createElement("div");
-    actions.className = "settings-detail-actions";
-    const create = document.createElement("button");
-    create.type = "button";
-    create.className = "cmd-btn cmd-btn--dense cmd-btn--primary";
-    create.textContent = "New Sender";
-    create.disabled = !Array.isArray(state.settings.mail.accounts) || state.settings.mail.accounts.length === 0;
-    create.onclick = () => {
-      state.settings.mail.selectedSenderID = "";
-      fillMailSettingsSenderForm(null);
-      setMailSettingsSenderEditorOpen(true);
-      setMailSettingsNote("Create a new sender.", "info");
-    };
-    actions.appendChild(create);
-    el.settingsMailSenderDetail.appendChild(actions);
+    renderPlaceholderDetail(el.settingsMailSenderDetail, {
+      title: "Select a sender",
+      body: "Choose a sender to review the visible sender address, Reply-To, signature, and send-via account.",
+      actions: [{
+        label: "New Sender",
+        className: "cmd-btn cmd-btn--dense cmd-btn--primary",
+        onClick: () => {
+          state.settings.mail.selectedSenderID = "";
+          fillMailSettingsSenderForm(null);
+          setMailSettingsSenderEditorOpen(true);
+          setMailSettingsNote("Create a new sender.", "info");
+        },
+      }],
+    });
+    const button = el.settingsMailSenderDetail.querySelector("button");
+    if (button) {
+      button.disabled = !Array.isArray(state.settings.mail.accounts) || state.settings.mail.accounts.length === 0;
+    }
     return;
   }
   renderDetailView(el.settingsMailSenderDetail, sender, (detail, item) => {
@@ -7796,14 +8029,19 @@ function renderMailSettingsAccountList() {
   }
   for (const item of items) {
     const accountID = String(item.id || "");
+    const meta = [];
+    if (String(item.login || "").trim()) meta.push(String(item.login || "").trim());
+    if (String(item.last_error || "").trim()) meta.push("Needs attention");
+    else {
+      const freshness = formatMailIndexFreshness(item.last_sync_at);
+      if (freshness) meta.push(freshness);
+    }
     const row = renderListItem({
       active: accountID === state.settings.mail.selectedAccountID,
       markerClass: item.is_default ? "status-chip status-chip--ok" : "status-chip status-chip--info",
       markerText: item.is_default ? "Default" : "Account",
       title: String(item.display_name || item.displayName || item.login || "Mail account"),
-      meta: [String(item.login || "").trim(), String(item.last_error || "").trim() ? "Needs attention" : formatMailIndexFreshness(item.last_sync_at)]
-        .filter(Boolean)
-        .join(" • "),
+      meta: meta.join(" • "),
       onSelect: () => {
         state.settings.mail.selectedAccountID = accountID;
         state.settings.mail.accountEditorOpen = false;
@@ -7833,14 +8071,14 @@ function renderMailSettingsSenderList() {
     const isBuiltIn = !!(item.is_primary || item.kind === "primary");
     const meta = [];
     if (String(item.from_email || "").trim()) meta.push(String(item.from_email || "").trim());
-    if (String(item.account_label || "").trim()) meta.push(String(item.account_label || "").trim());
+    if (String(item.account_label || "").trim()) meta.push(`Sends via ${String(item.account_label || "").trim()}`);
     if (String(item.status || "").trim() && String(item.status || "").trim() !== "ok") meta.push("Needs attention");
     const row = renderListItem({
       active: senderID === state.settings.mail.selectedSenderID,
       markerClass: item.is_default ? "status-chip status-chip--ok" : "status-chip status-chip--info",
       markerText: isBuiltIn ? "Built-in" : item.is_default ? "Default" : "Sender",
       title: String(item.name || item.display_name || item.from_email || "Sender").trim(),
-      meta: meta.join(" | "),
+      meta: meta.join(" • "),
       onSelect: () => {
         state.settings.mail.selectedSenderID = senderID;
         if (String(item.account_id || "").trim()) {
@@ -8398,17 +8636,10 @@ function renderPasskeyCredentials(items) {
       markerText: "Passkey",
       title: String(item.name || "Passkey"),
       meta: `Created ${formatDateTimeOrNA(item.created_at)} • Last used ${formatDateTimeOrNA(item.last_used_at)}`,
-      actionText: "View",
       onSelect: () => {
         state.settings.passkeys.detailId = passkeyID;
-        state.ui.settingsNav.page = "list";
-        state.ui.settingsNav.detailId = passkeyID;
-        renderPasskeyCredentials(state.settings.passkeys.items);
-      },
-      onAction: () => {
-        state.settings.passkeys.detailId = passkeyID;
         state.ui.settingsNav.page = "detail";
-        state.ui.settingsNav.detailId = state.settings.passkeys.detailId;
+        state.ui.settingsNav.detailId = passkeyID;
         renderPasskeyCredentials(state.settings.passkeys.items);
       },
     });
@@ -14550,14 +14781,7 @@ async function loadAdminFeatureFlags() {
         markerText: item.enabled ? "ON" : "OFF",
         title: String(item.name || item.id || "Feature flag"),
         meta: `${String(item.category || "General")} • ${item.editable ? "Editable" : "Read-only"}`,
-        actionText: "View",
         onSelect: () => {
-          state.admin.featureFlags.detailId = String(item.id || "");
-          state.ui.adminNav.page = "list";
-          state.ui.adminNav.detailId = state.admin.featureFlags.detailId;
-          renderAdminFeatureFlagDetail();
-        },
-        onAction: () => {
           state.admin.featureFlags.detailId = String(item.id || "");
           state.ui.adminNav.page = "detail";
           state.ui.adminNav.detailId = state.admin.featureFlags.detailId;
@@ -15887,6 +16111,8 @@ function bindUI() {
       state.settings.mail.rulesAccountID = String(el.settingsMailRulesAccount.value || "").trim();
       state.settings.mail.selectedRuleID = "";
       state.settings.mail.selectedScriptName = "";
+      state.settings.mail.ruleEditorOpen = false;
+      state.settings.mail.scriptEditorOpen = false;
       try {
         await loadMailRulesSection(state.settings.mail.rulesAccountID);
       } catch (err) {
@@ -15916,6 +16142,7 @@ function bindUI() {
     el.btnSettingsMailRuleNew.addEventListener("click", () => {
       state.settings.mail.selectedRuleID = "";
       fillMailRuleForm(null);
+      setMailRuleEditorOpen(true);
       setMailSettingsNote("Create a new inbox rule.", "info");
     });
   }
@@ -15931,6 +16158,12 @@ function bindUI() {
       } catch (err) {
         setMailSettingsNote(formatAPIError(err, "Failed to save rule."), "error");
       }
+    });
+  }
+  if (el.btnSettingsMailRuleCancel) {
+    el.btnSettingsMailRuleCancel.addEventListener("click", () => {
+      setMailRuleEditorOpen(false);
+      renderMailRuleList();
     });
   }
   if (el.btnSettingsMailRuleDelete) {
@@ -15976,6 +16209,12 @@ function bindUI() {
       } catch (err) {
         setMailSettingsNote(formatAPIError(err, "Failed to activate script."), "error");
       }
+    });
+  }
+  if (el.btnSettingsMailScriptCancel) {
+    el.btnSettingsMailScriptCancel.addEventListener("click", () => {
+      setMailScriptEditorOpen(false);
+      renderMailScriptList();
     });
   }
   if (el.btnSettingsMailScriptDelete) {

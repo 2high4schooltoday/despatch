@@ -14,17 +14,19 @@
 <body>
   <div class="app-shell page-office" id="app-shell">
     <header class="topbar">
-        <div class="topbar-row">
+      <div class="topbar-row">
+        <div class="topbar-primary">
           <div class="topbar-branding">
             <div class="brand-mark" aria-hidden="true">Despatch</div>
             <h1 id="workspace-title" class="workspace-title">Account Access</h1>
           </div>
-        <nav class="tabs" aria-label="Primary">
-          <button id="tab-setup" class="tab" type="button">Setup</button>
-          <button id="tab-auth" class="tab active" type="button">Auth</button>
-          <button id="tab-mail" class="tab" type="button">Mail</button>
-          <button id="tab-contacts" class="tab" type="button">Contacts</button>
-        </nav>
+          <nav class="tabs" aria-label="Primary">
+            <button id="tab-setup" class="tab" type="button">Setup</button>
+            <button id="tab-auth" class="tab active" type="button">Auth</button>
+            <button id="tab-mail" class="tab" type="button">Mail</button>
+            <button id="tab-contacts" class="tab" type="button">Contacts</button>
+          </nav>
+        </div>
         <div class="topbar-tools">
           <button id="tab-settings" class="tab topbar-utility" type="button">Settings</button>
           <button id="tab-admin" class="tab topbar-utility" type="button">Admin</button>
@@ -335,74 +337,100 @@
                     </div>
                     <div id="settings-mail-rule-list" class="settings-list"></div>
                   </div>
-                  <form id="settings-mail-rule-form" class="mail-settings-form mail-settings-form--rules" novalidate>
-                    <div class="mail-settings-form-grid mail-settings-form-grid--rules">
-                      <label class="mail-settings-field">
-                        <span>Rule Name</span>
-                        <input id="settings-mail-rule-name" type="text" autocomplete="off" placeholder="Move invoices to Finance">
-                      </label>
-                      <label class="mail-settings-field mail-settings-field--toggle">
-                        <span>Enabled</span>
-                        <input id="settings-mail-rule-enabled" type="checkbox" checked>
-                      </label>
-                      <label class="mail-settings-field">
-                        <span>Match</span>
-                        <select id="settings-mail-rule-match-mode" autocomplete="off">
-                          <option value="all">All conditions</option>
-                          <option value="any">Any condition</option>
-                        </select>
-                      </label>
-                      <label class="mail-settings-field">
-                        <span>From Contains</span>
-                        <input id="settings-mail-rule-from-contains" type="text" autocomplete="off" placeholder="billing@example.com">
-                      </label>
-                      <label class="mail-settings-field">
-                        <span>From Domain</span>
-                        <input id="settings-mail-rule-from-domain" type="text" autocomplete="off" placeholder="example.com">
-                      </label>
-                      <label class="mail-settings-field">
-                        <span>To Contains</span>
-                        <input id="settings-mail-rule-to-contains" type="text" autocomplete="off" placeholder="finance@">
-                      </label>
-                      <label class="mail-settings-field">
-                        <span>Subject Contains</span>
-                        <input id="settings-mail-rule-subject-contains" type="text" autocomplete="off" placeholder="Invoice">
-                      </label>
-                      <label class="mail-settings-field mail-settings-field--full">
-                        <span>Body Contains</span>
-                        <input id="settings-mail-rule-body-contains" type="text" autocomplete="off" placeholder="payment due">
-                      </label>
-                      <label class="mail-settings-field">
-                        <span>Move To</span>
-                        <select id="settings-mail-rule-move-destination" autocomplete="off">
-                          <option value="">Leave in place</option>
-                          <option value="role:junk">Junk</option>
-                          <option value="role:trash">Trash</option>
-                          <option value="mailbox">Mailbox…</option>
-                        </select>
-                      </label>
-                      <label class="mail-settings-field">
-                        <span>Mailbox</span>
-                        <select id="settings-mail-rule-move-mailbox" autocomplete="off"></select>
-                      </label>
-                      <label class="mail-settings-field mail-settings-field--toggle">
-                        <span>Mark Read</span>
-                        <input id="settings-mail-rule-mark-read" type="checkbox">
-                      </label>
-                      <label class="mail-settings-field">
-                        <span>Redirect</span>
-                        <input id="settings-mail-rule-redirect" type="email" autocomplete="off" placeholder="team@example.com">
-                      </label>
-                      <label class="mail-settings-field mail-settings-field--toggle">
-                        <span>Stop Processing</span>
-                        <input id="settings-mail-rule-stop" type="checkbox" checked>
-                      </label>
-                    </div>
-                    <div class="actions setting-actions">
-                      <button id="btn-settings-mail-rule-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Rule</button>
-                      <button id="btn-settings-mail-rule-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Rule</button>
-                    </div>
-                  </form>
+                  <div class="mail-settings-detail-shell mail-settings-detail-shell--rules">
+                    <article id="settings-mail-rule-detail" class="settings-detail hidden"></article>
+                    <form id="settings-mail-rule-form" class="mail-settings-form mail-settings-form--rules hidden" novalidate>
+                      <section class="mail-settings-form-section">
+                        <div class="mail-settings-form-section-head">
+                          <strong>Rule</strong>
+                          <p class="hint">Name, status, and match behavior.</p>
+                        </div>
+                        <div class="mail-settings-form-grid mail-settings-form-grid--rules-top">
+                          <label class="mail-settings-field">
+                            <span>Rule Name</span>
+                            <input id="settings-mail-rule-name" type="text" autocomplete="off" placeholder="Move invoices to Finance">
+                          </label>
+                          <label class="mail-settings-field mail-settings-field--toggle">
+                            <span>Enabled</span>
+                            <input id="settings-mail-rule-enabled" type="checkbox" checked>
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Match</span>
+                            <select id="settings-mail-rule-match-mode" autocomplete="off">
+                              <option value="all">All conditions</option>
+                              <option value="any">Any condition</option>
+                            </select>
+                          </label>
+                        </div>
+                      </section>
+                      <section class="mail-settings-form-section">
+                        <div class="mail-settings-form-section-head">
+                          <strong>Conditions</strong>
+                          <p class="hint">Mail must match these fields before the rule runs.</p>
+                        </div>
+                        <div class="mail-settings-form-grid mail-settings-form-grid--rules-conditions">
+                          <label class="mail-settings-field">
+                            <span>From Contains</span>
+                            <input id="settings-mail-rule-from-contains" type="text" autocomplete="off" placeholder="billing@example.com">
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>From Domain</span>
+                            <input id="settings-mail-rule-from-domain" type="text" autocomplete="off" placeholder="example.com">
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>To Contains</span>
+                            <input id="settings-mail-rule-to-contains" type="text" autocomplete="off" placeholder="finance@">
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Subject Contains</span>
+                            <input id="settings-mail-rule-subject-contains" type="text" autocomplete="off" placeholder="Invoice">
+                          </label>
+                          <label class="mail-settings-field mail-settings-field--full">
+                            <span>Body Contains</span>
+                            <input id="settings-mail-rule-body-contains" type="text" autocomplete="off" placeholder="payment due">
+                          </label>
+                        </div>
+                      </section>
+                      <section class="mail-settings-form-section">
+                        <div class="mail-settings-form-section-head">
+                          <strong>Actions</strong>
+                          <p class="hint">Choose what happens after a message matches.</p>
+                        </div>
+                        <div class="mail-settings-form-grid mail-settings-form-grid--rules-actions">
+                          <label class="mail-settings-field">
+                            <span>Move To</span>
+                            <select id="settings-mail-rule-move-destination" autocomplete="off">
+                              <option value="">Leave in place</option>
+                              <option value="role:junk">Junk</option>
+                              <option value="role:trash">Trash</option>
+                              <option value="mailbox">Mailbox…</option>
+                            </select>
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Mailbox</span>
+                            <select id="settings-mail-rule-move-mailbox" autocomplete="off"></select>
+                          </label>
+                          <label class="mail-settings-field mail-settings-field--toggle">
+                            <span>Mark Read</span>
+                            <input id="settings-mail-rule-mark-read" type="checkbox">
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Redirect</span>
+                            <input id="settings-mail-rule-redirect" type="email" autocomplete="off" placeholder="team@example.com">
+                          </label>
+                          <label class="mail-settings-field mail-settings-field--toggle">
+                            <span>Stop Processing</span>
+                            <input id="settings-mail-rule-stop" type="checkbox" checked>
+                          </label>
+                        </div>
+                      </section>
+                      <div class="actions setting-actions">
+                        <button id="btn-settings-mail-rule-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Rule</button>
+                        <button id="btn-settings-mail-rule-cancel" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Cancel</button>
+                        <button id="btn-settings-mail-rule-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Rule</button>
+                      </div>
+                    </form>
+                  </div>
                 </div>
                 <div class="mail-settings-columns mail-rules-columns">
                   <div class="mail-settings-column">
@@ -411,17 +439,23 @@
                     </div>
                     <div id="settings-mail-script-list" class="settings-list"></div>
                   </div>
-                  <div class="mail-settings-form mail-settings-form--scripts" id="settings-mail-script-panel">
-                    <div class="mail-rules-status-copy">
-                      <strong id="settings-mail-script-name">Script</strong>
-                      <p id="settings-mail-script-note" class="hint">Choose a script to preview or edit it.</p>
-                    </div>
-                    <textarea id="settings-mail-script-body" class="mail-script-editor" rows="14" spellcheck="false"></textarea>
-                    <div class="actions setting-actions">
-                      <button id="btn-settings-mail-script-validate" class="cmd-btn cmd-btn--dense" type="button">Validate</button>
-                      <button id="btn-settings-mail-script-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Script</button>
-                      <button id="btn-settings-mail-script-activate" class="cmd-btn cmd-btn--dense" type="button">Activate</button>
-                      <button id="btn-settings-mail-script-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Script</button>
+                  <div class="mail-settings-detail-shell mail-settings-detail-shell--scripts">
+                    <article id="settings-mail-script-detail" class="settings-detail hidden"></article>
+                    <div class="mail-settings-form mail-settings-form--scripts hidden" id="settings-mail-script-panel">
+                      <div class="mail-script-panel-head">
+                        <div class="mail-rules-status-copy">
+                          <strong id="settings-mail-script-name">Script</strong>
+                          <p id="settings-mail-script-note" class="hint">Choose a script to preview or edit it.</p>
+                        </div>
+                      </div>
+                      <textarea id="settings-mail-script-body" class="mail-script-editor" rows="14" spellcheck="false"></textarea>
+                      <div class="actions setting-actions">
+                        <button id="btn-settings-mail-script-validate" class="cmd-btn cmd-btn--dense" type="button">Validate</button>
+                        <button id="btn-settings-mail-script-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Script</button>
+                        <button id="btn-settings-mail-script-activate" class="cmd-btn cmd-btn--dense" type="button">Activate</button>
+                        <button id="btn-settings-mail-script-cancel" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Cancel</button>
+                        <button id="btn-settings-mail-script-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Script</button>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -696,13 +730,13 @@
       </section>
 
       <section id="view-mail" class="mail-workspace hidden">
-        <article class="panel workspace-header workspace-header--mail">
-          <div>
+        <article class="panel workspace-header workspace-header--mail page-head page-head--compact">
+          <div class="page-head-copy">
             <p class="workspace-kicker">Mail</p>
             <h2>Mailbox</h2>
-            <p class="hint">Read and act on mail with the message list and reader kept in balance.</p>
+            <p class="hint">Read, search, and act with the message list and reader kept visually dominant.</p>
           </div>
-          <div class="actions">
+          <div class="actions page-head-actions">
             <button id="mail-mobile-back" class="cmd-btn cmd-btn--dense mail-nav-back" type="button">Back</button>
           </div>
         </article>
@@ -722,35 +756,39 @@
             </div>
           </div>
           <div class="mail-toolbar-secondary">
-            <div class="mail-toolbar-cluster mail-toolbar-cluster--scope">
-              <label id="mail-account-switcher-wrap" class="mail-account-switcher hidden">
-                <span class="mail-account-switcher-label">Scope</span>
-                <select id="mail-account-switcher" aria-label="Select indexed mail account scope"></select>
-              </label>
-            </div>
-            <div class="mail-toolbar-cluster mail-toolbar-cluster--context">
-              <div id="mail-health-panel" class="mail-health-panel hidden" aria-label="Mail account health">
-                <button id="btn-mail-health-toggle" class="mail-health-toggle" type="button" aria-expanded="false" aria-controls="mail-health-body">
-                  <span class="mail-health-toggle-copy">
-                    <strong id="mail-index-status" class="mail-index-status">Live mailbox</strong>
-                    <span id="mail-health-toggle-summary" class="mail-health-toggle-summary">No accounts configured.</span>
-                  </span>
-                  <span id="mail-health-toggle-caret" class="mail-health-toggle-caret" aria-hidden="true">+</span>
-                </button>
-                <div id="mail-health-body" class="mail-health-body hidden">
-                  <div id="mail-health-summary-strip" class="mail-health-summary-strip hidden"></div>
-                  <div id="mail-health-list" class="mail-health-list"></div>
-                </div>
+            <div class="mail-toolbar-secondary-main">
+              <div class="mail-toolbar-cluster mail-toolbar-cluster--scope">
+                <label id="mail-account-switcher-wrap" class="mail-account-switcher hidden">
+                  <span class="mail-account-switcher-label">Scope</span>
+                  <select id="mail-account-switcher" aria-label="Select indexed mail account scope"></select>
+                </label>
               </div>
-              <details id="mail-view-menu" class="row-menu mail-view-menu">
-                <summary class="cmd-btn cmd-btn--dense cmd-btn--ghost">More</summary>
-                <div class="row-menu-body mail-view-menu-body">
-                  <button id="btn-mail-filters" class="menu-action-btn" type="button">Filters</button>
-                  <button id="btn-mail-shortcuts" class="menu-action-btn" type="button">Shortcuts</button>
-                  <button id="btn-mail-save-search" class="menu-action-btn" type="button">Save View</button>
-                  <button id="btn-mail-delete-search" class="menu-action-btn hidden" type="button">Delete View</button>
+            </div>
+            <div class="mail-toolbar-secondary-tools">
+              <div class="mail-toolbar-cluster mail-toolbar-cluster--context">
+                <div id="mail-health-panel" class="mail-health-panel hidden" aria-label="Mail account health">
+                  <button id="btn-mail-health-toggle" class="mail-health-toggle" type="button" aria-expanded="false" aria-controls="mail-health-body">
+                    <span class="mail-health-toggle-copy">
+                      <strong id="mail-index-status" class="mail-index-status">Live mailbox</strong>
+                      <span id="mail-health-toggle-summary" class="mail-health-toggle-summary">No accounts configured.</span>
+                    </span>
+                    <span id="mail-health-toggle-caret" class="mail-health-toggle-caret" aria-hidden="true">+</span>
+                  </button>
+                  <div id="mail-health-body" class="mail-health-body hidden">
+                    <div id="mail-health-summary-strip" class="mail-health-summary-strip hidden"></div>
+                    <div id="mail-health-list" class="mail-health-list"></div>
+                  </div>
                 </div>
-              </details>
+                <details id="mail-view-menu" class="row-menu mail-view-menu">
+                  <summary class="cmd-btn cmd-btn--dense cmd-btn--ghost">More</summary>
+                  <div class="row-menu-body mail-view-menu-body">
+                    <button id="btn-mail-filters" class="menu-action-btn" type="button">Filters</button>
+                    <button id="btn-mail-shortcuts" class="menu-action-btn" type="button">Shortcuts</button>
+                    <button id="btn-mail-save-search" class="menu-action-btn" type="button">Save View</button>
+                    <button id="btn-mail-delete-search" class="menu-action-btn hidden" type="button">Delete View</button>
+                  </div>
+                </details>
+              </div>
             </div>
           </div>
           <div id="mail-selection-bar" class="mail-selection-bar hidden" aria-label="Selected message actions">
@@ -870,18 +908,20 @@
               </div>
             </div>
             <div class="reader-view-controls" role="group" aria-label="Reader tools">
-              <span class="reader-view-label">View:</span>
-              <button id="btn-reader-view-html" class="cmd-btn cmd-btn--dense" type="button">HTML</button>
-              <button id="btn-reader-view-plain" class="cmd-btn cmd-btn--dense" type="button">Plain</button>
-              <details id="reader-inspect-menu" class="row-menu reader-inspect-menu">
-                <summary id="reader-inspect-summary" class="cmd-btn cmd-btn--dense cmd-btn--ghost reader-inspect-summary">Inspect</summary>
-                <div class="row-menu-body reader-inspect-menu-body">
-                  <button id="btn-reader-view-source" class="menu-action-btn reader-inspect-action" type="button">View Source</button>
-                  <button id="btn-reader-view-headers" class="menu-action-btn reader-inspect-action" type="button">View Headers</button>
-                  <button id="btn-reader-print" class="menu-action-btn reader-inspect-action" type="button">Print</button>
-                  <button id="btn-reader-download-eml" class="menu-action-btn reader-inspect-action" type="button">Download .eml</button>
-                </div>
-              </details>
+              <div class="reader-tools-main">
+                <span class="reader-view-label">View</span>
+                <button id="btn-reader-view-html" class="cmd-btn cmd-btn--dense" type="button">HTML</button>
+                <button id="btn-reader-view-plain" class="cmd-btn cmd-btn--dense" type="button">Plain</button>
+                <details id="reader-inspect-menu" class="row-menu reader-inspect-menu">
+                  <summary id="reader-inspect-summary" class="cmd-btn cmd-btn--dense cmd-btn--ghost reader-inspect-summary">Inspect</summary>
+                  <div class="row-menu-body reader-inspect-menu-body">
+                    <button id="btn-reader-view-source" class="menu-action-btn reader-inspect-action" type="button">View Source</button>
+                    <button id="btn-reader-view-headers" class="menu-action-btn reader-inspect-action" type="button">View Headers</button>
+                    <button id="btn-reader-print" class="menu-action-btn reader-inspect-action" type="button">Print</button>
+                    <button id="btn-reader-download-eml" class="menu-action-btn reader-inspect-action" type="button">Download .eml</button>
+                  </div>
+                </details>
+              </div>
               <div id="reader-action-controls" class="reader-action-controls" role="group" aria-label="Current message actions">
                 <button id="btn-reader-flag" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Flag</button>
                 <button id="btn-reader-mark-seen" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Mark Read</button>
@@ -917,17 +957,19 @@
             <section id="contacts-section-people" class="panel contacts-section">
               <header class="settings-page-head">
                 <h3>People</h3>
-                <p class="hint">Names, addresses, and compose hints.</p>
+                <p class="hint">Names, addresses, and compose defaults.</p>
               </header>
               <div class="contacts-workbench">
-                <div class="contacts-column">
-                  <div class="contacts-actions">
+                <div class="contacts-column contacts-column--list">
+                  <div class="contacts-list-toolbar">
                     <input id="contacts-people-search" type="text" placeholder="Search people">
-                    <button id="btn-contact-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Contact</button>
-                    <button id="btn-contacts-import" class="cmd-btn cmd-btn--dense" type="button">Import</button>
-                    <button id="btn-contacts-export-csv" class="cmd-btn cmd-btn--dense" type="button">Export CSV</button>
-                    <button id="btn-contacts-export-vcf" class="cmd-btn cmd-btn--dense" type="button">Export VCF</button>
-                    <input id="contacts-import-input" class="hidden" type="file" accept=".csv,.vcf,text/csv,text/vcard">
+                    <div class="contacts-list-actions">
+                      <button id="btn-contact-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Contact</button>
+                      <button id="btn-contacts-import" class="cmd-btn cmd-btn--dense" type="button">Import</button>
+                      <button id="btn-contacts-export-csv" class="cmd-btn cmd-btn--dense" type="button">Export CSV</button>
+                      <button id="btn-contacts-export-vcf" class="cmd-btn cmd-btn--dense" type="button">Export VCF</button>
+                      <input id="contacts-import-input" class="hidden" type="file" accept=".csv,.vcf,text/csv,text/vcard">
+                    </div>
                   </div>
                   <div id="contacts-people-list" class="settings-list"></div>
                 </div>
@@ -992,10 +1034,12 @@
                 <p class="hint">Reusable recipient lists for compose.</p>
               </header>
               <div class="contacts-workbench">
-                <div class="contacts-column">
-                  <div class="contacts-actions">
+                <div class="contacts-column contacts-column--list">
+                  <div class="contacts-list-toolbar">
                     <input id="contacts-groups-search" type="text" placeholder="Search groups">
-                    <button id="btn-contact-group-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Group</button>
+                    <div class="contacts-list-actions">
+                      <button id="btn-contact-group-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Group</button>
+                    </div>
                   </div>
                   <div id="contacts-groups-list" class="settings-list"></div>
                 </div>
