@@ -21,15 +21,15 @@
             <h1 id="workspace-title" class="workspace-title">Account Access</h1>
           </div>
           <nav class="tabs" aria-label="Primary">
-            <button id="tab-setup" class="tab" type="button">Setup</button>
-            <button id="tab-auth" class="tab active" type="button">Auth</button>
-            <button id="tab-mail" class="tab" type="button">Mail</button>
-            <button id="tab-contacts" class="tab" type="button">Contacts</button>
+            <button id="tab-setup" class="tab" type="button" aria-controls="view-setup">Setup</button>
+            <button id="tab-auth" class="tab active" type="button" aria-controls="view-auth" aria-current="page">Auth</button>
+            <button id="tab-mail" class="tab" type="button" aria-controls="view-mail">Mail</button>
+            <button id="tab-contacts" class="tab" type="button" aria-controls="view-contacts">Contacts</button>
           </nav>
         </div>
         <div class="topbar-tools">
-          <button id="tab-settings" class="tab topbar-utility" type="button">Settings</button>
-          <button id="tab-admin" class="tab topbar-utility" type="button">Admin</button>
+          <button id="tab-settings" class="tab topbar-utility" type="button" aria-controls="view-settings">Settings</button>
+          <button id="tab-admin" class="tab topbar-utility" type="button" aria-controls="view-admin">Admin</button>
           <div class="notification-shell">
             <button
               id="btn-notification-center"
@@ -158,17 +158,20 @@
 
       <section id="view-settings" class="settings-shell hidden">
         <div class="settings-layout">
-          <aside class="panel settings-nav">
+          <aside class="panel settings-nav" aria-label="Settings sections">
             <h2>Settings</h2>
             <label class="settings-search">
               <span class="hint">Search</span>
-              <input id="settings-search-input" type="text" placeholder="Find settings">
+              <span class="search-field-shell search-field-shell--sidebar">
+                <input id="settings-search-input" type="search" placeholder="Find settings" aria-label="Find settings">
+                <button id="btn-settings-search-clear" class="search-clear-btn hidden" type="button" aria-label="Clear settings search">Clear</button>
+              </span>
             </label>
             <div id="settings-search-results" class="settings-search-results hidden"></div>
-            <button id="settings-nav-signin" class="settings-nav-btn is-active" type="button">Sign-In</button>
-            <button id="settings-nav-mail" class="settings-nav-btn" type="button">Mail</button>
-            <button id="settings-nav-devices" class="settings-nav-btn" type="button">Devices</button>
-            <button id="settings-nav-sessions" class="settings-nav-btn" type="button">Sessions</button>
+            <button id="settings-nav-signin" class="settings-nav-btn is-active" type="button" aria-controls="settings-section-signin" aria-current="page">Sign-In</button>
+            <button id="settings-nav-mail" class="settings-nav-btn" type="button" aria-controls="settings-section-mail">Mail</button>
+            <button id="settings-nav-devices" class="settings-nav-btn" type="button" aria-controls="settings-section-devices">Devices</button>
+            <button id="settings-nav-sessions" class="settings-nav-btn" type="button" aria-controls="settings-section-sessions">Sessions</button>
           </aside>
 
           <div class="settings-main">
@@ -329,6 +332,41 @@
                         <button id="btn-settings-mail-identity-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Sender</button>
                       </div>
                     </form>
+                  </div>
+                </div>
+              </section>
+
+              <section class="setting-section">
+                <header class="setting-section-head">
+                  <h4>Triage</h4>
+                  <p class="hint">Manage categories and tags used for conversation triage.</p>
+                </header>
+                <div class="mail-settings-columns">
+                  <div class="mail-settings-column">
+                    <div class="mail-settings-form-section">
+                      <div class="mail-settings-form-section-head">
+                        <strong>Categories</strong>
+                        <p class="hint">Each conversation can carry one optional category.</p>
+                      </div>
+                      <div class="actions setting-actions">
+                        <button id="btn-settings-mail-triage-category-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Category</button>
+                        <button id="btn-settings-mail-triage-category-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Selected</button>
+                      </div>
+                      <div id="settings-mail-triage-category-list" class="settings-list"></div>
+                    </div>
+                  </div>
+                  <div class="mail-settings-column">
+                    <div class="mail-settings-form-section">
+                      <div class="mail-settings-form-section-head">
+                        <strong>Tags</strong>
+                        <p class="hint">Tags can be added or removed without replacing the rest.</p>
+                      </div>
+                      <div class="actions setting-actions">
+                        <button id="btn-settings-mail-triage-tag-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Tag</button>
+                        <button id="btn-settings-mail-triage-tag-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Selected</button>
+                      </div>
+                      <div id="settings-mail-triage-tag-list" class="settings-list"></div>
+                    </div>
                   </div>
                 </div>
               </section>
@@ -777,8 +815,11 @@
               <button id="btn-forward" class="cmd-btn cmd-btn--dense" type="button">Forward</button>
             </div>
             <div class="mail-toolbar-cluster mail-toolbar-cluster--search">
-              <div class="mail-filter-basic">
-                <input id="search-input" type="text" placeholder="Search subject, body, sender">
+              <div class="mail-filter-basic" role="search" aria-label="Search messages">
+                <div class="search-field-shell search-field-shell--mail">
+                  <input id="search-input" type="search" placeholder="Search subject, body, sender" aria-label="Search messages">
+                  <button id="btn-search-clear" class="search-clear-btn hidden" type="button" aria-label="Clear mail search">Clear</button>
+                </div>
                 <button id="btn-search" class="cmd-btn cmd-btn--dense" type="button">Search</button>
               </div>
             </div>
@@ -822,10 +863,43 @@
           <div id="mail-selection-bar" class="mail-selection-bar hidden" aria-label="Selected message actions">
             <div id="mail-selection-tools" class="mail-commandbar-group mail-commandbar-group--selection" role="status" aria-live="polite">
               <span id="mail-selection-count" class="mail-selection-count">0 selected</span>
+              <div id="mail-selection-triage" class="mail-triage-inline hidden"></div>
             </div>
             <div class="mail-commandbar-group" role="group" aria-label="Message state actions">
               <button id="btn-flag" class="cmd-btn cmd-btn--dense" type="button">Flag</button>
               <button id="btn-mark-seen" class="cmd-btn cmd-btn--dense" type="button">Mark Read</button>
+              <details class="row-menu mail-triage-menu" data-triage-menu="snooze">
+                <summary class="cmd-btn cmd-btn--dense cmd-btn--ghost">Snooze</summary>
+                <div class="row-menu-body mail-triage-menu-body">
+                  <button class="menu-action-btn" type="button" data-triage-command="snooze-preset" data-triage-preset="later_today">Later Today</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="snooze-preset" data-triage-preset="tomorrow">Tomorrow</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="snooze-preset" data-triage-preset="weekend">This Weekend</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="snooze-preset" data-triage-preset="next_week">Next Week</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="snooze-custom">Pick Date &amp; Time…</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="clear-snooze">Clear Snooze</button>
+                </div>
+              </details>
+              <details class="row-menu mail-triage-menu" data-triage-menu="remind">
+                <summary class="cmd-btn cmd-btn--dense cmd-btn--ghost">Remind</summary>
+                <div class="row-menu-body mail-triage-menu-body">
+                  <button class="menu-action-btn" type="button" data-triage-command="remind-preset" data-triage-preset="later_today">Later Today</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="remind-preset" data-triage-preset="tomorrow">Tomorrow</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="remind-preset" data-triage-preset="weekend">This Weekend</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="remind-preset" data-triage-preset="next_week">Next Week</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="remind-custom">Pick Date &amp; Time…</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="clear-reminder">Clear Reminder</button>
+                </div>
+              </details>
+              <details class="row-menu mail-triage-menu" data-triage-menu="labels">
+                <summary class="cmd-btn cmd-btn--dense cmd-btn--ghost">Labels</summary>
+                <div class="row-menu-body mail-triage-menu-body">
+                  <button class="menu-action-btn" type="button" data-triage-command="set-category">Set Category…</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="clear-category">Clear Category</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="add-tags">Add Tags…</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="remove-tags">Remove Tags…</button>
+                  <button class="menu-action-btn" type="button" data-triage-command="clear-tags">Clear Tags</button>
+                </div>
+              </details>
               <button id="btn-archive" class="cmd-btn cmd-btn--dense" type="button">Archive</button>
               <button id="btn-spam" class="cmd-btn cmd-btn--dense" type="button">Spam</button>
               <button id="btn-not-spam" class="cmd-btn cmd-btn--dense" type="button">Not Spam</button>
@@ -842,6 +916,28 @@
             </div>
           </div>
           <div id="mail-filter-advanced" class="mail-filter-panel hidden">
+            <div class="mail-filter-triage-card">
+              <div class="mail-filter-row-head">
+                <span class="mail-filter-row-label">Triage</span>
+              </div>
+              <div class="mail-filter-toggle-row" role="group" aria-label="Conversation triage filters">
+                <button id="btn-mail-filter-follow-up" class="chip chip-btn" type="button" aria-pressed="false">Follow Up</button>
+                <button id="btn-mail-filter-snoozed" class="chip chip-btn" type="button" aria-pressed="false">Snoozed</button>
+              </div>
+              <div class="mail-filter-grid mail-filter-grid--triage">
+                <label class="mail-filter-field">
+                  <span>Category</span>
+                  <select id="mail-filter-category">
+                    <option value="">Any category</option>
+                  </select>
+                </label>
+                <label class="mail-filter-field">
+                  <span>Tags</span>
+                  <input id="mail-filter-tags" type="text" placeholder="billing, urgent">
+                </label>
+              </div>
+            </div>
+            <div id="mail-filter-content-section" class="mail-filter-content-section">
             <div class="mail-filter-grid">
               <label class="mail-filter-field">
                 <span>From</span>
@@ -873,7 +969,8 @@
               <span class="mail-filter-row-label">Accounts</span>
               <div id="mail-filter-account-chips" class="mail-filter-chip-list"></div>
             </div>
-            <p id="mail-filter-live-hint" class="hint mail-filter-live-hint hidden">Advanced filters require indexed mail.</p>
+            </div>
+            <p id="mail-filter-live-hint" class="hint mail-filter-live-hint hidden">Content filters like sender, subject, and attachments require indexed mail. Triage filters stay available here.</p>
           </div>
           <div id="mail-filter-active-row" class="mail-filter-active-row hidden">
             <div id="mail-filter-active-chips" class="mail-filter-chip-list"></div>
@@ -917,12 +1014,14 @@
             <div class="reader-header">
               <h4 id="message-subject-anchor" class="reader-subject">(no subject)</h4>
               <div id="message-meta" class="meta"></div>
+              <div id="reader-triage-chips" class="mail-triage-inline hidden"></div>
             </div>
             <div id="thread-strip" class="thread-strip hidden">
               <div class="thread-context">
                 <div class="thread-summary">
                   <span id="thread-position" class="thread-position">Conversation: -</span>
                   <span id="thread-selection-status" class="thread-selection-status hidden"></span>
+                  <div id="thread-triage-chips" class="mail-triage-inline hidden"></div>
                 </div>
                 <div class="thread-actions">
                   <span id="thread-truncated" class="thread-badge hidden">Partial</span>
@@ -937,7 +1036,7 @@
             </div>
             <div class="reader-view-controls" role="group" aria-label="Reader tools">
               <div class="reader-tools-main">
-                <span class="reader-view-label">View</span>
+                <span class="reader-view-label">View:</span>
                 <button id="btn-reader-view-html" class="cmd-btn cmd-btn--dense" type="button">HTML</button>
                 <button id="btn-reader-view-plain" class="cmd-btn cmd-btn--dense" type="button">Plain</button>
                 <details id="reader-inspect-menu" class="row-menu reader-inspect-menu">
@@ -953,6 +1052,38 @@
               <div id="reader-action-controls" class="reader-action-controls" role="group" aria-label="Current message actions">
                 <button id="btn-reader-flag" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Flag</button>
                 <button id="btn-reader-mark-seen" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Mark Read</button>
+                <details class="row-menu mail-triage-menu" data-triage-menu="reader-snooze">
+                  <summary class="cmd-btn cmd-btn--dense cmd-btn--ghost">Snooze</summary>
+                  <div class="row-menu-body mail-triage-menu-body">
+                    <button class="menu-action-btn" type="button" data-triage-command="snooze-preset" data-triage-preset="later_today">Later Today</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="snooze-preset" data-triage-preset="tomorrow">Tomorrow</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="snooze-preset" data-triage-preset="weekend">This Weekend</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="snooze-preset" data-triage-preset="next_week">Next Week</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="snooze-custom">Pick Date &amp; Time…</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="clear-snooze">Clear Snooze</button>
+                  </div>
+                </details>
+                <details class="row-menu mail-triage-menu" data-triage-menu="reader-remind">
+                  <summary class="cmd-btn cmd-btn--dense cmd-btn--ghost">Remind</summary>
+                  <div class="row-menu-body mail-triage-menu-body">
+                    <button class="menu-action-btn" type="button" data-triage-command="remind-preset" data-triage-preset="later_today">Later Today</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="remind-preset" data-triage-preset="tomorrow">Tomorrow</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="remind-preset" data-triage-preset="weekend">This Weekend</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="remind-preset" data-triage-preset="next_week">Next Week</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="remind-custom">Pick Date &amp; Time…</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="clear-reminder">Clear Reminder</button>
+                  </div>
+                </details>
+                <details class="row-menu mail-triage-menu" data-triage-menu="reader-labels">
+                  <summary class="cmd-btn cmd-btn--dense cmd-btn--ghost">Labels</summary>
+                  <div class="row-menu-body mail-triage-menu-body">
+                    <button class="menu-action-btn" type="button" data-triage-command="set-category">Set Category…</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="clear-category">Clear Category</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="add-tags">Add Tags…</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="remove-tags">Remove Tags…</button>
+                    <button class="menu-action-btn" type="button" data-triage-command="clear-tags">Clear Tags</button>
+                  </div>
+                </details>
                 <button id="btn-reader-archive" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Archive</button>
                 <button id="btn-reader-spam" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Spam</button>
                 <button id="btn-reader-not-spam" class="cmd-btn cmd-btn--dense cmd-btn--ghost hidden" type="button">Not Spam</button>
@@ -1105,17 +1236,20 @@
 
       <section id="view-admin" class="admin-shell hidden">
         <div class="admin-layout">
-          <aside class="panel admin-nav">
+          <aside class="panel admin-nav" aria-label="Admin sections">
             <h2>Admin</h2>
             <label class="settings-search">
               <span class="hint">Search</span>
-              <input id="admin-search-input" type="text" placeholder="Find admin settings">
+              <span class="search-field-shell search-field-shell--sidebar">
+                <input id="admin-search-input" type="search" placeholder="Find admin settings" aria-label="Find admin settings">
+                <button id="btn-admin-search-clear" class="search-clear-btn hidden" type="button" aria-label="Clear admin search">Clear</button>
+              </span>
             </label>
             <div id="admin-search-results" class="settings-search-results hidden"></div>
-            <button id="admin-nav-users" class="admin-nav-btn" type="button">Users</button>
-            <button id="admin-nav-registrations" class="admin-nav-btn" type="button">Registrations</button>
-            <button id="admin-nav-system" class="admin-nav-btn is-active" type="button">System <span id="admin-system-badge" class="admin-nav-badge hidden">1</span></button>
-            <button id="admin-nav-audit" class="admin-nav-btn" type="button">Audit Log</button>
+            <button id="admin-nav-users" class="admin-nav-btn" type="button" aria-controls="admin-section-users">Users</button>
+            <button id="admin-nav-registrations" class="admin-nav-btn" type="button" aria-controls="admin-section-registrations">Registrations</button>
+            <button id="admin-nav-system" class="admin-nav-btn is-active" type="button" aria-controls="admin-section-system" aria-current="page">System <span id="admin-system-badge" class="admin-nav-badge hidden">1</span></button>
+            <button id="admin-nav-audit" class="admin-nav-btn" type="button" aria-controls="admin-section-audit">Audit Log</button>
           </aside>
 
           <div class="admin-main">

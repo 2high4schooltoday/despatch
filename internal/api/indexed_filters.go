@@ -82,6 +82,7 @@ func applyLegacyIndexedViewFilter(view string, filter *models.IndexedMessageFilt
 	case "waiting":
 		filter.Waiting = true
 	}
+	applyTriageIndexedViewFilter(view, filter)
 }
 
 func resolveIndexedFilteredAccounts(accounts []models.MailAccount, filterAccountIDs []string) ([]models.MailAccount, error) {
@@ -114,6 +115,10 @@ func (h *Handlers) parseIndexedMessageFilter(ctx context.Context, u models.User,
 		Flagged:        queryBoolEnabled(r.URL.Query().Get("flagged")),
 		HasAttachments: queryBoolEnabled(r.URL.Query().Get("has_attachments")),
 		Waiting:        queryBoolEnabled(r.URL.Query().Get("waiting")),
+		Snoozed:        queryBoolEnabled(r.URL.Query().Get("snoozed")),
+		FollowUp:       queryBoolEnabled(r.URL.Query().Get("follow_up")),
+		CategoryID:     strings.TrimSpace(r.URL.Query().Get("category_id")),
+		TagIDs:         normalizeIndexedFilterTagIDs(r.URL.Query()["tag_id"]),
 		AccountIDs:     normalizeIndexedFilterAccountIDs(r.URL.Query()["filter_account_id"]),
 	}
 	applyLegacyIndexedViewFilter(r.URL.Query().Get("view"), &filter)
@@ -149,64 +154,7 @@ func (h *Handlers) queryIndexedMessages(
 	sortOrder string,
 	preferSearch bool,
 ) ([]models.IndexedMessage, int, error) {
-	accountIDs := indexedScopeAccountIDs(accounts)
-	if len(accountIDs) == 0 {
-		return []models.IndexedMessage{}, 0, nil
-	}
-	offset := (page - 1) * pageSize
-	useSearch := preferSearch || strings.TrimSpace(filter.Query) != ""
-	multiAccount := len(accountIDs) > 1
-	if filter.Waiting {
-		selfEmails := indexedAccountsSelfEmails(ctx, h, u, accounts)
-		sampleLimit := pageSize * page
-		if sampleLimit < 200 {
-			sampleLimit = 200
-		}
-		if sampleLimit > 600 {
-			sampleLimit = 600
-		}
-		candidateFilter := filter
-		candidateFilter.Waiting = false
-		var recent []models.IndexedMessage
-		var err error
-		switch {
-		case multiAccount && useSearch:
-			recent, _, err = h.svc.Store().SearchIndexedMessagesByAccounts(ctx, accountIDs, mailboxFilters, candidateFilter, sampleLimit, 0)
-		case multiAccount:
-			recent, _, err = h.svc.Store().ListIndexedMessagesByAccounts(ctx, accountIDs, mailboxFilters, candidateFilter, sortOrder, sampleLimit, 0)
-		case useSearch:
-			recent, _, err = h.svc.Store().SearchIndexedMessages(ctx, accountIDs[0], mailbox, candidateFilter, sampleLimit, 0)
-		default:
-			recent, _, err = h.svc.Store().ListIndexedMessages(ctx, accountIDs[0], mailbox, candidateFilter, sortOrder, sampleLimit, 0)
-		}
-		if err != nil {
-			return nil, 0, err
-		}
-		filtered := filterWaitingIndexedMessages(recent, selfEmails)
-		total := len(filtered)
-		if offset > total {
-			offset = total
-		}
-		end := offset + pageSize
-		if end > total {
-			end = total
-		}
-		if offset >= end {
-			return []models.IndexedMessage{}, total, nil
-		}
-		return append([]models.IndexedMessage(nil), filtered[offset:end]...), total, nil
-	}
-
-	switch {
-	case multiAccount && useSearch:
-		return h.svc.Store().SearchIndexedMessagesByAccounts(ctx, accountIDs, mailboxFilters, filter, pageSize, offset)
-	case multiAccount:
-		return h.svc.Store().ListIndexedMessagesByAccounts(ctx, accountIDs, mailboxFilters, filter, sortOrder, pageSize, offset)
-	case useSearch:
-		return h.svc.Store().SearchIndexedMessages(ctx, accountIDs[0], mailbox, filter, pageSize, offset)
-	default:
-		return h.svc.Store().ListIndexedMessages(ctx, accountIDs[0], mailbox, filter, sortOrder, pageSize, offset)
-	}
+	return h.queryIndexedMessagesWithTriage(ctx, u, accounts, mailbox, mailboxFilters, filter, page, pageSize, sortOrder, preferSearch)
 }
 
 func presentIndexedMessageSummaries(items []models.IndexedMessage) []mail.MessageSummary {

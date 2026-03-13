@@ -96,6 +96,8 @@ type IndexedMessage struct {
 	RemoteImagesAllowed bool      `json:"remote_images_allowed"`
 	DateHeader          time.Time `json:"date"`
 	InternalDate        time.Time `json:"internal_date"`
+	TriageKey           string    `json:"triage_key,omitempty"`
+	Triage              MailTriageState `json:"triage"`
 }
 
 type IndexedAttachment struct {
@@ -170,6 +172,10 @@ type IndexedMessageFilter struct {
 	Flagged        bool
 	HasAttachments bool
 	Waiting        bool
+	Snoozed        bool
+	FollowUp       bool
+	CategoryID     string
+	TagIDs         []string
 	AccountIDs     []string
 }
 

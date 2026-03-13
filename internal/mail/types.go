@@ -29,6 +29,8 @@ type MessageSummary struct {
 	Answered  bool      `json:"answered,omitempty"`
 	Preview   string    `json:"preview,omitempty"`
 	ThreadID  string    `json:"thread_id,omitempty"`
+	TriageKey string    `json:"triage_key,omitempty"`
+	Triage    TriageState `json:"triage"`
 }
 
 type AttachmentMeta struct {
@@ -45,6 +47,7 @@ type Message struct {
 	Mailbox     string           `json:"mailbox"`
 	Source      string           `json:"source,omitempty"`
 	UID         uint32           `json:"uid"`
+	ThreadID    string           `json:"thread_id,omitempty"`
 	From        string           `json:"from"`
 	To          []string         `json:"to"`
 	CC          []string         `json:"cc,omitempty"`
@@ -57,6 +60,8 @@ type Message struct {
 	Body        string           `json:"body"`
 	BodyHTML    string           `json:"body_html,omitempty"`
 	Attachments []AttachmentMeta `json:"attachments"`
+	TriageKey   string           `json:"triage_key,omitempty"`
+	Triage      TriageState      `json:"triage"`
 	MessageID   string           `json:"-"`
 	InReplyTo   string           `json:"-"`
 	References  []string         `json:"-"`

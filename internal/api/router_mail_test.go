@@ -231,6 +231,45 @@ func TestV1ListMessagesIncludesPreviewAndThreadID(t *testing.T) {
 	}
 }
 
+func TestV1ListMessagesDedupesDuplicateIDs(t *testing.T) {
+	router := newSendRouter(t, &mailRouterTestClient{
+		listByPage: map[int][]mail.MessageSummary{
+			1: {
+				{
+					ID:      "msg-1",
+					From:    "alice@example.com",
+					Subject: "Status Update",
+					Preview: "First copy should win.",
+				},
+				{
+					ID:      "msg-1",
+					From:    "alice@example.com",
+					Subject: "Duplicate should be dropped",
+					Preview: "Duplicate should be dropped.",
+				},
+			},
+		},
+	}, "")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+	rec := authedV1Get(t, router, "/api/v1/messages?mailbox=INBOX&page=1&page_size=25", sessionCookie, csrfCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Items []mail.MessageSummary `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode list messages: %v body=%s", err, rec.Body.String())
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("expected duplicate ids to collapse to 1 item, got %d", len(payload.Items))
+	}
+	if payload.Items[0].Preview != "First copy should win." {
+		t.Fatalf("expected first duplicate to be preserved, got %+v", payload.Items[0])
+	}
+}
+
 func TestV1SearchIncludesPreviewAndThreadID(t *testing.T) {
 	threadID := mail.DeriveThreadID("INBOX", "Roadmap", "bob@example.com")
 	router := newSendRouter(t, &mailRouterTestClient{
@@ -264,15 +303,26 @@ func TestV1SearchIncludesPreviewAndThreadID(t *testing.T) {
 
 func TestV1GetMessageIncludesLiveSource(t *testing.T) {
 	messageID := mail.EncodeMessageID("INBOX", 42)
+	threadID := mail.DeriveLiveThreadID(
+		"INBOX",
+		"<detail@example.com>",
+		"<parent@example.com>",
+		[]string{"<root@example.com>", "<parent@example.com>"},
+		"Detail",
+		"alice@example.com",
+	)
 	router := newSendRouter(t, &mailRouterTestClient{
 		messageByID: map[string]mail.Message{
 			messageID: {
-				ID:      messageID,
-				Mailbox: "INBOX",
-				From:    "alice@example.com",
-				To:      []string{"bob@example.com"},
-				Subject: "Detail",
-				Body:    "hello",
+				ID:         messageID,
+				Mailbox:    "INBOX",
+				From:       "alice@example.com",
+				To:         []string{"bob@example.com"},
+				Subject:    "Detail",
+				Body:       "hello",
+				MessageID:  "<detail@example.com>",
+				InReplyTo:  "<parent@example.com>",
+				References: []string{"<root@example.com>", "<parent@example.com>"},
 			},
 		},
 	}, "")
@@ -287,6 +337,73 @@ func TestV1GetMessageIncludesLiveSource(t *testing.T) {
 	}
 	if payload.Source != "live" {
 		t.Fatalf("expected source=live, got %+v", payload)
+	}
+	if payload.ThreadID != threadID {
+		t.Fatalf("expected thread_id %q, got %+v", threadID, payload)
+	}
+}
+
+func TestV1GetMessageThreadIDMatchesListSummary(t *testing.T) {
+	messageID := mail.EncodeMessageID("INBOX", 7)
+	threadID := mail.DeriveLiveThreadID(
+		"INBOX",
+		"<reply@example.com>",
+		"<parent@example.com>",
+		[]string{"<root@example.com>", "<parent@example.com>"},
+		"Re: Release Plan",
+		"alice@example.com",
+	)
+	router := newSendRouter(t, &mailRouterTestClient{
+		listByPage: map[int][]mail.MessageSummary{
+			1: {{
+				ID:       messageID,
+				Mailbox:  "INBOX",
+				From:     "alice@example.com",
+				Subject:  "Re: Release Plan",
+				Preview:  "Following up on the plan.",
+				ThreadID: threadID,
+			}},
+		},
+		messageByID: map[string]mail.Message{
+			messageID: {
+				ID:         messageID,
+				Mailbox:    "INBOX",
+				From:       "alice@example.com",
+				To:         []string{"bob@example.com"},
+				Subject:    "Re: Release Plan",
+				Body:       "Following up on the plan.",
+				MessageID:  "<reply@example.com>",
+				InReplyTo:  "<parent@example.com>",
+				References: []string{"<root@example.com>", "<parent@example.com>"},
+			},
+		},
+	}, "")
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	listRec := authedV1Get(t, router, "/api/v1/messages?mailbox=INBOX&page=1&page_size=25", sessionCookie, csrfCookie)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listPayload struct {
+		Items []mail.MessageSummary `json:"items"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode list payload: %v body=%s", err, listRec.Body.String())
+	}
+	if len(listPayload.Items) != 1 {
+		t.Fatalf("expected 1 list item, got %d", len(listPayload.Items))
+	}
+
+	detailRec := authedV1Get(t, router, "/api/v1/messages/"+url.PathEscape(messageID), sessionCookie, csrfCookie)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", detailRec.Code, detailRec.Body.String())
+	}
+	var detailPayload mail.Message
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &detailPayload); err != nil {
+		t.Fatalf("decode detail payload: %v body=%s", err, detailRec.Body.String())
+	}
+	if detailPayload.ThreadID != listPayload.Items[0].ThreadID {
+		t.Fatalf("expected detail thread_id %q to match list summary %q", detailPayload.ThreadID, listPayload.Items[0].ThreadID)
 	}
 }
 

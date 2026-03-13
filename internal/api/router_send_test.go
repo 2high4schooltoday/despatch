@@ -158,6 +158,7 @@ func newSendRouterWithStore(t *testing.T, despatch mail.Client, mailLogin string
 		filepath.Join("..", "..", "migrations", "006_users_recovery_email.sql"),
 		filepath.Join("..", "..", "migrations", "007_mail_accounts.sql"),
 		filepath.Join("..", "..", "migrations", "025_session_mail_profiles.sql"),
+		filepath.Join("..", "..", "migrations", "030_mail_triage.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)

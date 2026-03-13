@@ -133,6 +133,20 @@ func DeriveIndexedThreadID(messageID, inReplyTo string, references []string, sub
 	return DeriveThreadID("", subject, from)
 }
 
+func DeriveLiveThreadID(mailbox, messageID, inReplyTo string, references []string, subject, from string) string {
+	if NormalizeMessageIDHeader(messageID) == "" && NormalizeMessageIDHeader(inReplyTo) == "" && len(NormalizeMessageIDHeaders(references)) == 0 {
+		return DeriveThreadID(mailbox, subject, from)
+	}
+	return DeriveIndexedThreadID(messageID, inReplyTo, references, subject, from)
+}
+
+func PopulateLiveMessageThreadID(msg *Message) {
+	if msg == nil {
+		return
+	}
+	msg.ThreadID = DeriveLiveThreadID(msg.Mailbox, msg.MessageID, msg.InReplyTo, msg.References, msg.Subject, msg.From)
+}
+
 // BuildPreviewFromBodySample creates a compact, plain-text snippet from sampled
 // message body content.
 func BuildPreviewFromBodySample(sample string, max int) string {

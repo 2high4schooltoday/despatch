@@ -3,6 +3,7 @@ package mail
 import (
 	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,5 +80,159 @@ func TestParseRawMessageSeedsReferencesFromInReplyToWithoutCorruption(t *testing
 	expectedRefs := []string{"projects-parent@example.com"}
 	if !reflect.DeepEqual(msg.References, expectedRefs) {
 		t.Fatalf("expected references to be seeded from in-reply-to without corruption, got %#v", msg.References)
+	}
+}
+
+func TestParseRawMessageCarriesThreadIDMatchingLiveSummary(t *testing.T) {
+	threadHeaderSection := &imap.BodySectionName{
+		Peek: true,
+		BodyPartName: imap.BodyPartName{
+			Specifier: imap.HeaderSpecifier,
+			Fields:    []string{"Message-Id", "In-Reply-To", "References"},
+		},
+	}
+	threadHeaderBodyKey := &imap.BodySectionName{
+		BodyPartName: imap.BodyPartName{
+			Specifier: imap.HeaderSpecifier,
+			Fields:    []string{"Message-Id", "In-Reply-To", "References"},
+		},
+	}
+
+	tests := []struct {
+		name        string
+		subject     string
+		messageID   string
+		inReplyTo   string
+		references  []string
+		expectedRef []string
+	}{
+		{
+			name:        "root message id",
+			subject:     "Topic",
+			messageID:   "<root@example.com>",
+			expectedRef: nil,
+		},
+		{
+			name:        "reply in reply to",
+			subject:     "Re: Topic",
+			messageID:   "<reply-1@example.com>",
+			inReplyTo:   "<root@example.com>",
+			expectedRef: []string{"root@example.com"},
+		},
+		{
+			name:        "nested references",
+			subject:     "Re: Topic",
+			messageID:   "<reply-2@example.com>",
+			inReplyTo:   "<reply-1@example.com>",
+			references:  []string{"<root@example.com>", "<reply-1@example.com>"},
+			expectedRef: []string{"root@example.com", "reply-1@example.com"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lines := []string{
+				"From: Alice <alice@example.com>",
+				"To: Bob <bob@example.com>",
+				"Subject: " + tt.subject,
+				"Message-ID: " + tt.messageID,
+			}
+			headerLines := []string{
+				"Message-Id: " + tt.messageID,
+			}
+			if tt.inReplyTo != "" {
+				lines = append(lines, "In-Reply-To: "+tt.inReplyTo)
+				headerLines = append(headerLines, "In-Reply-To: "+tt.inReplyTo)
+			}
+			if len(tt.references) > 0 {
+				referencesLine := strings.Join(tt.references, " ")
+				lines = append(lines, "References: "+referencesLine)
+				headerLines = append(headerLines, "References: "+referencesLine)
+			}
+			lines = append(lines, "", "Body")
+			raw := []byte(strings.Join(lines, "\r\n"))
+
+			msg, err := ParseRawMessage(raw, "INBOX", 7)
+			if err != nil {
+				t.Fatalf("ParseRawMessage: %v", err)
+			}
+
+			summary := buildMessageSummary(&imap.Message{
+				Uid: 7,
+				Envelope: &imap.Envelope{
+					Subject:   tt.subject,
+					MessageId: tt.messageID,
+					InReplyTo: tt.inReplyTo,
+				},
+				Body: map[*imap.BodySectionName]imap.Literal{
+					threadHeaderBodyKey: bytes.NewReader([]byte(strings.Join(append(headerLines, "", ""), "\r\n"))),
+				},
+			}, "INBOX", "Alice <alice@example.com>", tt.subject, time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC), nil, threadHeaderSection)
+
+			if msg.ThreadID == "" {
+				t.Fatalf("expected parsed message thread id to be populated")
+			}
+			if msg.ThreadID != summary.ThreadID {
+				t.Fatalf("expected parsed thread id %q to match summary thread id %q", msg.ThreadID, summary.ThreadID)
+			}
+			if !reflect.DeepEqual(msg.References, tt.expectedRef) {
+				t.Fatalf("expected normalized references %#v, got %#v", tt.expectedRef, msg.References)
+			}
+		})
+	}
+}
+
+func TestMailboxPageUIDsDedupesAndKeepsNewestFirst(t *testing.T) {
+	got := mailboxPageUIDs([]uint32{7, 9, 8, 9, 6, 8, 5}, 1, 4)
+	want := []uint32{9, 8, 7, 6}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("expected first page UIDs %#v, got %#v", want, got)
+	}
+
+	secondPage := mailboxPageUIDs([]uint32{7, 9, 8, 9, 6, 8, 5}, 2, 2)
+	secondWant := []uint32{7, 6}
+	if !reflect.DeepEqual(secondPage, secondWant) {
+		t.Fatalf("expected second page UIDs %#v, got %#v", secondWant, secondPage)
+	}
+}
+
+func TestCollectedFetchedMessageSummariesCollapseDuplicateUIDs(t *testing.T) {
+	messages := make(chan *imap.Message, 3)
+	messages <- &imap.Message{
+		Uid: 9,
+		Envelope: &imap.Envelope{
+			Subject: "Newest copy",
+			Date:    time.Date(2026, 3, 11, 9, 0, 0, 0, time.UTC),
+		},
+		InternalDate: time.Date(2026, 3, 11, 9, 0, 0, 0, time.UTC),
+	}
+	messages <- &imap.Message{
+		Uid: 9,
+		Envelope: &imap.Envelope{
+			Subject: "Duplicate should be ignored",
+			Date:    time.Date(2026, 3, 11, 9, 1, 0, 0, time.UTC),
+		},
+		InternalDate: time.Date(2026, 3, 11, 9, 1, 0, 0, time.UTC),
+	}
+	messages <- &imap.Message{
+		Uid: 8,
+		Envelope: &imap.Envelope{
+			Subject: "Older copy",
+			Date:    time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC),
+		},
+		InternalDate: time.Date(2026, 3, 10, 9, 0, 0, 0, time.UTC),
+	}
+	close(messages)
+
+	msgByUID := collectFetchedMessageSummariesByUID(messages, "INBOX", nil, nil)
+	got := orderedMessageSummariesForUIDs([]uint32{9, 8, 9}, msgByUID)
+	if len(got) != 2 {
+		t.Fatalf("expected duplicate UID to collapse to 2 summaries, got %d", len(got))
+	}
+	if got[0].ID != EncodeMessageID("INBOX", 9) || got[1].ID != EncodeMessageID("INBOX", 8) {
+		t.Fatalf("expected newest-first UID order, got %#v", got)
+	}
+	if got[0].Subject != "Newest copy" {
+		t.Fatalf("expected first fetched UID copy to win, got %#v", got[0])
 	}
 }

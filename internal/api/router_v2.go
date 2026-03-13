@@ -1269,6 +1269,11 @@ func (h *Handlers) V2GetThread(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 500, "thread_get_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	items, err = decorateIndexedMessagesWithTriage(r.Context(), h, u.ID, items)
+	if err != nil {
+		util.WriteError(w, 500, "mail_triage_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
 	for i := range items {
 		items[i] = presentIndexedMessage(items[i])
 	}
@@ -1294,6 +1299,11 @@ func (h *Handlers) V2GetIndexedMessage(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		util.WriteError(w, 500, "message_get_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	msg, err = decorateIndexedMessageWithTriageStore(r.Context(), h, u.ID, msg)
+	if err != nil {
+		util.WriteError(w, 500, "mail_triage_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
 	attachments, _ := h.svc.Store().GetIndexedMessageAttachments(r.Context(), accountID, id)
@@ -1857,6 +1867,8 @@ func indexedMessageSummary(item models.IndexedMessage) mail.MessageSummary {
 		Answered:  item.Answered,
 		Preview:   item.Snippet,
 		ThreadID:  item.ThreadID,
+		TriageKey: item.TriageKey,
+		Triage:    modelTriageStateToMail(item.Triage),
 	}
 }
 
@@ -1897,6 +1909,9 @@ func presentIndexedMessage(item models.IndexedMessage) models.IndexedMessage {
 	item.Subject = mail.DecodeHeaderText(item.Subject)
 	item.ThreadID = ensureIndexedPresentedThreadID(item)
 	item.Snippet = mail.BestAvailablePreview(item.Snippet, item.BodyText, item.BodyHTMLSanitized, item.RawSource, mail.DefaultPreviewMaxChars)
+	if item.Triage.Tags == nil {
+		item.Triage = models.DefaultMailTriageState()
+	}
 	return item
 }
 

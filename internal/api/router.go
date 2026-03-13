@@ -285,6 +285,8 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Get("/messages/{id}", h.V2GetIndexedMessage)
 				r.Get("/messages/{id}/attachments/{attachment_id}", h.V2GetIndexedMessageAttachment)
 				r.Get("/messages/{id}/raw", h.V2GetIndexedMessageRaw)
+				r.Get("/mail-triage/catalog", h.V2ListMailTriageCatalog)
+				r.Get("/mail-triage/reminders/due", h.V2PollDueMailTriageReminders)
 				r.Get("/recipients/suggest", h.V2SuggestRecipients)
 				r.Get("/search", h.V2Search)
 				r.Get("/saved-searches", h.V2ListSavedSearches)
@@ -339,6 +341,13 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Delete("/mailboxes/{id}", h.V2DeleteMailboxMapping)
 
 					r.Post("/messages/bulk", h.V2BulkMessages)
+					r.Post("/mail-triage/actions", h.V2ApplyMailTriage)
+					r.Post("/mail-triage/categories", h.V2CreateMailTriageCategory)
+					r.Patch("/mail-triage/categories/{id}", h.V2UpdateMailTriageCategory)
+					r.Delete("/mail-triage/categories/{id}", h.V2DeleteMailTriageCategory)
+					r.Post("/mail-triage/tags", h.V2CreateMailTriageTag)
+					r.Patch("/mail-triage/tags/{id}", h.V2UpdateMailTriageTag)
+					r.Delete("/mail-triage/tags/{id}", h.V2DeleteMailTriageTag)
 					r.Post("/messages/{id}/remote-images/allow", h.V2AllowRemoteImages)
 					r.Post("/messages/{id}/crypto/decrypt", h.V2DecryptIndexedMessage)
 					r.Post("/messages/{id}/crypto/verify", h.V2VerifyIndexedMessage)
@@ -910,12 +919,12 @@ func (h *Handlers) ListMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	page, pageSize := parsePagination(r)
 	mailLogin := service.MailAuthLogin(u)
-	items, err := h.svc.Mail().ListMessages(r.Context(), mailLogin, pass, mbox, page, pageSize)
+	filter := parseMailTriageOnlyFilter(r)
+	items, err := h.listLiveMessagesWithTriage(r.Context(), u.ID, mailLogin, pass, mbox, "", page, pageSize, filter)
 	if err != nil {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	items = presentLiveMessageSummaries(items, mbox)
 	util.WriteJSON(w, 200, map[string]any{"page": page, "page_size": pageSize, "items": items})
 }
 
@@ -934,6 +943,11 @@ func (h *Handlers) GetMessage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	msg = presentLiveMessage(msg)
+	msg, err = decorateLiveMessageWithTriageStore(r.Context(), h, u.ID, msg)
+	if err != nil {
+		util.WriteError(w, 500, "mail_triage_failed", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
 	if strings.TrimSpace(msg.BodyHTML) != "" {
 		msg.BodyHTML = rewriteMessageHTML(id, msg.BodyHTML, msg.Attachments)
 	}
@@ -1134,6 +1148,11 @@ func (h *Handlers) ListThreadMessages(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
+		return
+	}
+	payload.Items, err = decorateLiveMessageSummariesWithTriage(r.Context(), h, u.ID, payload.Items)
+	if err != nil {
+		util.WriteError(w, 500, "mail_triage_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
 	util.WriteJSON(w, 200, map[string]any{
@@ -1478,12 +1497,12 @@ func (h *Handlers) Search(w http.ResponseWriter, r *http.Request) {
 	}
 	page, pageSize := parsePagination(r)
 	mailLogin := service.MailAuthLogin(u)
-	items, err := h.svc.Mail().Search(r.Context(), mailLogin, pass, mailbox, q, page, pageSize)
+	filter := parseMailTriageOnlyFilter(r)
+	items, err := h.listLiveMessagesWithTriage(r.Context(), u.ID, mailLogin, pass, mailbox, q, page, pageSize, filter)
 	if err != nil {
 		util.WriteError(w, 502, "imap_error", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	items = presentLiveMessageSummaries(items, mailbox)
 	util.WriteJSON(w, 200, map[string]any{"page": page, "page_size": pageSize, "items": items})
 }
 
@@ -1492,22 +1511,39 @@ func presentLiveMessageSummary(item mail.MessageSummary, mailbox string) mail.Me
 		item.Mailbox = strings.TrimSpace(mailbox)
 	}
 	if strings.TrimSpace(item.ThreadID) == "" {
-		item.ThreadID = mail.DeriveThreadID(item.Mailbox, item.Subject, item.From)
+		item.ThreadID = mail.DeriveLiveThreadID(item.Mailbox, "", "", nil, item.Subject, item.From)
 	}
 	item.Source = "live"
+	if item.Triage.Tags == nil {
+		item.Triage = mail.DefaultTriageState()
+	}
 	return item
 }
 
 func presentLiveMessageSummaries(items []mail.MessageSummary, mailbox string) []mail.MessageSummary {
+	seen := make(map[string]struct{}, len(items))
 	out := make([]mail.MessageSummary, 0, len(items))
 	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id != "" {
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+		}
 		out = append(out, presentLiveMessageSummary(item, mailbox))
 	}
 	return out
 }
 
 func presentLiveMessage(item mail.Message) mail.Message {
+	if strings.TrimSpace(item.ThreadID) == "" {
+		mail.PopulateLiveMessageThreadID(&item)
+	}
 	item.Source = "live"
+	if item.Triage.Tags == nil {
+		item.Triage = mail.DefaultTriageState()
+	}
 	return item
 }
 

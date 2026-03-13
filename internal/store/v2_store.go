@@ -1736,6 +1736,8 @@ func normalizeIndexedMessageFilter(in models.IndexedMessageFilter) models.Indexe
 	out.From = strings.TrimSpace(out.From)
 	out.To = strings.TrimSpace(out.To)
 	out.Subject = strings.TrimSpace(out.Subject)
+	out.CategoryID = strings.TrimSpace(out.CategoryID)
+	out.TagIDs = normalizeIndexedAccountIDs(out.TagIDs)
 	out.AccountIDs = normalizeIndexedAccountIDs(out.AccountIDs)
 	return out
 }

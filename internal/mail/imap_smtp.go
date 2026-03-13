@@ -207,66 +207,15 @@ func (c *IMAPSMTPClient) ListMessages(ctx context.Context, user, pass, mailbox s
 	if mbox.Messages == 0 {
 		return []MessageSummary{}, nil
 	}
-
-	total := int(mbox.Messages)
-	end := total - (page-1)*pageSize
-	if end < 1 {
-		return []MessageSummary{}, nil
-	}
-	start := end - pageSize + 1
-	if start < 1 {
-		start = 1
-	}
-
-	seq := new(imap.SeqSet)
-	seq.AddRange(uint32(start), uint32(end))
-	previewSection := &imap.BodySectionName{
-		Peek:    true,
-		Partial: []int{0, previewSampleBytes},
-	}
-	threadHeaderSection := &imap.BodySectionName{
-		Peek: true,
-		BodyPartName: imap.BodyPartName{
-			Specifier: imap.HeaderSpecifier,
-			Fields:    []string{"Message-Id", "In-Reply-To", "References"},
-		},
-	}
-	items := []imap.FetchItem{
-		imap.FetchEnvelope,
-		imap.FetchFlags,
-		imap.FetchUid,
-		imap.FetchInternalDate,
-		previewSection.FetchItem(),
-		threadHeaderSection.FetchItem(),
-	}
-	messages := make(chan *imap.Message, pageSize)
-	done := make(chan error, 1)
-	go func() {
-		done <- cli.Fetch(seq, items, messages)
-	}()
-
-	out := make([]MessageSummary, 0, pageSize)
-	for msg := range messages {
-		if msg == nil {
-			continue
-		}
-		from := envelopeFirstAddress(msg.Envelope.From)
-		subject := ""
-		date := msg.InternalDate
-		if msg.Envelope != nil {
-			subject = DecodeHeaderText(msg.Envelope.Subject)
-			if !msg.Envelope.Date.IsZero() {
-				date = msg.Envelope.Date
-			}
-		}
-		out = append(out, buildMessageSummary(msg, mailbox, from, subject, date, previewSection, threadHeaderSection))
-	}
-	if err := <-done; err != nil {
+	uids, err := cli.UidSearch(imap.NewSearchCriteria())
+	if err != nil {
 		return nil, err
 	}
-
-	sort.Slice(out, func(i, j int) bool { return out[i].Date.After(out[j].Date) })
-	return out, nil
+	selected := mailboxPageUIDs(uids, page, pageSize)
+	if len(selected) == 0 {
+		return []MessageSummary{}, nil
+	}
+	return fetchLiveMessageSummariesByUIDs(cli, mailbox, selected)
 }
 
 func (c *IMAPSMTPClient) GetMessage(ctx context.Context, user, pass, id string) (Message, error) {
@@ -294,6 +243,7 @@ func (c *IMAPSMTPClient) GetMessage(ctx context.Context, user, pass, id string) 
 	parsed.Seen = hasFlag(flags, imap.SeenFlag)
 	parsed.Flagged = hasFlag(flags, imap.FlaggedFlag)
 	parsed.Answered = hasFlag(flags, imap.AnsweredFlag)
+	PopulateLiveMessageThreadID(&parsed)
 	return parsed, nil
 }
 
@@ -336,21 +286,60 @@ func (c *IMAPSMTPClient) Search(ctx context.Context, user, pass, mailbox, query 
 	if err != nil {
 		return nil, err
 	}
-	if len(uids) == 0 {
+	selected := mailboxPageUIDs(uids, page, pageSize)
+	if len(selected) == 0 {
 		return []MessageSummary{}, nil
 	}
-	sort.Slice(uids, func(i, j int) bool { return uids[i] > uids[j] })
+	return fetchLiveMessageSummariesByUIDs(cli, mailbox, selected)
+}
 
+func mailboxPageUIDs(uids []uint32, page, pageSize int) []uint32 {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 25
+	}
+	ordered := uniqueUIDsDescending(uids)
+	if len(ordered) == 0 {
+		return nil
+	}
 	start := (page - 1) * pageSize
-	if start >= len(uids) {
-		return []MessageSummary{}, nil
+	if start >= len(ordered) {
+		return nil
 	}
 	end := start + pageSize
-	if end > len(uids) {
-		end = len(uids)
+	if end > len(ordered) {
+		end = len(ordered)
 	}
-	selected := uids[start:end]
+	return append([]uint32(nil), ordered[start:end]...)
+}
 
+func uniqueUIDsDescending(uids []uint32) []uint32 {
+	if len(uids) == 0 {
+		return nil
+	}
+	ordered := append([]uint32(nil), uids...)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i] > ordered[j] })
+	out := make([]uint32, 0, len(ordered))
+	var last uint32
+	for i, uid := range ordered {
+		if uid == 0 {
+			continue
+		}
+		if i > 0 && uid == last {
+			continue
+		}
+		out = append(out, uid)
+		last = uid
+	}
+	return out
+}
+
+func fetchLiveMessageSummariesByUIDs(cli *imapclient.Client, mailbox string, selected []uint32) ([]MessageSummary, error) {
+	if len(selected) == 0 {
+		return []MessageSummary{}, nil
+	}
 	seq := new(imap.SeqSet)
 	for _, u := range selected {
 		seq.AddNum(u)
@@ -380,9 +369,20 @@ func (c *IMAPSMTPClient) Search(ctx context.Context, user, pass, mailbox, query 
 		done <- cli.UidFetch(seq, items, messages)
 	}()
 
-	msgByUID := make(map[uint32]MessageSummary, len(selected))
+	msgByUID := collectFetchedMessageSummariesByUID(messages, mailbox, previewSection, threadHeaderSection)
+	if err := <-done; err != nil {
+		return nil, err
+	}
+	return orderedMessageSummariesForUIDs(selected, msgByUID), nil
+}
+
+func collectFetchedMessageSummariesByUID(messages <-chan *imap.Message, mailbox string, previewSection, threadHeaderSection *imap.BodySectionName) map[uint32]MessageSummary {
+	msgByUID := make(map[uint32]MessageSummary)
 	for msg := range messages {
-		if msg == nil {
+		if msg == nil || msg.Uid == 0 {
+			continue
+		}
+		if _, exists := msgByUID[msg.Uid]; exists {
 			continue
 		}
 		from := ""
@@ -397,17 +397,25 @@ func (c *IMAPSMTPClient) Search(ctx context.Context, user, pass, mailbox, query 
 		}
 		msgByUID[msg.Uid] = s
 	}
-	if err := <-done; err != nil {
-		return nil, err
-	}
+	return msgByUID
+}
 
+func orderedMessageSummariesForUIDs(selected []uint32, msgByUID map[uint32]MessageSummary) []MessageSummary {
 	out := make([]MessageSummary, 0, len(selected))
+	seen := make(map[uint32]struct{}, len(selected))
 	for _, uid := range selected {
-		if v, ok := msgByUID[uid]; ok {
-			out = append(out, v)
+		if uid == 0 {
+			continue
+		}
+		if _, exists := seen[uid]; exists {
+			continue
+		}
+		seen[uid] = struct{}{}
+		if summary, ok := msgByUID[uid]; ok {
+			out = append(out, summary)
 		}
 	}
-	return out, nil
+	return out
 }
 
 func (c *IMAPSMTPClient) Send(ctx context.Context, user, pass string, req SendRequest) (SendResult, error) {
@@ -1180,6 +1188,7 @@ func parseMessage(raw []byte, messageID, mailbox string, uid uint32) (Message, e
 	if msg.Body == "" && msg.BodyHTML != "" {
 		msg.Body = plainTextFromHTML(msg.BodyHTML)
 	}
+	PopulateLiveMessageThreadID(&msg)
 
 	return msg, nil
 }
@@ -1244,7 +1253,7 @@ func buildMessageSummary(msg *imap.Message, mailbox, from, subject string, date 
 			From:     from,
 			Subject:  subject,
 			Date:     date,
-			ThreadID: DeriveThreadID(mailbox, subject, from),
+			ThreadID: DeriveLiveThreadID(mailbox, "", "", nil, subject, from),
 		}
 	}
 	preview := ""
@@ -1273,7 +1282,7 @@ func buildMessageSummary(msg *imap.Message, mailbox, from, subject string, date 
 
 func deriveLiveThreadID(msg *imap.Message, mailbox, subject, from string, threadHeaderSection *imap.BodySectionName) string {
 	if msg == nil {
-		return DeriveThreadID(mailbox, subject, from)
+		return DeriveLiveThreadID(mailbox, "", "", nil, subject, from)
 	}
 	messageID := ""
 	inReplyTo := ""
@@ -1282,10 +1291,7 @@ func deriveLiveThreadID(msg *imap.Message, mailbox, subject, from string, thread
 		inReplyTo = msg.Envelope.InReplyTo
 	}
 	references := liveThreadReferences(msg, threadHeaderSection)
-	if strings.TrimSpace(messageID) == "" && strings.TrimSpace(inReplyTo) == "" && len(references) == 0 {
-		return DeriveThreadID(mailbox, subject, from)
-	}
-	return DeriveIndexedThreadID(messageID, inReplyTo, references, subject, from)
+	return DeriveLiveThreadID(mailbox, messageID, inReplyTo, references, subject, from)
 }
 
 func liveThreadReferences(msg *imap.Message, threadHeaderSection *imap.BodySectionName) []string {

@@ -12,6 +12,7 @@ function createThreadState(overrides = {}) {
 
 function createMailFilterState(overrides = {}) {
   const accountIDs = Array.isArray(overrides?.accountIDs) ? overrides.accountIDs : [];
+  const tagIDs = Array.isArray(overrides?.tagIDs || overrides?.tag_ids) ? (overrides.tagIDs || overrides.tag_ids) : [];
   return {
     query: "",
     from: "",
@@ -23,6 +24,10 @@ function createMailFilterState(overrides = {}) {
     flagged: false,
     hasAttachments: false,
     waiting: false,
+    snoozed: false,
+    followUp: false,
+    categoryID: "",
+    tagIDs: tagIDs.map((item) => String(item || "").trim()).filter(Boolean),
     accountIDs: accountIDs.map((item) => String(item || "").trim()).filter(Boolean),
     ...overrides,
   };
@@ -82,6 +87,11 @@ const state = {
     healthExpandedExplicit: false,
     healthPollTimer: 0,
     healthAutoQuotaRequested: {},
+    triageCatalog: {
+      categories: [],
+      tags: [],
+      loaded: false,
+    },
   },
   selectedMessage: null,
   selectedMessageSummary: null,
@@ -232,6 +242,10 @@ const state = {
       ruleScripts: [],
       selectedScriptName: "",
       scriptEditorOpen: false,
+      triageCategories: [],
+      triageTags: [],
+      selectedTriageCategoryID: "",
+      selectedTriageTagID: "",
     },
     devices: {
       items: [],
@@ -346,6 +360,7 @@ const el = {
   threadStrip: document.getElementById("thread-strip"),
   threadPosition: document.getElementById("thread-position"),
   threadSelectionStatus: document.getElementById("thread-selection-status"),
+  threadTriageChips: document.getElementById("thread-triage-chips"),
   threadTruncated: document.getElementById("thread-truncated"),
   threadListWrap: document.getElementById("thread-list-wrap"),
   threadList: document.getElementById("thread-list"),
@@ -372,7 +387,9 @@ const el = {
   bodyPlain: document.getElementById("message-body-plain"),
   attachments: document.getElementById("attachment-list"),
   searchInput: document.getElementById("search-input"),
+  btnSearchClear: document.getElementById("btn-search-clear"),
   mailFilterAdvanced: document.getElementById("mail-filter-advanced"),
+  mailFilterContentSection: document.getElementById("mail-filter-content-section"),
   mailFilterFrom: document.getElementById("mail-filter-from"),
   mailFilterTo: document.getElementById("mail-filter-to"),
   mailFilterSubject: document.getElementById("mail-filter-subject"),
@@ -381,6 +398,10 @@ const el = {
   btnMailFilterUnread: document.getElementById("btn-mail-filter-unread"),
   btnMailFilterFlagged: document.getElementById("btn-mail-filter-flagged"),
   btnMailFilterAttachments: document.getElementById("btn-mail-filter-attachments"),
+  btnMailFilterFollowUp: document.getElementById("btn-mail-filter-follow-up"),
+  btnMailFilterSnoozed: document.getElementById("btn-mail-filter-snoozed"),
+  mailFilterCategory: document.getElementById("mail-filter-category"),
+  mailFilterTags: document.getElementById("mail-filter-tags"),
   mailFilterAccountRow: document.getElementById("mail-filter-account-row"),
   mailFilterAccountChips: document.getElementById("mail-filter-account-chips"),
   mailFilterActiveRow: document.getElementById("mail-filter-active-row"),
@@ -429,7 +450,9 @@ const el = {
   mailSelectionBar: document.getElementById("mail-selection-bar"),
   mailSelectionTools: document.getElementById("mail-selection-tools"),
   mailSelectionCount: document.getElementById("mail-selection-count"),
+  mailSelectionTriage: document.getElementById("mail-selection-triage"),
   btnMailClear: document.getElementById("btn-mail-clear"),
+  readerTriageChips: document.getElementById("reader-triage-chips"),
   btnComposeOpen: document.getElementById("btn-compose-open"),
   btnComposeClose: document.getElementById("btn-compose-close"),
   btnComposeDiscard: document.getElementById("btn-compose-discard"),
@@ -518,6 +541,7 @@ const el = {
   registerMFAHelp: document.getElementById("register-mfa-help"),
   registerSubmit: document.querySelector("#form-register button[type='submit']"),
   settingsSearchInput: document.getElementById("settings-search-input"),
+  btnSettingsSearchClear: document.getElementById("btn-settings-search-clear"),
   settingsSearchResults: document.getElementById("settings-search-results"),
   settingsNavSignIn: document.getElementById("settings-nav-signin"),
   settingsNavMail: document.getElementById("settings-nav-mail"),
@@ -604,6 +628,12 @@ const el = {
   btnSettingsMailScriptActivate: document.getElementById("btn-settings-mail-script-activate"),
   btnSettingsMailScriptCancel: document.getElementById("btn-settings-mail-script-cancel"),
   btnSettingsMailScriptDelete: document.getElementById("btn-settings-mail-script-delete"),
+  settingsMailTriageCategoryList: document.getElementById("settings-mail-triage-category-list"),
+  btnSettingsMailTriageCategoryNew: document.getElementById("btn-settings-mail-triage-category-new"),
+  btnSettingsMailTriageCategoryDelete: document.getElementById("btn-settings-mail-triage-category-delete"),
+  settingsMailTriageTagList: document.getElementById("settings-mail-triage-tag-list"),
+  btnSettingsMailTriageTagNew: document.getElementById("btn-settings-mail-triage-tag-new"),
+  btnSettingsMailTriageTagDelete: document.getElementById("btn-settings-mail-triage-tag-delete"),
   passkeysNote: document.getElementById("passkeys-note"),
   passkeysList: document.getElementById("passkeys-list"),
   settingsPasskeyDetail: document.getElementById("settings-passkey-detail"),
@@ -669,6 +699,7 @@ const el = {
   adminFeatureFlags: document.getElementById("admin-feature-flags"),
   adminFeatureFlagsDetail: document.getElementById("admin-feature-flags-detail"),
   adminSearchInput: document.getElementById("admin-search-input"),
+  btnAdminSearchClear: document.getElementById("btn-admin-search-clear"),
   adminSearchResults: document.getElementById("admin-search-results"),
   adminNavSystem: document.getElementById("admin-nav-system"),
   adminNavRegistrations: document.getElementById("admin-nav-registrations"),
@@ -782,6 +813,10 @@ const composeHTMLPreviewState = {
 };
 
 const APP_DRAFTS_MAILBOX = "__despatch_app_drafts__";
+const MAIL_TRIAGE_VIEWS = [
+  { id: "follow_up", name: "Follow Up" },
+  { id: "snoozed", name: "Snoozed" },
+];
 const MAIL_SMART_VIEWS = [
   { id: "waiting", name: "Waiting" },
   { id: "unread", name: "Unread" },
@@ -824,10 +859,20 @@ function normalizeRecoveryEmailInput(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-const notificationStorageKey = "ui.notifications.v1";
-const maxStoredNotifications = 48;
+const notificationStorageKey = "ui.notifications.v2";
+const legacyNotificationStorageKey = "ui.notifications.v1";
+const maxStoredNotifications = 24;
+const notificationRetentionMs = 14 * 24 * 60 * 60 * 1000;
+const notificationDedupeWindowMs = 5 * 60 * 1000;
 const updaterNotificationTarget = Object.freeze({ view: "admin", domain: "system" });
 const updaterPendingAutoStates = new Set(["preparing", "downloaded", "scheduled", "applying"]);
+const notificationSourceLabels = Object.freeze({
+  mail: "Mail",
+  admin: "Admin",
+  settings: "Settings",
+  auth: "Sign-In",
+  system: "System",
+});
 
 const ThemeController = {
   getTheme() {
@@ -876,6 +921,27 @@ function notificationKindLabel(kind) {
   return "Info";
 }
 
+function normalizeNotificationSource(source) {
+  const value = String(source || "").trim().toLowerCase();
+  if (value === "mail" || value === "admin" || value === "settings" || value === "auth" || value === "system") {
+    return value;
+  }
+  if (value === "setup") return "auth";
+  return "system";
+}
+
+function notificationSourceLabel(source) {
+  return notificationSourceLabels[normalizeNotificationSource(source)] || notificationSourceLabels.system;
+}
+
+function normalizeNotificationDelivery(delivery, fallback = "center") {
+  const value = String(delivery || "").trim().toLowerCase();
+  if (value === "toast" || value === "center" || value === "both" || value === "silent") {
+    return value;
+  }
+  return fallback;
+}
+
 function formatNotificationClock(value) {
   const date = value ? new Date(value) : new Date();
   if (Number.isNaN(date.getTime())) return "";
@@ -889,14 +955,72 @@ function createNotificationID() {
   return `notice-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
 }
 
+function normalizeNotificationTimestamp(value, fallback = new Date()) {
+  const date = value ? new Date(value) : fallback;
+  return Number.isNaN(date.getTime()) ? fallback : date;
+}
+
+function notificationExpiryDate(value, createdAtValue) {
+  const createdAt = normalizeNotificationTimestamp(createdAtValue);
+  const expiresAt = value ? new Date(value) : new Date(createdAt.getTime() + notificationRetentionMs);
+  if (Number.isNaN(expiresAt.getTime())) {
+    return new Date(createdAt.getTime() + notificationRetentionMs);
+  }
+  return expiresAt;
+}
+
+function notificationCreatedAtMs(item) {
+  if (!item) return 0;
+  return normalizeNotificationTimestamp(item.created_at).getTime();
+}
+
+function notificationSignature(item) {
+  if (!item) return "";
+  return [
+    normalizeNotificationSource(item.source),
+    String(item.title || "").trim(),
+    String(item.body || "").trim(),
+  ].join("\n");
+}
+
+function notificationHasCenterDelivery(item) {
+  const delivery = typeof item === "string" ? normalizeNotificationDelivery(item, "silent") : normalizeNotificationDelivery(item?.delivery, "center");
+  return delivery === "center" || delivery === "both";
+}
+
+function notificationHasToastDelivery(item) {
+  const delivery = typeof item === "string" ? normalizeNotificationDelivery(item, "silent") : normalizeNotificationDelivery(item?.delivery, "center");
+  return delivery === "toast" || delivery === "both";
+}
+
+function notificationIsExpired(item, nowMs = Date.now()) {
+  if (!item) return true;
+  const expiresAt = notificationExpiryDate(item.expires_at, item.created_at);
+  return expiresAt.getTime() < nowMs;
+}
+
+function pruneNotificationItems(items, nowMs = Date.now()) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => normalizeNotificationItem(item))
+    .filter(Boolean)
+    .filter((item) => notificationHasCenterDelivery(item))
+    .filter((item) => !notificationIsExpired(item, nowMs))
+    .slice(0, maxStoredNotifications);
+}
+
 function normalizeNotificationTarget(target) {
   if (!target || typeof target !== "object") return null;
   const view = String(target.view || "").trim();
   const domain = String(target.domain || "").trim();
   const type = String(target.type || "").trim();
   const detailId = String(target.detailId || "").trim();
-  const accountId = String(target.accountId || "").trim();
-  if (!view && !domain && !type && !detailId && !accountId) {
+  const accountId = String(target.accountId || target.account_id || "").trim();
+  const accountScope = String(target.accountScope || target.account_scope || "").trim();
+  const mailbox = String(target.mailbox || "").trim();
+  const smartView = String(target.smartView || target.smart_view || "").trim().toLowerCase();
+  const threadId = String(target.threadId || target.thread_id || "").trim();
+  const messageId = String(target.messageId || target.message_id || "").trim();
+  if (!view && !domain && !type && !detailId && !accountId && !mailbox && !smartView && !threadId && !messageId) {
     return null;
   }
   return {
@@ -905,6 +1029,11 @@ function normalizeNotificationTarget(target) {
     type,
     detailId,
     accountId,
+    accountScope,
+    mailbox,
+    smartView,
+    threadId,
+    messageId,
   };
 }
 
@@ -913,30 +1042,39 @@ function normalizeNotificationItem(raw) {
   const kind = coerceNotificationKind(raw.kind);
   const body = String(raw.body || raw.text || "").trim();
   const title = String(raw.title || defaultNotificationTitle(kind)).trim() || defaultNotificationTitle(kind);
-  const createdAt = raw.created_at ? new Date(raw.created_at) : new Date();
-  const createdAtValue = Number.isNaN(createdAt.getTime()) ? new Date().toISOString() : createdAt.toISOString();
+  const createdAt = normalizeNotificationTimestamp(raw.created_at);
+  const createdAtValue = createdAt.toISOString();
+  const expiresAt = notificationExpiryDate(raw.expires_at, createdAtValue);
   return {
     id: String(raw.id || createNotificationID()),
     kind,
     title,
     body,
     created_at: createdAtValue,
+    expires_at: expiresAt.toISOString(),
     read: raw.read === true,
     target: normalizeNotificationTarget(raw.target),
     dedupeKey: String(raw.dedupeKey || raw.dedupe_key || "").trim(),
+    source: normalizeNotificationSource(raw.source),
+    delivery: normalizeNotificationDelivery(raw.delivery, "center"),
   };
 }
 
 function saveNotifications() {
   try {
-    localStorage.setItem(notificationStorageKey, JSON.stringify(state.notifications.items.slice(0, maxStoredNotifications)));
+    const snapshot = pruneNotificationItems(state.notifications.items);
+    state.notifications.items = snapshot;
+    localStorage.setItem(notificationStorageKey, JSON.stringify(snapshot));
+    localStorage.removeItem(legacyNotificationStorageKey);
   } catch {
     // ignore storage errors
   }
 }
 
 function unreadNotificationCount() {
-  return state.notifications.items.reduce((count, item) => count + (item && item.read !== true ? 1 : 0), 0);
+  return state.notifications.items.reduce((count, item) => (
+    count + (item && notificationHasCenterDelivery(item) && item.read !== true ? 1 : 0)
+  ), 0);
 }
 
 function createNotificationEmptyState() {
@@ -947,9 +1085,87 @@ function createNotificationEmptyState() {
   title.textContent = "All clear";
   const copy = document.createElement("div");
   copy.className = "notification-center-empty-copy";
-  copy.textContent = "New updates, alerts, and activity notes will appear here.";
+  copy.textContent = "Important updates, failures, and system notices will appear here.";
   empty.append(title, copy);
   return empty;
+}
+
+function createNotificationSection(titleText, items) {
+  const section = document.createElement("section");
+  section.className = "notification-center-section";
+
+  const head = document.createElement("div");
+  head.className = "notification-center-section-head";
+
+  const title = document.createElement("div");
+  title.className = "notification-center-section-title";
+  title.textContent = titleText;
+
+  const count = document.createElement("div");
+  count.className = "notification-center-section-count";
+  count.textContent = String(items.length);
+
+  const body = document.createElement("div");
+  body.className = "notification-center-section-body";
+
+  head.append(title, count);
+  section.append(head, body);
+  return { section, body };
+}
+
+function createNotificationCard(item) {
+  const row = document.createElement("button");
+  row.type = "button";
+  row.className = "notification-card";
+  row.dataset.kind = coerceNotificationKind(item.kind);
+  if (item.read === true) row.classList.add("is-read");
+
+  const meta = document.createElement("div");
+  meta.className = "notification-card-meta";
+
+  const metaCopy = document.createElement("div");
+  metaCopy.className = "notification-card-meta-copy";
+
+  const source = document.createElement("span");
+  source.className = "notification-card-source";
+  source.textContent = notificationSourceLabel(item.source);
+  metaCopy.appendChild(source);
+
+  const kind = document.createElement("span");
+  kind.className = "notification-card-kind";
+  kind.textContent = notificationKindLabel(item.kind);
+  metaCopy.appendChild(kind);
+
+  meta.appendChild(metaCopy);
+
+  if (item.read !== true) {
+    const unreadDot = document.createElement("span");
+    unreadDot.className = "notification-card-unread";
+    meta.appendChild(unreadDot);
+  }
+
+  const head = document.createElement("div");
+  head.className = "notification-card-head";
+
+  const title = document.createElement("div");
+  title.className = "notification-card-title";
+  title.textContent = item.title || defaultNotificationTitle(item.kind);
+  head.appendChild(title);
+
+  const time = document.createElement("div");
+  time.className = "notification-card-time";
+  time.textContent = formatNotificationClock(item.created_at);
+  head.appendChild(time);
+
+  const body = document.createElement("div");
+  body.className = "notification-card-body";
+  body.textContent = item.body || "";
+
+  row.append(meta, head, body);
+  row.addEventListener("click", () => {
+    void handleNotificationClick(item.id);
+  });
+  return row;
 }
 
 function markNotificationRead(id) {
@@ -991,7 +1207,8 @@ function setNotificationCenterOpen(open) {
 }
 
 function renderNotificationCenter() {
-  const items = Array.isArray(state.notifications.items) ? state.notifications.items : [];
+  const items = pruneNotificationItems(state.notifications.items);
+  state.notifications.items = items;
   const unread = unreadNotificationCount();
   if (el.notificationUnreadBadge) {
     el.notificationUnreadBadge.textContent = unread > 99 ? "99+" : String(unread);
@@ -1002,48 +1219,18 @@ function renderNotificationCenter() {
     if (!items.length) {
       el.notificationCenterList.appendChild(createNotificationEmptyState());
     } else {
-      items.forEach((item) => {
-        const row = document.createElement("button");
-        row.type = "button";
-        row.className = "notification-card";
-        row.dataset.kind = coerceNotificationKind(item.kind);
-        if (item.read === true) row.classList.add("is-read");
-
-        const head = document.createElement("div");
-        head.className = "notification-card-head";
-
-        const title = document.createElement("div");
-        title.className = "notification-card-title";
-        title.textContent = item.title || defaultNotificationTitle(item.kind);
-        head.appendChild(title);
-
-        const time = document.createElement("div");
-        time.className = "notification-card-time";
-        time.textContent = formatNotificationClock(item.created_at);
-        head.appendChild(time);
-
-        const body = document.createElement("div");
-        body.className = "notification-card-body";
-        body.textContent = item.body || "";
-
-        const meta = document.createElement("div");
-        meta.className = "notification-card-meta";
-
-        const kind = document.createElement("span");
-        kind.className = "notification-card-kind";
-        kind.textContent = notificationKindLabel(item.kind);
-        meta.appendChild(kind);
-
-        const unreadDot = document.createElement("span");
-        unreadDot.className = "notification-card-unread";
-        meta.appendChild(unreadDot);
-
-        row.append(head, body, meta);
-        row.addEventListener("click", () => {
-          void handleNotificationClick(item.id);
-        });
-        el.notificationCenterList.appendChild(row);
-      });
+      const unreadItems = items.filter((item) => item && item.read !== true);
+      const earlierItems = items.filter((item) => item && item.read === true);
+      if (unreadItems.length) {
+        const unreadSection = createNotificationSection("Unread", unreadItems);
+        unreadItems.forEach((item) => unreadSection.body.appendChild(createNotificationCard(item)));
+        el.notificationCenterList.appendChild(unreadSection.section);
+      }
+      if (earlierItems.length) {
+        const earlierSection = createNotificationSection(unreadItems.length ? "Earlier" : "Recent", earlierItems);
+        earlierItems.forEach((item) => earlierSection.body.appendChild(createNotificationCard(item)));
+        el.notificationCenterList.appendChild(earlierSection.section);
+      }
     }
   }
   if (el.btnNotificationMarkRead) {
@@ -1055,12 +1242,39 @@ function renderNotificationCenter() {
   setNotificationCenterOpen(state.notifications.centerOpen);
 }
 
+function legacyNotificationShouldPersist(item) {
+  if (!item) return false;
+  return item.kind === "error" || item.kind === "update" || !!item.target;
+}
+
 function loadStoredNotifications() {
   try {
-    const raw = localStorage.getItem(notificationStorageKey);
+    let raw = localStorage.getItem(notificationStorageKey);
+    let fromLegacy = false;
+    if (!raw) {
+      raw = localStorage.getItem(legacyNotificationStorageKey);
+      fromLegacy = !!raw;
+    }
     const parsed = raw ? JSON.parse(raw) : [];
-    const items = Array.isArray(parsed) ? parsed.map(normalizeNotificationItem).filter(Boolean).slice(0, maxStoredNotifications) : [];
+    let items = [];
+    let didPrune = false;
+    if (Array.isArray(parsed)) {
+      if (fromLegacy) {
+        items = pruneNotificationItems(parsed.map((item) => normalizeNotificationItem({
+          ...item,
+          source: item?.target?.view || "system",
+          delivery: "center",
+        })).filter(legacyNotificationShouldPersist));
+        didPrune = true;
+      } else {
+        items = pruneNotificationItems(parsed);
+        didPrune = items.length !== parsed.length;
+      }
+    }
     state.notifications.items = items;
+    if (fromLegacy || didPrune) {
+      saveNotifications();
+    }
   } catch {
     state.notifications.items = [];
   }
@@ -1070,26 +1284,33 @@ function loadStoredNotifications() {
 function pushNotification(raw) {
   const item = normalizeNotificationItem(raw);
   if (!item) return null;
+  if (!notificationHasCenterDelivery(item)) {
+    return item;
+  }
   const next = Array.isArray(state.notifications.items) ? state.notifications.items.slice() : [];
-  if (item.dedupeKey) {
-    const existingIndex = next.findIndex((entry) => entry && entry.dedupeKey === item.dedupeKey);
-    if (existingIndex >= 0) {
-      const existing = next.splice(existingIndex, 1)[0];
-      const merged = {
-        ...existing,
-        ...item,
-        id: existing.id,
-        read: false,
-      };
-      next.unshift(merged);
-      state.notifications.items = next.slice(0, maxStoredNotifications);
-      saveNotifications();
-      renderNotificationCenter();
-      return merged;
-    }
+  const nowMs = notificationCreatedAtMs(item);
+  const existingIndex = next.findIndex((entry) => {
+    if (!entry || !notificationHasCenterDelivery(entry)) return false;
+    if (item.dedupeKey && entry.dedupeKey === item.dedupeKey) return true;
+    if (notificationSignature(entry) !== notificationSignature(item)) return false;
+    return Math.abs(notificationCreatedAtMs(entry) - nowMs) <= notificationDedupeWindowMs;
+  });
+  if (existingIndex >= 0) {
+    const existing = next.splice(existingIndex, 1)[0];
+    const merged = {
+      ...existing,
+      ...item,
+      id: existing.id,
+      read: false,
+    };
+    next.unshift(merged);
+    state.notifications.items = pruneNotificationItems(next);
+    saveNotifications();
+    renderNotificationCenter();
+    return merged;
   }
   next.unshift(item);
-  state.notifications.items = next.slice(0, maxStoredNotifications);
+  state.notifications.items = pruneNotificationItems(next);
   saveNotifications();
   renderNotificationCenter();
   return item;
@@ -1192,6 +1413,36 @@ async function openNotificationTarget(target) {
       await loadMailboxes();
       await loadMessages();
     }
+    if (next.accountScope === "all") {
+      setMailScope("all");
+    } else if (next.accountId) {
+      setMailScope("account", next.accountId);
+    }
+    if (next.smartView) {
+      setMailSourceSmart(next.smartView);
+    } else if (next.mailbox) {
+      setMailSourceMailbox(next.mailbox);
+    }
+    clearMailMessageSelection({ render: false });
+    clearReaderSelection();
+    await loadMailboxes({ quiet: true, logErrors: false });
+    await loadMessages({ quiet: true });
+    const targetMessageID = String(next.messageId || "").trim();
+    const targetThreadID = String(next.threadId || "").trim();
+    const item = (Array.isArray(state.messages) ? state.messages : []).find((entry) => {
+      if (targetMessageID && String(entry?.id || "") === targetMessageID) {
+        return true;
+      }
+      if (targetThreadID && String(entry?.thread_id || "") === targetThreadID) {
+        return true;
+      }
+      return false;
+    }) || null;
+    if (item?.id) {
+      await openMessage(item.id, item);
+    } else {
+      setActiveMailPane("messages");
+    }
   }
 }
 
@@ -1249,22 +1500,78 @@ function renderWorkspaceTitle(name) {
   document.title = title === "Despatch" ? "Despatch" : `${title} · Despatch`;
 }
 
+function currentNotificationSource() {
+  if (el.viewAdmin && !el.viewAdmin.classList.contains("hidden")) return "admin";
+  if (el.viewSettings && !el.viewSettings.classList.contains("hidden")) return "settings";
+  if (el.viewMail && !el.viewMail.classList.contains("hidden")) return "mail";
+  if (el.viewContacts && !el.viewContacts.classList.contains("hidden")) return "system";
+  return "auth";
+}
+
+function inferNotificationSource(config) {
+  if (config && config.source) {
+    return normalizeNotificationSource(config.source);
+  }
+  const target = normalizeNotificationTarget(config?.target);
+  if (target?.view) {
+    return normalizeNotificationSource(target.view);
+  }
+  return normalizeNotificationSource(currentNotificationSource());
+}
+
+function isPassiveStatusMessage(message) {
+  const value = String(message || "").trim().toLowerCase();
+  if (!value) return false;
+  return (
+    /^drafts loaded\b/.test(value) ||
+    /\bloaded\b/.test(value) ||
+    /\bsearch complete\b/.test(value) ||
+    /\brefreshed\.$/.test(value) ||
+    /\bupdate check complete\.$/.test(value)
+  );
+}
+
+function resolveStatusDelivery(message, kind, config) {
+  if (config.skipCenter === true && config.skipToast === true) {
+    return "silent";
+  }
+  if (config.delivery) {
+    return normalizeNotificationDelivery(config.delivery, "both");
+  }
+  if (config.skipCenter === true) return "toast";
+  if (config.skipToast === true) return "center";
+  if (isPassiveStatusMessage(message)) return "silent";
+  if (kind === "error") return "both";
+  if (kind === "update") return "center";
+  return "toast";
+}
+
+function buildNotificationPayload(message, kind, config) {
+  const delivery = resolveStatusDelivery(message, kind, config);
+  if (delivery === "silent") return null;
+  const createdAt = normalizeNotificationTimestamp(config.created_at).toISOString();
+  return {
+    kind,
+    title: String(config.title || defaultNotificationTitle(kind)).trim() || defaultNotificationTitle(kind),
+    body: message,
+    created_at: createdAt,
+    expires_at: new Date(new Date(createdAt).getTime() + notificationRetentionMs).toISOString(),
+    target: config.target || null,
+    dedupeKey: config.dedupeKey || "",
+    source: inferNotificationSource(config),
+    delivery,
+  };
+}
+
 function setStatus(text, type = "info", options = {}) {
   const message = String(text || "").trim();
   if (!message) return;
   const config = options && typeof options === "object" ? options : {};
   const kind = coerceNotificationKind(config.kind || type);
-  const title = String(config.title || defaultNotificationTitle(kind)).trim() || defaultNotificationTitle(kind);
-  const payload = {
-    kind,
-    title,
-    body: message,
-    created_at: config.created_at || new Date().toISOString(),
-    target: config.target || null,
-    dedupeKey: config.dedupeKey || "",
-  };
-  const notification = config.skipCenter === true ? normalizeNotificationItem(payload) : pushNotification(payload);
-  if (config.skipToast === true) return;
+  const payload = buildNotificationPayload(message, kind, config);
+  if (!payload) return;
+  const notification = notificationHasCenterDelivery(payload.delivery) ? pushNotification(payload) : normalizeNotificationItem(payload);
+  if (!notificationHasToastDelivery(payload.delivery)) return;
   renderStatusToast(notification || normalizeNotificationItem(payload));
 }
 
@@ -3687,6 +3994,11 @@ function syncMailSelectionControls() {
     el.btnMailClear.disabled = count === 0;
     el.btnMailClear.classList.toggle("hidden", count === 0);
   }
+  renderMailTriageContainer(
+    el.mailSelectionTriage,
+    buildSharedMailTriageSummary(selectedMailActionItems()),
+    { compact: true, maxTags: 2, className: "mail-selection-triage" },
+  );
 }
 
 function isDraftsMailboxSelected() {
@@ -6697,8 +7009,11 @@ function setSetupCooldown(waitSec) {
 function setActiveTab(tab) {
   [el.tabSetup, el.tabAuth, el.tabMail, el.tabContacts, el.tabSettings, el.tabAdmin]
     .filter(Boolean)
-    .forEach((btn) => btn.classList.remove("active"));
-  if (tab) tab.classList.add("active");
+    .forEach((btn) => {
+      const active = btn === tab;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-current", active ? "page" : "false");
+    });
 }
 
 function showView(name) {
@@ -6733,10 +7048,49 @@ function showView(name) {
   } else {
     stopMailPolling();
   }
+  syncAllSearchClearButtons();
 }
 
 function isMobileLayout() {
   return window.matchMedia("(max-width: 980px)").matches;
+}
+
+function captureScrollPosition(node) {
+  if (!node) return { top: 0, left: 0 };
+  return {
+    top: Number(node.scrollTop || 0),
+    left: Number(node.scrollLeft || 0),
+  };
+}
+
+function restoreScrollPosition(node, position) {
+  if (!node || !position) return;
+  node.scrollTop = Number(position.top || 0);
+  node.scrollLeft = Number(position.left || 0);
+}
+
+function syncSearchClearButton(input, button) {
+  if (!button) return;
+  const hasValue = String(input?.value || "").trim() !== "";
+  button.classList.toggle("hidden", !hasValue);
+  button.disabled = !hasValue;
+}
+
+function syncAllSearchClearButtons() {
+  syncSearchClearButton(el.searchInput, el.btnSearchClear);
+  syncSearchClearButton(el.settingsSearchInput, el.btnSettingsSearchClear);
+  syncSearchClearButton(el.adminSearchInput, el.btnAdminSearchClear);
+}
+
+function clearSearchInputValue(input, button) {
+  if (!input) return;
+  input.value = "";
+  syncSearchClearButton(input, button);
+}
+
+function revealSection(node) {
+  if (!node || typeof node.scrollIntoView !== "function") return;
+  node.scrollIntoView({ block: "start", behavior: "auto" });
 }
 
 function paneElement(name) {
@@ -9156,6 +9510,111 @@ function renderMailSettingsSenderList() {
   renderMailSettingsSenderDetail();
 }
 
+function renderMailTriageSettingsLists() {
+  if (el.settingsMailTriageCategoryList) {
+    el.settingsMailTriageCategoryList.replaceChildren();
+    const categories = Array.isArray(state.settings.mail.triageCategories) ? state.settings.mail.triageCategories : [];
+    if (categories.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "settings-list-empty";
+      empty.textContent = "No categories yet.";
+      el.settingsMailTriageCategoryList.appendChild(empty);
+    } else {
+      for (const item of categories) {
+        const row = renderListItem({
+          active: String(item?.id || "") === String(state.settings.mail.selectedTriageCategoryID || ""),
+          markerClass: "status-chip status-chip--info",
+          markerText: "Category",
+          title: String(item?.name || "").trim() || "Category",
+          meta: "Applies to one conversation at a time",
+          actionText: "Rename",
+          onSelect: () => {
+            state.settings.mail.selectedTriageCategoryID = String(item?.id || "").trim();
+            renderMailTriageSettingsLists();
+          },
+          onAction: async () => {
+            try {
+              const input = await showPromptModal({
+                title: "Rename Category",
+                body: "Give this category a short, clear name.",
+                label: "Category",
+                defaultValue: String(item?.name || "").trim(),
+                confirmText: "Save",
+                cancelText: "Cancel",
+              });
+              if (input === null) return;
+              await api(`/api/v2/mail-triage/categories/${encodeURIComponent(String(item?.id || "").trim())}`, {
+                method: "PATCH",
+                json: { name: String(input || "").trim() },
+                logErrors: false,
+              });
+              await loadMailTriageCatalog({ logErrors: false });
+              setMailSettingsNote("Category updated.", "ok");
+            } catch (err) {
+              setMailSettingsNote(formatAPIError(err, "Failed to update category."), "error");
+            }
+          },
+        });
+        el.settingsMailTriageCategoryList.appendChild(row);
+      }
+    }
+  }
+  if (el.btnSettingsMailTriageCategoryDelete) {
+    el.btnSettingsMailTriageCategoryDelete.disabled = !selectedMailTriageCategoryRecord();
+  }
+  if (el.settingsMailTriageTagList) {
+    el.settingsMailTriageTagList.replaceChildren();
+    const tags = Array.isArray(state.settings.mail.triageTags) ? state.settings.mail.triageTags : [];
+    if (tags.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "settings-list-empty";
+      empty.textContent = "No tags yet.";
+      el.settingsMailTriageTagList.appendChild(empty);
+    } else {
+      for (const item of tags) {
+        const row = renderListItem({
+          active: String(item?.id || "") === String(state.settings.mail.selectedTriageTagID || ""),
+          markerClass: "status-chip status-chip--info",
+          markerText: "Tag",
+          title: String(item?.name || "").trim() || "Tag",
+          meta: "Can be added without replacing existing tags",
+          actionText: "Rename",
+          onSelect: () => {
+            state.settings.mail.selectedTriageTagID = String(item?.id || "").trim();
+            renderMailTriageSettingsLists();
+          },
+          onAction: async () => {
+            try {
+              const input = await showPromptModal({
+                title: "Rename Tag",
+                body: "Update this tag name everywhere it appears.",
+                label: "Tag",
+                defaultValue: String(item?.name || "").trim(),
+                confirmText: "Save",
+                cancelText: "Cancel",
+              });
+              if (input === null) return;
+              await api(`/api/v2/mail-triage/tags/${encodeURIComponent(String(item?.id || "").trim())}`, {
+                method: "PATCH",
+                json: { name: String(input || "").trim() },
+                logErrors: false,
+              });
+              await loadMailTriageCatalog({ logErrors: false });
+              setMailSettingsNote("Tag updated.", "ok");
+            } catch (err) {
+              setMailSettingsNote(formatAPIError(err, "Failed to update tag."), "error");
+            }
+          },
+        });
+        el.settingsMailTriageTagList.appendChild(row);
+      }
+    }
+  }
+  if (el.btnSettingsMailTriageTagDelete) {
+    el.btnSettingsMailTriageTagDelete.disabled = !selectedMailTriageTagRecord();
+  }
+}
+
 async function loadMailSettingsSenders() {
   const payload = await api("/api/v2/mail/senders", { logErrors: false });
   const items = Array.isArray(payload.items) ? payload.items : [];
@@ -9172,12 +9631,14 @@ async function loadMailSettingsSenders() {
 }
 
 async function loadMailSettingsSection() {
-  const [accountsPayload, sendersPayload] = await Promise.all([
+  const [accountsPayload, sendersPayload, triageCatalog] = await Promise.all([
     api("/api/v2/accounts", { logErrors: false }),
     api("/api/v2/mail/senders", { logErrors: false }),
+    ensureMailTriageCatalogLoaded({ logErrors: false }),
   ]);
   state.settings.mail.accounts = Array.isArray(accountsPayload.items) ? accountsPayload.items : [];
   state.settings.mail.senders = Array.isArray(sendersPayload.items) ? sendersPayload.items : [];
+  syncMailTriageCatalogState(triageCatalog || currentMailTriageCatalog());
   state.settings.mail.defaultSenderID = String(state.settings.mail.senders.find((item) => item?.is_default)?.id || "").trim();
   if (!state.settings.mail.accounts.some((item) => String(item.id || "") === state.settings.mail.selectedAccountID)) {
     state.settings.mail.selectedAccountID = mailSettingsSelectedDefaultAccountID();
@@ -9193,6 +9654,7 @@ async function loadMailSettingsSection() {
   }
   renderMailSettingsAccountList();
   renderMailSettingsSenderList();
+  renderMailTriageSettingsLists();
   renderMailSettingsAccountDetail();
   renderMailSettingsSenderDetail();
   if (!state.settings.mail.rulesAccountID || !state.settings.mail.accounts.some((item) => String(item?.id || "") === state.settings.mail.rulesAccountID)) {
@@ -9593,6 +10055,12 @@ async function navigateSettingsTarget(target) {
   state.ui.settingsNav.page = "list";
   state.ui.settingsNav.detailId = "";
   await loadActiveSettingsSection();
+  revealSection({
+    signin: el.settingsSectionSignIn,
+    mail: el.settingsSectionMail,
+    devices: el.settingsSectionDevices,
+    sessions: el.settingsSectionSessions,
+  }[target.domain] || null);
   if (target.type === "passkey") {
     state.settings.passkeys.detailId = String(target.detailId || "");
     state.ui.settingsNav.page = "detail";
@@ -9638,6 +10106,12 @@ async function navigateAdminTarget(target) {
   state.ui.adminNav.page = "list";
   state.ui.adminNav.detailId = "";
   await loadActiveAdminSection();
+  revealSection({
+    system: el.adminSectionSystem,
+    registrations: el.adminSectionRegistrations,
+    users: el.adminSectionUsers,
+    audit: el.adminSectionAudit,
+  }[target.domain] || null);
   if (target.type === "flag") {
     state.admin.featureFlags.detailId = String(target.detailId || "");
     state.ui.adminNav.page = "detail";
@@ -10882,6 +11356,191 @@ function normalizeMailFilterAccountIDs(values) {
   return out;
 }
 
+function normalizeMailFilterTagIDs(values) {
+  const seen = new Set();
+  const out = [];
+  for (const value of Array.isArray(values) ? values : []) {
+    const trimmed = String(value || "").trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function emptyMailTriageState() {
+  return {
+    snoozed_until: "",
+    reminder_at: "",
+    category: null,
+    tags: [],
+    is_snoozed: false,
+    is_follow_up_due: false,
+  };
+}
+
+function normalizeMailTriageState(raw = {}) {
+  const stateValue = emptyMailTriageState();
+  const category = raw?.category && typeof raw.category === "object"
+    ? {
+      id: String(raw.category.id || "").trim(),
+      name: String(raw.category.name || "").trim(),
+    }
+    : null;
+  const tags = [];
+  for (const item of Array.isArray(raw?.tags) ? raw.tags : []) {
+    const id = String(item?.id || "").trim();
+    const name = String(item?.name || "").trim();
+    if (!id && !name) continue;
+    tags.push({ id, name });
+  }
+  return {
+    ...stateValue,
+    snoozed_until: String(raw?.snoozed_until || raw?.snoozedUntil || "").trim(),
+    reminder_at: String(raw?.reminder_at || raw?.reminderAt || "").trim(),
+    category: category && (category.id || category.name) ? category : null,
+    tags,
+    is_snoozed: !!raw?.is_snoozed,
+    is_follow_up_due: !!(raw?.is_follow_up_due || raw?.isFollowUpDue),
+  };
+}
+
+function currentMailTriageCatalog() {
+  const catalog = state.mail?.triageCatalog;
+  return catalog && typeof catalog === "object"
+    ? catalog
+    : { categories: [], tags: [], loaded: false };
+}
+
+function mailTriageCategoryByID(id) {
+  const key = String(id || "").trim();
+  if (!key) return null;
+  return (Array.isArray(currentMailTriageCatalog().categories) ? currentMailTriageCatalog().categories : [])
+    .find((item) => String(item?.id || "").trim() === key) || null;
+}
+
+function mailTriageTagByID(id) {
+  const key = String(id || "").trim();
+  if (!key) return null;
+  return (Array.isArray(currentMailTriageCatalog().tags) ? currentMailTriageCatalog().tags : [])
+    .find((item) => String(item?.id || "").trim() === key) || null;
+}
+
+function mailTriageCategoryNameByID(id) {
+  return String(mailTriageCategoryByID(id)?.name || "").trim();
+}
+
+function mailTriageTagNameByID(id) {
+  return String(mailTriageTagByID(id)?.name || "").trim();
+}
+
+function normalizeMailTriageCatalogEntry(raw = {}) {
+  return {
+    id: String(raw?.id || "").trim(),
+    name: String(raw?.name || "").trim(),
+  };
+}
+
+function syncMailTriageCatalogState(payload = {}) {
+  const categories = (Array.isArray(payload?.categories) ? payload.categories : [])
+    .map((item) => normalizeMailTriageCatalogEntry(item))
+    .filter((item) => item.id && item.name)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const tags = (Array.isArray(payload?.tags) ? payload.tags : [])
+    .map((item) => normalizeMailTriageCatalogEntry(item))
+    .filter((item) => item.id && item.name)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  state.mail.triageCatalog = {
+    categories,
+    tags,
+    loaded: true,
+  };
+  state.settings.mail.triageCategories = categories;
+  state.settings.mail.triageTags = tags;
+  if (!categories.some((item) => item.id === String(state.settings.mail.selectedTriageCategoryID || "").trim())) {
+    state.settings.mail.selectedTriageCategoryID = String(categories[0]?.id || "").trim();
+  }
+  if (!tags.some((item) => item.id === String(state.settings.mail.selectedTriageTagID || "").trim())) {
+    state.settings.mail.selectedTriageTagID = String(tags[0]?.id || "").trim();
+  }
+}
+
+function mailTriageTagTokenIDs(raw = "") {
+  const seen = new Set();
+  const out = [];
+  const catalogTags = Array.isArray(currentMailTriageCatalog().tags) ? currentMailTriageCatalog().tags : [];
+  for (const token of String(raw || "").split(/[,\n;]/)) {
+    const trimmed = String(token || "").trim();
+    if (!trimmed) continue;
+    const lower = trimmed.toLowerCase();
+    const match = catalogTags.find((item) => (
+      String(item?.id || "").trim() === trimmed
+      || String(item?.name || "").trim().toLowerCase() === lower
+    )) || null;
+    const key = String(match?.id || "").trim();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+  return out;
+}
+
+function mailTriageTagInputValue(tagIDs = []) {
+  return normalizeMailFilterTagIDs(tagIDs)
+    .map((id) => mailTriageTagNameByID(id) || id)
+    .filter(Boolean)
+    .join(", ");
+}
+
+function mailTriageHasState(item) {
+  const triage = normalizeMailTriageState(item?.triage);
+  return !!(
+    triage.category
+    || triage.tags.length > 0
+    || triage.snoozed_until
+    || triage.reminder_at
+    || triage.is_snoozed
+    || triage.is_follow_up_due
+  );
+}
+
+async function loadMailTriageCatalog(options = {}) {
+  if (!state.user) return currentMailTriageCatalog();
+  const payload = await api("/api/v2/mail-triage/catalog", { logErrors: options.logErrors });
+  syncMailTriageCatalogState(payload || {});
+  renderMailFilterBar();
+  renderMailTriageSettingsLists();
+  return currentMailTriageCatalog();
+}
+
+async function ensureMailTriageCatalogLoaded(options = {}) {
+  if (currentMailTriageCatalog().loaded) {
+    return currentMailTriageCatalog();
+  }
+  try {
+    return await loadMailTriageCatalog(options);
+  } catch (err) {
+    if (options.raise !== true) {
+      return currentMailTriageCatalog();
+    }
+    throw err;
+  }
+}
+
+function selectedMailTriageCategoryRecord() {
+  const id = String(state.settings.mail.selectedTriageCategoryID || "").trim();
+  if (!id) return null;
+  return (Array.isArray(state.settings.mail.triageCategories) ? state.settings.mail.triageCategories : [])
+    .find((item) => String(item?.id || "").trim() === id) || null;
+}
+
+function selectedMailTriageTagRecord() {
+  const id = String(state.settings.mail.selectedTriageTagID || "").trim();
+  if (!id) return null;
+  return (Array.isArray(state.settings.mail.triageTags) ? state.settings.mail.triageTags : [])
+    .find((item) => String(item?.id || "").trim() === id) || null;
+}
+
 function normalizeMailFilterState(raw = {}) {
   return createMailFilterState({
     query: String(raw?.query || "").trim(),
@@ -10894,6 +11553,10 @@ function normalizeMailFilterState(raw = {}) {
     flagged: !!raw?.flagged,
     hasAttachments: !!(raw?.hasAttachments || raw?.has_attachments),
     waiting: !!raw?.waiting,
+    snoozed: !!(raw?.snoozed || raw?.is_snoozed),
+    followUp: !!(raw?.followUp || raw?.follow_up),
+    categoryID: String(raw?.categoryID || raw?.category_id || "").trim(),
+    tagIDs: normalizeMailFilterTagIDs(raw?.tagIDs || raw?.tag_ids),
     accountIDs: normalizeMailFilterAccountIDs(raw?.accountIDs || raw?.account_ids),
   });
 }
@@ -10908,6 +11571,10 @@ function applySmartViewPresetToFilters(filters, viewID) {
   next.flagged = false;
   next.hasAttachments = false;
   next.waiting = false;
+  next.snoozed = false;
+  next.followUp = false;
+  next.categoryID = "";
+  next.tagIDs = [];
   switch (String(viewID || "").trim().toLowerCase()) {
     case "unread":
       next.unread = true;
@@ -10920,6 +11587,13 @@ function applySmartViewPresetToFilters(filters, viewID) {
       break;
     case "waiting":
       next.waiting = true;
+      break;
+    case "snoozed":
+      next.snoozed = true;
+      break;
+    case "follow_up":
+    case "follow-up":
+      next.followUp = true;
       break;
     default:
       break;
@@ -10934,6 +11608,8 @@ function derivedSmartViewFromFilters(filters) {
     current.flagged ? "flagged" : "",
     current.hasAttachments ? "attachments" : "",
     current.waiting ? "waiting" : "",
+    current.snoozed ? "snoozed" : "",
+    current.followUp ? "follow_up" : "",
   ].filter(Boolean);
   if (enabled.length !== 1) return "";
   return enabled[0];
@@ -11008,6 +11684,10 @@ function readPendingMailFilterControls() {
     unread: mailFilterTogglePressed(el.btnMailFilterUnread),
     flagged: mailFilterTogglePressed(el.btnMailFilterFlagged),
     hasAttachments: mailFilterTogglePressed(el.btnMailFilterAttachments),
+    followUp: mailFilterTogglePressed(el.btnMailFilterFollowUp),
+    snoozed: mailFilterTogglePressed(el.btnMailFilterSnoozed),
+    categoryID: String(el.mailFilterCategory?.value || "").trim(),
+    tagIDs: mailTriageTagTokenIDs(el.mailFilterTags?.value || ""),
     waiting: !!appliedMailFilters().waiting,
     accountIDs: currentMailScope() === "all" ? selectedPendingMailFilterAccountIDs() : [],
   });
@@ -11038,6 +11718,7 @@ function renderMailFilterAccountChips(selectedIDs = []) {
 
 function writeMailFilterControls(filters = appliedMailFilters()) {
   const current = normalizeMailFilterState(filters);
+  const triageCatalog = currentMailTriageCatalog();
   if (el.searchInput) el.searchInput.value = current.query;
   if (el.mailFilterFrom) el.mailFilterFrom.value = current.from;
   if (el.mailFilterTo) el.mailFilterTo.value = current.to;
@@ -11047,6 +11728,28 @@ function writeMailFilterControls(filters = appliedMailFilters()) {
   setMailFilterToggleButton(el.btnMailFilterUnread, current.unread);
   setMailFilterToggleButton(el.btnMailFilterFlagged, current.flagged);
   setMailFilterToggleButton(el.btnMailFilterAttachments, current.hasAttachments);
+  setMailFilterToggleButton(el.btnMailFilterFollowUp, current.followUp);
+  setMailFilterToggleButton(el.btnMailFilterSnoozed, current.snoozed);
+  if (el.mailFilterCategory) {
+    const currentValue = current.categoryID;
+    el.mailFilterCategory.replaceChildren();
+    const baseOption = document.createElement("option");
+    baseOption.value = "";
+    baseOption.textContent = "Any category";
+    el.mailFilterCategory.appendChild(baseOption);
+    for (const item of Array.isArray(triageCatalog.categories) ? triageCatalog.categories : []) {
+      const option = document.createElement("option");
+      option.value = String(item?.id || "").trim();
+      option.textContent = String(item?.name || "").trim();
+      el.mailFilterCategory.appendChild(option);
+    }
+    el.mailFilterCategory.value = currentValue && Array.from(el.mailFilterCategory.options).some((option) => option.value === currentValue)
+      ? currentValue
+      : "";
+  }
+  if (el.mailFilterTags) {
+    el.mailFilterTags.value = mailTriageTagInputValue(current.tagIDs);
+  }
   renderMailFilterAccountChips(current.accountIDs);
 }
 
@@ -11061,6 +11764,10 @@ function hasAppliedAdvancedMailFilters(filters = appliedMailFilters()) {
     || current.flagged
     || current.hasAttachments
     || current.waiting
+    || current.snoozed
+    || current.followUp
+    || current.categoryID
+    || current.tagIDs.length > 0
     || current.accountIDs.length > 0);
 }
 
@@ -11097,6 +11804,18 @@ async function removeAppliedMailFilterChip(kind, value = "") {
     case "waiting":
       next.waiting = false;
       break;
+    case "followUp":
+      next.followUp = false;
+      break;
+    case "snoozed":
+      next.snoozed = false;
+      break;
+    case "categoryID":
+      next.categoryID = "";
+      break;
+    case "tagID":
+      next.tagIDs = next.tagIDs.filter((item) => item !== String(value || "").trim());
+      break;
     case "accountID":
       next.accountIDs = next.accountIDs.filter((item) => item !== String(value || "").trim());
       break;
@@ -11130,6 +11849,22 @@ function renderAppliedMailFilterChips() {
   if (filters.flagged) entries.push({ kind: "flagged", label: "Flagged" });
   if (filters.hasAttachments) entries.push({ kind: "hasAttachments", label: "Attachments" });
   if (filters.waiting) entries.push({ kind: "waiting", label: "Waiting" });
+  if (filters.followUp) entries.push({ kind: "followUp", label: "Follow Up" });
+  if (filters.snoozed) entries.push({ kind: "snoozed", label: "Snoozed" });
+  if (filters.categoryID) {
+    entries.push({
+      kind: "categoryID",
+      value: filters.categoryID,
+      label: `Category: ${mailTriageCategoryNameByID(filters.categoryID) || filters.categoryID}`,
+    });
+  }
+  for (const tagID of filters.tagIDs) {
+    entries.push({
+      kind: "tagID",
+      value: tagID,
+      label: `Tag: ${mailTriageTagNameByID(tagID) || tagID}`,
+    });
+  }
   for (const accountID of filters.accountIDs) {
     entries.push({ kind: "accountID", value: accountID, label: `Account: ${mailAccountChipLabel(accountID)}` });
   }
@@ -11159,52 +11894,60 @@ function closeMailViewMenu() {
 }
 
 function shouldUseExpandedMailToolbar() {
-  const showScope = indexedAccountsList().length > 1;
-  const advancedAvailable = mailUsesIndexedMode() && !state.mail.indexedRuntimeFallback;
-  const panelOpen = advancedAvailable && !!state.mail.filterPanelOpen;
-  return showScope || panelOpen;
+  return !!(el.mailAccountSwitcherWrap && !el.mailAccountSwitcherWrap.classList.contains("hidden"));
 }
 
 function syncMailToolbarLayout() {
   if (!el.mailCommandbar || !el.mailToolbarContextCluster) return;
-  const expanded = shouldUseExpandedMailToolbar();
-  const scopeVisible = !!el.mailAccountSwitcherWrap && !el.mailAccountSwitcherWrap.classList.contains("hidden");
   const primaryTarget = el.mailToolbarPrimaryTools;
-  const secondaryTarget = el.mailToolbarSecondaryTools;
-  const target = expanded ? secondaryTarget : primaryTarget;
-  if (target && el.mailToolbarContextCluster.parentElement !== target) {
-    target.appendChild(el.mailToolbarContextCluster);
+  const scopeVisible = shouldUseExpandedMailToolbar();
+  const hasSecondaryTools = !!el.mailToolbarSecondaryTools
+    && Array.from(el.mailToolbarSecondaryTools.children).some((node) => (
+      node instanceof HTMLElement && !node.classList.contains("hidden")
+    ));
+  const expanded = scopeVisible || hasSecondaryTools;
+  if (primaryTarget && el.mailToolbarContextCluster.parentElement !== primaryTarget) {
+    primaryTarget.appendChild(el.mailToolbarContextCluster);
   }
   el.mailCommandbar.classList.toggle("mail-commandbar--compact", !expanded);
   el.mailCommandbar.classList.toggle("mail-commandbar--expanded", expanded);
   if (el.mailToolbarSecondary) {
     el.mailToolbarSecondary.classList.toggle("hidden", !expanded);
-    el.mailToolbarSecondary.classList.toggle("is-context-only", expanded && !scopeVisible);
+    el.mailToolbarSecondary.classList.toggle("is-context-only", !scopeVisible && hasSecondaryTools);
   }
   if (el.mailToolbarSecondaryMain) {
-    el.mailToolbarSecondaryMain.classList.toggle("hidden", !expanded || !scopeVisible);
+    el.mailToolbarSecondaryMain.classList.toggle("hidden", !scopeVisible);
+  }
+  if (el.mailToolbarSecondaryTools) {
+    el.mailToolbarSecondaryTools.classList.toggle("hidden", !hasSecondaryTools);
   }
   if (el.mailToolbarPrimaryTools) {
-    el.mailToolbarPrimaryTools.classList.toggle("hidden", expanded);
+    el.mailToolbarPrimaryTools.classList.remove("hidden");
   }
 }
 
 function renderMailFilterBar(options = {}) {
   const syncControls = options.syncControls !== false;
-  const advancedAvailable = mailUsesIndexedMode() && !state.mail.indexedRuntimeFallback;
+  const advancedAvailable = !isDraftsMailboxSelected();
+  const contentAvailable = mailUsesIndexedMode() && !state.mail.indexedRuntimeFallback;
   const panelOpen = advancedAvailable && !!state.mail.filterPanelOpen;
   if (el.mailFilterAdvanced) {
     el.mailFilterAdvanced.classList.toggle("hidden", !panelOpen);
     el.mailFilterAdvanced.dataset.waiting = appliedMailFilters().waiting ? "true" : "false";
+  }
+  if (el.mailFilterContentSection) {
+    el.mailFilterContentSection.classList.toggle("hidden", !contentAvailable);
   }
   if (el.btnMailFilters) {
     const active = panelOpen || hasAppliedAdvancedMailFilters();
     el.btnMailFilters.setAttribute("aria-pressed", panelOpen ? "true" : "false");
     el.btnMailFilters.classList.toggle("is-active", active);
     el.btnMailFilters.textContent = panelOpen ? "Hide Filters" : "Filters";
+    el.btnMailFilters.disabled = !advancedAvailable;
+    el.btnMailFilters.classList.toggle("hidden", !advancedAvailable);
   }
   if (el.mailFilterLiveHint) {
-    const showHint = !advancedAvailable && !isDraftsMailboxSelected() && state.user;
+    const showHint = panelOpen && !contentAvailable && !isDraftsMailboxSelected() && state.user;
     el.mailFilterLiveHint.classList.toggle("hidden", !showHint);
   }
   if (syncControls) {
@@ -11242,6 +11985,7 @@ async function openMailShortcutsHelp(trigger = null) {
 }
 
 function syncMailSearchInput() {
+  syncSearchClearButton(el.searchInput, el.btnSearchClear);
   renderMailFilterBar();
 }
 
@@ -11636,7 +12380,10 @@ function currentMailViewLabel() {
     return String(selectedSavedSearchRecord()?.name || "Saved View").trim();
   }
   if (state.mail.viewKind === "smart") {
-    return MAIL_SMART_VIEWS.find((item) => item.id === state.mail.smartView)?.name || "View";
+    return (
+      MAIL_TRIAGE_VIEWS.find((item) => item.id === state.mail.smartView)
+      || MAIL_SMART_VIEWS.find((item) => item.id === state.mail.smartView)
+    )?.name || "View";
   }
   return mailboxDisplayLabel(mailboxRecordByName(state.mailbox) || { name: state.mailbox || "INBOX" });
 }
@@ -11653,7 +12400,7 @@ function setMailSourceMailbox(name, options = {}) {
 
 function setMailSourceSmart(viewID) {
   state.mail.viewKind = "smart";
-  state.mail.smartView = String(viewID || "").trim();
+  state.mail.smartView = String(viewID || "").trim().toLowerCase();
   state.mail.savedSearchID = "";
   commitAppliedMailFilters(applySmartViewPresetToFilters(createMailFilterState(), state.mail.smartView), { preserveSavedView: false });
   syncMailSearchInput();
@@ -12253,6 +13000,8 @@ function normalizeIndexedMessageSummary(item) {
     answered: !!item?.answered,
     preview: mailSummaryPreviewText(item),
     thread_id: String(item?.thread_id || item?.threadID || "").trim(),
+    triage_key: String(item?.triage_key || item?.triageKey || "").trim(),
+    triage: normalizeMailTriageState(item?.triage),
     has_attachments: !!(item?.has_attachments || item?.hasAttachments),
     source: "indexed",
   };
@@ -12273,8 +13022,25 @@ function normalizeLiveMessageSummary(item, mailboxHint = "") {
     answered: !!item?.answered,
     preview: mailSummaryPreviewText(item),
     thread_id: String(item?.thread_id || item?.threadID || "").trim(),
+    triage_key: String(item?.triage_key || item?.triageKey || "").trim(),
+    triage: normalizeMailTriageState(item?.triage),
     has_attachments: !!(item?.has_attachments || item?.hasAttachments),
   };
+}
+
+function dedupeMailSummariesByID(items) {
+  const list = Array.isArray(items) ? items : [];
+  const seen = new Set();
+  const out = [];
+  for (const item of list) {
+    const id = String(item?.id || "").trim();
+    if (id) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    out.push(item);
+  }
+  return out;
 }
 
 function normalizeMailPreviewWhitespace(raw) {
@@ -12391,6 +13157,8 @@ function normalizeLiveMessageDetail(raw = {}) {
     source: "live",
     uid: Number(raw?.uid || 0) || 0,
     thread_id: String(raw?.thread_id || raw?.threadID || "").trim(),
+    triage_key: String(raw?.triage_key || raw?.triageKey || "").trim(),
+    triage: normalizeMailTriageState(raw?.triage),
     from: String(raw?.from || raw?.from_value || "").trim(),
     to: Array.isArray(raw?.to) ? raw.to.map((item) => String(item || "").trim()).filter(Boolean) : splitComposeRecipients(raw?.to || raw?.to_value || ""),
     cc: Array.isArray(raw?.cc) ? raw.cc.map((item) => String(item || "").trim()).filter(Boolean) : splitComposeRecipients(raw?.cc || raw?.cc_value || ""),
@@ -12414,6 +13182,8 @@ function normalizeIndexedMessageDetail(payload, accountID = "") {
     mailbox: String(raw?.mailbox || state.mailbox || "").trim(),
     uid: Number(raw?.uid || 0) || 0,
     thread_id: String(raw?.thread_id || raw?.threadID || "").trim(),
+    triage_key: String(raw?.triage_key || raw?.triageKey || "").trim(),
+    triage: normalizeMailTriageState(raw?.triage),
     from: String(raw?.from || raw?.from_value || "").trim(),
     to: splitComposeRecipients(raw?.to || raw?.to_value || ""),
     cc: splitComposeRecipients(raw?.cc || raw?.cc_value || ""),
@@ -12449,6 +13219,8 @@ function synthesizeThreadSummary(summary = null, detail = null, mailboxHint = ""
     answered: detail?.answered ?? summary?.answered ?? false,
     preview: "",
     thread_id: String(summary?.thread_id || detail?.thread_id || "").trim(),
+    triage_key: String(detail?.triage_key || summary?.triage_key || "").trim(),
+    triage: normalizeMailTriageState(detail?.triage || summary?.triage),
     has_attachments: Boolean(
       summary?.has_attachments
       || summary?.hasAttachments
@@ -12582,9 +13354,11 @@ function accountMailboxList(accountID) {
 }
 
 function renderMailboxes() {
+  const scrollState = captureScrollPosition(el.mailboxes);
   const items = Array.isArray(state.mail.mailboxes) ? state.mail.mailboxes : [];
   const activeNavKey = currentMailNavKey();
   const showIndexedSections = hasIndexedAccounts() && !state.mail.indexedRuntimeFallback;
+  const showTriageSection = !isDraftsMailboxSelected();
   const system = [];
   const folders = [];
   for (const mb of items) {
@@ -12739,6 +13513,9 @@ function renderMailboxes() {
     }
   };
 
+  if (showTriageSection) {
+    appendSection("Triage", MAIL_TRIAGE_VIEWS, "smart");
+  }
   if (showIndexedSections) {
     appendSection("Smart Views", MAIL_SMART_VIEWS, "smart");
     appendSection("Saved Views", visibleSavedSearches(), "saved");
@@ -12753,12 +13530,14 @@ function renderMailboxes() {
   }
   renderMailIndexStatus();
   syncMailboxActiveDescendant();
+  restoreScrollPosition(el.mailboxes, scrollState);
 }
 
 async function loadMailboxes(opts = {}) {
   if (!state.user) {
     throw new Error("Sign in required");
   }
+  await ensureMailTriageCatalogLoaded({ logErrors: false });
   await Promise.all([
     loadDrafts({ logErrors: false }).catch(() => state.mail.drafts),
     refreshIndexedMailContext({ logErrors: false }),
@@ -12847,6 +13626,9 @@ function snapshotMailState() {
     selectedDraftID: String(state.mail.selectedDraftID || ""),
     mobileSelectionMode: !!state.mail.mobileSelectionMode,
     activeMailPane: String(state.ui.activeMailPane || "messages"),
+    mailboxScroll: captureScrollPosition(el.mailboxes),
+    messageScroll: captureScrollPosition(el.messages),
+    threadScroll: captureScrollPosition(el.threadListWrap),
   };
 }
 
@@ -12888,6 +13670,9 @@ function restoreMailStateSnapshot(snapshot) {
   renderAttachmentLinks(state.selectedMessage);
   renderThreadContext();
   setActiveMailPane(snapshot.activeMailPane || (state.selectedMessage ? "reader" : "messages"), { focus: false });
+  restoreScrollPosition(el.mailboxes, snapshot.mailboxScroll);
+  restoreScrollPosition(el.messages, snapshot.messageScroll);
+  restoreScrollPosition(el.threadListWrap, snapshot.threadScroll);
 }
 
 function reconcileMailboxes(items) {
@@ -12905,7 +13690,7 @@ function reconcileMailboxes(items) {
 }
 
 function reconcileVisibleMessages(items, options = {}) {
-  const next = Array.isArray(items) ? items : [];
+  const next = dedupeMailSummariesByID(items);
   const visibleIDs = new Set(next.map((item) => String(item?.id || "")).filter(Boolean));
   const selectedIDs = Array.from(selectedMailMessageIDs()).filter((id) => visibleIDs.has(String(id || "")));
   const previousActiveID = String(state.mail.activeMessageID || "").trim();
@@ -13147,8 +13932,10 @@ function renderMailSummaryBody({
 }
 
 function renderMessages(items) {
+  const next = dedupeMailSummariesByID(items);
+  const scrollState = captureScrollPosition(el.messages);
   el.messages.innerHTML = "";
-  state.messages = Array.isArray(items) ? items : [];
+  state.messages = next;
   pruneMailSelectionToVisible();
   const activeID = String(currentActiveMailMessageID() || "").trim();
   const hasKnownActive = activeID && state.messages.some((item) => String(item?.id || "") === activeID);
@@ -13189,6 +13976,11 @@ function renderMessages(items) {
     const contextBadge = m.isDraft && String(m.context_badge || "").trim()
       ? `<span class="message-context-badge">${escapeHtml(m.context_badge)}</span>`
       : "";
+    const triageHTML = renderMailTriageInlineHTML(m, {
+      compact: true,
+      maxTags: 1,
+      className: "message-row-triage",
+    });
     const accountChip = shouldShowOwningAccountChip(m)
       ? `<span class="message-context-badge">${escapeHtml(mailAccountChipLabel(m.account_id))}</span>`
       : "";
@@ -13205,7 +13997,7 @@ function renderMessages(items) {
         previewText,
         dateText: formatListDate(m.date),
         senderAfterHTML: accountChip,
-        subjectAfterHTML: contextBadge,
+        subjectAfterHTML: `${contextBadge}${triageHTML}`,
       })}`;
     const cancelLongPress = () => {
       if (state.mail.rowLongPressTimer) {
@@ -13271,6 +14063,7 @@ function renderMessages(items) {
   syncMessageActiveDescendant();
   syncMailSelectionControls();
   applyMailActionAvailability();
+  restoreScrollPosition(el.messages, scrollState);
 }
 
 function indexedSearchMatches(item, query) {
@@ -13288,10 +14081,25 @@ function indexedSearchMatches(item, query) {
 }
 
 async function loadLegacyMailMessages(query) {
-  const endpoint = query
-    ? `/api/v1/search?mailbox=${encodeURIComponent(state.mailbox)}&q=${encodeURIComponent(query)}&page=1&page_size=40`
-    : `/api/v1/messages?mailbox=${encodeURIComponent(state.mailbox)}&page=1&page_size=40`;
-  const payload = await api(endpoint);
+  const filters = normalizeMailFilterState(currentMailFiltersPayload().filters || {});
+  const params = new URLSearchParams();
+  params.set("mailbox", String(state.mailbox || "INBOX").trim() || "INBOX");
+  params.set("page", "1");
+  params.set("page_size", "40");
+  if (query) {
+    params.set("q", query);
+  }
+  if (filters.snoozed) params.set("snoozed", "1");
+  if (filters.followUp) params.set("follow_up", "1");
+  if (filters.categoryID) params.set("category_id", filters.categoryID);
+  for (const tagID of filters.tagIDs) {
+    params.append("tag_id", tagID);
+  }
+  if (state.mail.viewKind === "smart" && (state.mail.smartView === "snoozed" || state.mail.smartView === "follow_up")) {
+    params.set("view", state.mail.smartView);
+  }
+  const endpoint = query ? "/api/v1/search" : "/api/v1/messages";
+  const payload = await api(`${endpoint}?${params.toString()}`);
   const items = (Array.isArray(payload?.items) ? payload.items : []).map((item) => normalizeLiveMessageSummary(item, state.mailbox));
   return { ...payload, items };
 }
@@ -13307,6 +14115,12 @@ function appendIndexedMailFilterParams(params, filters) {
   if (current.flagged) params.set("flagged", "1");
   if (current.hasAttachments) params.set("has_attachments", "1");
   if (current.waiting) params.set("waiting", "1");
+  if (current.snoozed) params.set("snoozed", "1");
+  if (current.followUp) params.set("follow_up", "1");
+  if (current.categoryID) params.set("category_id", current.categoryID);
+  for (const tagID of current.tagIDs) {
+    params.append("tag_id", tagID);
+  }
   for (const accountID of currentMailScope() === "all" ? current.accountIDs : []) {
     params.append("filter_account_id", accountID);
   }
@@ -13395,7 +14209,14 @@ async function loadMessages(opts = {}) {
   } catch (err) {
     if (mailUsesIndexedMode()) {
       setIndexedRuntimeFallback(formatAPIError(err, "indexed view unavailable"));
-      if (state.mail.viewKind !== "mailbox") {
+      const keepLiveSmartView = state.mail.viewKind === "smart"
+        && MAIL_TRIAGE_VIEWS.some((item) => item.id === state.mail.smartView);
+      if (state.mail.viewKind === "saved") {
+        state.mail.viewKind = "mailbox";
+        state.mail.smartView = "";
+        state.mail.savedSearchID = "";
+        renderMailboxes();
+      } else if (state.mail.viewKind !== "mailbox" && !keepLiveSmartView) {
         state.mail.viewKind = "mailbox";
         state.mail.smartView = "";
         state.mail.savedSearchID = "";
@@ -13746,6 +14567,7 @@ function renderSelectedMessageChrome(message = state.selectedMessage) {
   if (!message) {
     if (el.messageSubjectAnchor) el.messageSubjectAnchor.textContent = "(no subject)";
     renderMessageMeta([]);
+    renderMailTriageContainer(el.readerTriageChips, null);
     renderReaderInspectControls(null);
     renderReaderActionControls(null);
     applyMailActionAvailability();
@@ -13767,6 +14589,7 @@ function renderSelectedMessageChrome(message = state.selectedMessage) {
     metaRows.push(["Status", status]);
   }
   renderMessageMeta(metaRows);
+  renderMailTriageContainer(el.readerTriageChips, message, { compact: false, maxTags: 8, className: "reader-triage-chips" });
   renderReaderInspectControls(message);
   renderReaderActionControls(message);
   applyMailActionAvailability();
@@ -14018,6 +14841,7 @@ function clearReaderSelection() {
   closeReaderInspectMenu();
   if (el.messageSubjectAnchor) el.messageSubjectAnchor.textContent = "(no subject)";
   renderMessageMeta([]);
+  renderMailTriageContainer(el.readerTriageChips, null);
   renderReaderInspectControls(null);
   renderReaderBody(null);
   if (el.attachments) el.attachments.textContent = "";
@@ -14108,6 +14932,7 @@ function syncThreadActiveDescendant() {
 
 function renderThreadList() {
   if (!el.threadList || !el.threadListWrap) return;
+  const scrollState = captureScrollPosition(el.threadListWrap);
   el.threadList.innerHTML = "";
   const thread = state.thread || createThreadState();
   const items = Array.isArray(thread.items) ? thread.items : [];
@@ -14137,6 +14962,11 @@ function renderThreadList() {
     const mailboxChip = mailboxLabel
       ? `<span class="thread-row-mailbox">${escapeHtml(mailboxLabel)}</span>`
       : "";
+    const triageHTML = renderMailTriageInlineHTML(item, {
+      compact: true,
+      maxTags: 1,
+      className: "thread-row-triage",
+    });
     btn.innerHTML = `<span class="thread-row-mark" aria-hidden="true"></span>
       ${renderMailSummaryBody({
         structPrefix: "thread-row",
@@ -14150,6 +14980,7 @@ function renderThreadList() {
         previewText,
         dateText: formatListDate(item?.date),
         senderAfterHTML: mailboxChip,
+        subjectAfterHTML: triageHTML,
       })}`;
     btn.addEventListener("click", () => {
       focusMailPane("reader");
@@ -14161,6 +14992,7 @@ function renderThreadList() {
     el.threadList.appendChild(row);
   }
   syncThreadActiveDescendant();
+  restoreScrollPosition(el.threadListWrap, scrollState);
 }
 
 function renderThreadContext() {
@@ -14187,6 +15019,11 @@ function renderThreadContext() {
   const selectionLabel = formatThreadSelectionLabel(thread, hasSelection);
   el.threadSelectionStatus.textContent = selectionLabel;
   el.threadSelectionStatus.classList.toggle("hidden", selectionLabel === "");
+  renderMailTriageContainer(
+    el.threadTriageChips,
+    state.selectedMessageSummary || state.selectedMessage || null,
+    { compact: true, maxTags: 3, className: "thread-triage-chips" },
+  );
   el.threadTruncated.classList.toggle("hidden", !(hasMultiple && thread.truncated));
   el.btnThreadCollapse.classList.toggle("hidden", !canCollapse);
   el.btnThreadCollapse.setAttribute("aria-expanded", expanded ? "true" : "false");
@@ -14338,6 +15175,9 @@ async function refreshMailView(opts = {}) {
     query: state.mail.searchQuery,
   });
   await refreshSelectedThreadContext({ quiet: true });
+  try {
+    await pollDueMailTriageReminders();
+  } catch {}
   if (preservePane) {
     setActiveMailPane(activePane || (state.selectedMessage ? "reader" : "messages"), { focus: false });
   }
@@ -14956,6 +15796,24 @@ async function searchMessages() {
   setActiveMailPane("messages");
 }
 
+async function clearMailSearchQuery(options = {}) {
+  const nextFilters = readPendingMailFilterControls();
+  nextFilters.query = "";
+  if (state.mail.viewKind === "saved") {
+    state.mail.viewKind = "mailbox";
+    state.mail.savedSearchID = "";
+  }
+  commitAppliedMailFilters(nextFilters, { preserveSavedView: false });
+  syncMailSearchInput();
+  renderMailFilterBar({ syncControls: false });
+  if (options.reload === false) return;
+  clearMailMessageSelection({ render: false });
+  clearReaderSelection();
+  await loadMessages({ quiet: true });
+  setStatus(`${currentMailViewLabel()} loaded.`, "ok");
+  setActiveMailPane("messages");
+}
+
 async function clearAllMailFilters() {
   if (state.mail.viewKind === "saved") {
     state.mail.viewKind = "mailbox";
@@ -14978,7 +15836,7 @@ function currentSavedSearchFiltersJSON() {
     account_scope: String(filters.accountScope || currentMailScope() || "account").trim(),
     view_kind: "mailbox",
     mailbox: String(filters.mailbox || "").trim(),
-    smart_view: "",
+    smart_view: String(derivedSmartViewFromFilters(normalized) || "").trim(),
     query: String(normalized.query || "").trim(),
     filters: {
       from: normalized.from,
@@ -14990,6 +15848,10 @@ function currentSavedSearchFiltersJSON() {
       flagged: normalized.flagged,
       has_attachments: normalized.hasAttachments,
       waiting: normalized.waiting,
+      snoozed: normalized.snoozed,
+      follow_up: normalized.followUp,
+      category_id: normalized.categoryID,
+      tag_ids: normalizeMailFilterTagIDs(normalized.tagIDs),
       account_ids: normalizeMailFilterAccountIDs(normalized.accountIDs),
     },
   });
@@ -15172,6 +16034,8 @@ function maybeNotifyUpdater(previousStatus, nextStatus) {
       kind: "update",
       title: "Update Available",
       target: updaterNotificationTarget,
+      source: "system",
+      delivery: "both",
       dedupeKey: `updater:available:${nextLatestTag}`,
     });
   }
@@ -15184,6 +16048,8 @@ function maybeNotifyUpdater(previousStatus, nextStatus) {
       kind: "update",
       title: "Preparing Update",
       target: updaterNotificationTarget,
+      source: "system",
+      delivery: "center",
       dedupeKey: `updater:auto:preparing:${String(nextStatus.auto_update?.target_version || "").trim()}`,
     });
   }
@@ -15203,6 +16069,8 @@ function maybeNotifyUpdater(previousStatus, nextStatus) {
         kind: "update",
         title: "Update Scheduled",
         target: updaterNotificationTarget,
+        source: "system",
+        delivery: "center",
         dedupeKey: `updater:auto:scheduled:${String(nextStatus.auto_update?.target_version || "").trim()}:${String(nextStatus.auto_update?.scheduled_for || "").trim()}`,
       }
     );
@@ -15215,6 +16083,8 @@ function maybeNotifyUpdater(previousStatus, nextStatus) {
         kind: "update",
         title: "Update Installed",
         target: updaterNotificationTarget,
+        source: "system",
+        delivery: "center",
         dedupeKey: `updater:apply:completed:${nextApplyKey}`,
       });
       return;
@@ -15223,6 +16093,8 @@ function maybeNotifyUpdater(previousStatus, nextStatus) {
       kind: "update",
       title: nextApplyState === "rolled_back" ? "Update Rolled Back" : "Update Failed",
       target: updaterNotificationTarget,
+      source: "system",
+      delivery: "both",
       dedupeKey: `updater:apply:${nextApplyState}:${nextApplyKey}`,
     });
   }
@@ -16471,6 +17343,15 @@ async function handleMailKeyboard(event) {
   if (isEditable && event.key !== "Escape") return;
   const k = event.key.toLowerCase();
 
+  if (target === el.searchInput && event.key === "Escape") {
+    if (state.mail.filterPanelOpen) {
+      event.preventDefault();
+      state.mail.filterPanelOpen = false;
+      renderMailFilterBar();
+    }
+    return;
+  }
+
   if (event.key === "Tab") {
     event.preventDefault();
     cycleMailPane(event.shiftKey ? -1 : 1);
@@ -16617,6 +17498,420 @@ function formatListDate(value) {
     return d.toLocaleDateString([], { month: "short", day: "numeric" });
   }
   return d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+}
+
+function localDateTimeInputValue(value) {
+  const date = value instanceof Date ? value : new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (num) => String(num).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatMailTriageChipTime(value, options = {}) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return raw;
+  if (options.compact !== false) {
+    const day = date.toLocaleDateString([], { month: "short", day: "numeric" });
+    const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    return `${day} ${time}`;
+  }
+  return formatDate(date.toISOString());
+}
+
+function mailTriageChipDescriptors(item, options = {}) {
+  const triage = normalizeMailTriageState(item?.triage);
+  const maxTags = Math.max(0, Number(options.maxTags ?? 2));
+  const chips = [];
+  if (triage.category?.name) {
+    chips.push({
+      kind: "category",
+      label: triage.category.name,
+      title: `Category: ${triage.category.name}`,
+    });
+  }
+  if (triage.reminder_at || triage.is_follow_up_due) {
+    const timeLabel = triage.reminder_at ? formatMailTriageChipTime(triage.reminder_at, options) : "";
+    chips.push({
+      kind: "follow-up",
+      label: triage.is_follow_up_due
+        ? (timeLabel ? `Follow Up · Due ${timeLabel}` : "Follow Up · Due")
+        : (timeLabel && options.compact !== true ? `Follow Up · ${timeLabel}` : "Follow Up"),
+      title: triage.reminder_at ? `Follow up reminder: ${formatDate(triage.reminder_at)}` : "Follow up reminder",
+    });
+  }
+  if (triage.snoozed_until || triage.is_snoozed) {
+    const timeLabel = triage.snoozed_until ? formatMailTriageChipTime(triage.snoozed_until, options) : "";
+    chips.push({
+      kind: "snoozed",
+      label: timeLabel && options.compact !== true ? `Snoozed · ${timeLabel}` : "Snoozed",
+      title: triage.snoozed_until ? `Snoozed until ${formatDate(triage.snoozed_until)}` : "Snoozed",
+    });
+  }
+  for (const tag of triage.tags.slice(0, maxTags)) {
+    chips.push({
+      kind: "tag",
+      label: String(tag?.name || tag?.id || "").trim(),
+      title: `Tag: ${String(tag?.name || tag?.id || "").trim()}`,
+    });
+  }
+  if (triage.tags.length > maxTags) {
+    chips.push({
+      kind: "tag",
+      label: `+${triage.tags.length - maxTags}`,
+      title: `${triage.tags.length - maxTags} more tags`,
+    });
+  }
+  return chips.filter((item) => item.label);
+}
+
+function renderMailTriageInlineHTML(item, options = {}) {
+  const chips = mailTriageChipDescriptors(item, options);
+  if (chips.length === 0) return "";
+  const classes = ["mail-triage-inline"];
+  if (options.compact) classes.push("mail-triage-inline--compact");
+  if (options.className) classes.push(String(options.className));
+  const chipsHTML = chips
+    .map((chip) => (
+      `<span class="mail-triage-chip mail-triage-chip--${escapeHtml(chip.kind)}" title="${escapeHtml(chip.title || chip.label)}">${escapeHtml(chip.label)}</span>`
+    ))
+    .join("");
+  return `<span class="${classes.join(" ")}">${chipsHTML}</span>`;
+}
+
+function renderMailTriageContainer(container, item, options = {}) {
+  if (!container) return;
+  const html = renderMailTriageInlineHTML(item, options);
+  container.innerHTML = html;
+  container.classList.toggle("hidden", html === "");
+}
+
+function buildSharedMailTriageSummary(items = []) {
+  const list = (Array.isArray(items) ? items : []).filter((item) => item && mailTriageHasState(item));
+  if (list.length === 0) return null;
+  const normalized = list.map((item) => normalizeMailTriageState(item?.triage));
+  const commonCategory = normalized.every((item) => String(item?.category?.id || "") === String(normalized[0]?.category?.id || ""))
+    ? normalized[0]?.category || null
+    : null;
+  const allSnoozed = normalized.every((item) => !!item?.is_snoozed);
+  const allFollowUp = normalized.every((item) => !!item?.reminder_at);
+  const anyFollowUpDue = normalized.some((item) => !!item?.is_follow_up_due);
+  let commonTags = normalized[0]?.tags || [];
+  for (const item of normalized.slice(1)) {
+    const ids = new Set((item?.tags || []).map((tag) => String(tag?.id || "").trim()).filter(Boolean));
+    commonTags = commonTags.filter((tag) => ids.has(String(tag?.id || "").trim()));
+  }
+  const snoozeValue = allSnoozed && normalized.every((item) => String(item?.snoozed_until || "") === String(normalized[0]?.snoozed_until || ""))
+    ? normalized[0]?.snoozed_until || ""
+    : "";
+  const reminderValue = allFollowUp && normalized.every((item) => String(item?.reminder_at || "") === String(normalized[0]?.reminder_at || ""))
+    ? normalized[0]?.reminder_at || ""
+    : "";
+  const summary = {
+    triage: {
+      category: commonCategory,
+      tags: commonTags,
+      snoozed_until: snoozeValue,
+      reminder_at: reminderValue,
+      is_snoozed: allSnoozed,
+      is_follow_up_due: anyFollowUpDue,
+    },
+  };
+  return mailTriageHasState(summary) ? summary : null;
+}
+
+function normalizeMailTriageTarget(target = {}) {
+  return {
+    source: mailItemUsesIndexedSource(target) ? "indexed" : String(target?.source || "").trim() === "indexed" ? "indexed" : "live",
+    account_id: String(target?.account_id || target?.accountID || "").trim(),
+    thread_id: String(target?.thread_id || target?.threadID || "").trim(),
+    mailbox: String(target?.mailbox || "").trim(),
+    subject: String(target?.subject || "").trim(),
+    from: String(target?.from || "").trim(),
+  };
+}
+
+function mailTriageTargetKey(target = {}) {
+  const normalized = normalizeMailTriageTarget(target);
+  return [
+    normalized.source || "live",
+    normalized.account_id || "",
+    normalized.thread_id || "",
+  ].join("\x00");
+}
+
+function mailTriageTargetForItem(item = null) {
+  if (!item) return null;
+  const isIndexed = mailItemUsesIndexedSource(item);
+  let threadID = String(item?.thread_id || "").trim();
+  if (!threadID && state.selectedMessage && String(state.selectedMessage?.id || "") === String(item?.id || "")) {
+    threadID = String(state.selectedMessage?.thread_id || "").trim();
+  }
+  if (!threadID && Array.isArray(state.thread?.items)) {
+    const threadItem = state.thread.items.find((entry) => String(entry?.id || "") === String(item?.id || "")) || null;
+    if (threadItem) {
+      threadID = String(threadItem?.thread_id || "").trim();
+    }
+  }
+  if (!threadID && String(state.selectedMessage?.id || "") === String(item?.id || "")) {
+    threadID = String(state.thread?.id || "").trim();
+  }
+  if (!threadID) return null;
+  return normalizeMailTriageTarget({
+    source: isIndexed ? "indexed" : "live",
+    account_id: isIndexed ? String(item?.account_id || currentIndexedAccountID() || "").trim() : "",
+    thread_id: threadID,
+    mailbox: String(item?.mailbox || state.mailbox || "").trim(),
+    subject: String(item?.subject || "").trim(),
+    from: String(item?.from || "").trim(),
+  });
+}
+
+function selectedMailTriageTargets() {
+  const seen = new Set();
+  const out = [];
+  for (const item of selectedMailActionItems()) {
+    const target = mailTriageTargetForItem(item);
+    if (!target || !target.thread_id) continue;
+    const key = mailTriageTargetKey(target);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(target);
+  }
+  if (out.length === 0 && state.selectedMessage) {
+    const target = mailTriageTargetForItem(state.selectedMessage);
+    if (target?.thread_id) {
+      out.push(target);
+    }
+  }
+  return out;
+}
+
+function updateLocalMailTriageStates(items = []) {
+  const stateByKey = new Map();
+  for (const item of Array.isArray(items) ? items : []) {
+    const target = normalizeMailTriageTarget(item?.target || {});
+    const key = mailTriageTargetKey(target);
+    if (!target.thread_id || !key) continue;
+    stateByKey.set(key, {
+      triage_key: String(item?.triage_key || item?.triageKey || "").trim(),
+      triage: normalizeMailTriageState(item?.triage),
+    });
+  }
+  const applyToItem = (item) => {
+    if (!item) return;
+    const key = mailTriageTargetKey(mailTriageTargetForItem(item) || normalizeMailTriageTarget({
+      source: mailItemUsesIndexedSource(item) ? "indexed" : "live",
+      account_id: item?.account_id,
+      thread_id: item?.thread_id,
+    }));
+    const next = stateByKey.get(key);
+    if (!next) return;
+    item.triage_key = next.triage_key;
+    item.triage = normalizeMailTriageState(next.triage);
+  };
+  (Array.isArray(state.messages) ? state.messages : []).forEach(applyToItem);
+  applyToItem(state.selectedMessageSummary);
+  applyToItem(state.selectedMessage);
+  (Array.isArray(state.thread?.items) ? state.thread.items : []).forEach(applyToItem);
+}
+
+function nextMailTriagePresetDate(preset) {
+  const now = new Date();
+  const date = new Date(now.getTime());
+  switch (String(preset || "").trim()) {
+    case "later_today": {
+      const later = new Date(now.getTime() + (3 * 60 * 60 * 1000));
+      const evening = new Date(now.getTime());
+      evening.setHours(18, 0, 0, 0);
+      return later > evening ? later : evening;
+    }
+    case "tomorrow":
+      date.setDate(date.getDate() + 1);
+      date.setHours(9, 0, 0, 0);
+      return date;
+    case "weekend": {
+      const day = date.getDay();
+      const delta = day === 6 ? 0 : day === 0 ? 6 : (6 - day);
+      date.setDate(date.getDate() + delta);
+      date.setHours(9, 0, 0, 0);
+      return date;
+    }
+    case "next_week": {
+      const day = date.getDay();
+      const delta = day === 0 ? 1 : (8 - day);
+      date.setDate(date.getDate() + delta);
+      date.setHours(9, 0, 0, 0);
+      return date;
+    }
+    default:
+      date.setHours(date.getHours() + 1, 0, 0, 0);
+      return date;
+  }
+}
+
+async function promptMailTriageDateTime(kind, trigger = null, preset = "") {
+  const defaultValue = localDateTimeInputValue(preset ? nextMailTriagePresetDate(preset) : new Date(Date.now() + 60 * 60 * 1000));
+  const input = await showPromptModal({
+    title: kind === "snooze" ? "Snooze Conversation" : "Set Follow Up Reminder",
+    body: kind === "snooze"
+      ? "Pick when this conversation should return to your normal mailbox views."
+      : "Pick when this conversation should surface in Follow Up.",
+    label: kind === "snooze" ? "Snooze until" : "Remind at",
+    inputType: "datetime-local",
+    defaultValue,
+    confirmText: kind === "snooze" ? "Snooze" : "Set Reminder",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (input === null) return null;
+  const date = new Date(String(input || "").trim());
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Choose a valid date and time.");
+  }
+  return date.toISOString();
+}
+
+function matchMailTriageCatalogEntryByName(items, value) {
+  const needle = String(value || "").trim().toLowerCase();
+  if (!needle) return null;
+  return (Array.isArray(items) ? items : []).find((item) => String(item?.name || "").trim().toLowerCase() === needle) || null;
+}
+
+function promptTagNamesDescription() {
+  const items = Array.isArray(currentMailTriageCatalog().tags) ? currentMailTriageCatalog().tags : [];
+  if (items.length === 0) return "Type one or more tag names separated by commas. New names are created when you add tags.";
+  return `Type one or more tag names separated by commas. Existing tags: ${items.slice(0, 8).map((item) => item.name).join(", ")}${items.length > 8 ? "…" : ""}`;
+}
+
+async function promptMailTriageCategoryChoice(trigger = null) {
+  await ensureMailTriageCatalogLoaded({ logErrors: false });
+  const catalog = currentMailTriageCatalog();
+  const input = await showPromptModal({
+    title: "Set Category",
+    body: "Type an existing category or create a new one for the selected conversation.",
+    label: "Category",
+    defaultValue: "",
+    choices: (Array.isArray(catalog.categories) ? catalog.categories : []).map((item) => item.name),
+    confirmText: "Save",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (input === null) return null;
+  const trimmed = String(input || "").trim();
+  if (!trimmed) {
+    throw new Error("Category is required.");
+  }
+  const existing = matchMailTriageCatalogEntryByName(catalog.categories, trimmed);
+  return existing ? { category_id: existing.id } : { category_name: trimmed };
+}
+
+function parseMailTriageNameTokens(raw = "") {
+  const seen = new Set();
+  const out = [];
+  for (const token of String(raw || "").split(/[,\n;]/)) {
+    const trimmed = String(token || "").trim();
+    const key = trimmed.toLowerCase();
+    if (!trimmed || seen.has(key)) continue;
+    seen.add(key);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+async function promptMailTriageTagChange(mode, trigger = null) {
+  await ensureMailTriageCatalogLoaded({ logErrors: false });
+  const catalog = currentMailTriageCatalog();
+  const input = await showPromptModal({
+    title: mode === "remove" ? "Remove Tags" : "Add Tags",
+    body: promptTagNamesDescription(),
+    label: "Tags",
+    defaultValue: "",
+    choices: (Array.isArray(catalog.tags) ? catalog.tags : []).map((item) => item.name),
+    confirmText: mode === "remove" ? "Remove" : "Add",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (input === null) return null;
+  const names = parseMailTriageNameTokens(input);
+  if (names.length === 0) {
+    throw new Error("Enter at least one tag.");
+  }
+  const existingIDs = [];
+  const newNames = [];
+  for (const name of names) {
+    const existing = matchMailTriageCatalogEntryByName(catalog.tags, name);
+    if (existing?.id) {
+      existingIDs.push(existing.id);
+    } else if (mode === "add") {
+      newNames.push(name);
+    }
+  }
+  if (mode === "remove" && existingIDs.length === 0) {
+    throw new Error("No matching tags found.");
+  }
+  return mode === "remove"
+    ? { remove_tag_ids: existingIDs }
+    : { add_tag_ids: existingIDs, add_tag_names: newNames };
+}
+
+async function applyMailTriageMutation(mutation = {}, options = {}) {
+  const targets = Array.isArray(options.targets) && options.targets.length > 0
+    ? options.targets
+    : selectedMailTriageTargets();
+  if (targets.length === 0) {
+    throw new Error("Conversation context is unavailable for the selected message.");
+  }
+  const payload = {
+    targets,
+    ...mutation,
+  };
+  const response = await api("/api/v2/mail-triage/actions", {
+    method: "POST",
+    json: payload,
+    logErrors: false,
+  });
+  updateLocalMailTriageStates(Array.isArray(response?.items) ? response.items : []);
+  if (
+    payload.category_name
+    || (Array.isArray(payload.add_tag_names) && payload.add_tag_names.length > 0)
+    || options.refreshCatalog === true
+  ) {
+    await loadMailTriageCatalog({ logErrors: false });
+  } else {
+    renderMailTriageSettingsLists();
+    renderMailFilterBar({ syncControls: true });
+  }
+  await loadMessages({ quiet: true });
+  renderSelectedMessageChrome(state.selectedMessage);
+  renderThreadContext();
+  syncMailSelectionControls();
+}
+
+async function pollDueMailTriageReminders() {
+  if (!state.user) return;
+  const payload = await api("/api/v2/mail-triage/reminders/due", { logErrors: false });
+  const items = Array.isArray(payload?.items) ? payload.items : [];
+  for (const item of items) {
+    const triageKey = String(item?.triage_key || "").trim();
+    const reminderAt = String(item?.reminder_at || "").trim();
+    const subject = String(item?.subject || "").trim() || "(no subject)";
+    const from = formatSenderDisplayName(item?.from || "");
+    setStatus(`${subject} is due for follow-up${from ? ` from ${from}` : ""}.`, "info", {
+      title: "Follow Up Due",
+      source: "mail",
+      delivery: "center",
+      dedupeKey: `mail-triage-reminder:${triageKey}:${reminderAt}`,
+      target: {
+        view: "mail",
+        accountId: String(item?.account_id || "").trim(),
+        smartView: "follow_up",
+        mailbox: String(item?.mailbox || "").trim(),
+        threadId: String(item?.thread_id || "").trim(),
+      },
+    });
+  }
 }
 
 function escapeHtml(s) {
@@ -16898,6 +18193,7 @@ function bindUI() {
 
   const runSettingsSearch = () => {
     state.settings.searchQuery = String(el.settingsSearchInput?.value || "").trim();
+    syncSearchClearButton(el.settingsSearchInput, el.btnSettingsSearchClear);
     const results = buildJumpResults(settingsSearchEntries(), state.settings.searchQuery);
     renderJumpResults(el.settingsSearchResults, results, async (entry) => {
       await navigateSettingsTarget(entry.target || {});
@@ -16906,6 +18202,7 @@ function bindUI() {
 
   const runAdminSearch = () => {
     const query = String(el.adminSearchInput?.value || "").trim();
+    syncSearchClearButton(el.adminSearchInput, el.btnAdminSearchClear);
     const results = buildJumpResults(adminSearchEntries(), query);
     renderJumpResults(el.adminSearchResults, results, async (entry) => {
       await navigateAdminTarget(entry.target || {});
@@ -16915,10 +18212,63 @@ function bindUI() {
   if (el.settingsSearchInput) {
     el.settingsSearchInput.addEventListener("input", runSettingsSearch);
     el.settingsSearchInput.addEventListener("focus", runSettingsSearch);
+    el.settingsSearchInput.addEventListener("keydown", async (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        clearSearchInputValue(el.settingsSearchInput, el.btnSettingsSearchClear);
+        if (el.settingsSearchResults) {
+          el.settingsSearchResults.classList.add("hidden");
+          el.settingsSearchResults.replaceChildren();
+        }
+        return;
+      }
+      if (event.key !== "Enter") return;
+      const firstResult = el.settingsSearchResults?.querySelector(".settings-search-result");
+      if (!(firstResult instanceof HTMLElement)) return;
+      event.preventDefault();
+      firstResult.click();
+    });
+  }
+  if (el.btnSettingsSearchClear) {
+    el.btnSettingsSearchClear.addEventListener("click", () => {
+      clearSearchInputValue(el.settingsSearchInput, el.btnSettingsSearchClear);
+      state.settings.searchQuery = "";
+      if (el.settingsSearchResults) {
+        el.settingsSearchResults.classList.add("hidden");
+        el.settingsSearchResults.replaceChildren();
+      }
+      el.settingsSearchInput?.focus();
+    });
   }
   if (el.adminSearchInput) {
     el.adminSearchInput.addEventListener("input", runAdminSearch);
     el.adminSearchInput.addEventListener("focus", runAdminSearch);
+    el.adminSearchInput.addEventListener("keydown", async (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        clearSearchInputValue(el.adminSearchInput, el.btnAdminSearchClear);
+        if (el.adminSearchResults) {
+          el.adminSearchResults.classList.add("hidden");
+          el.adminSearchResults.replaceChildren();
+        }
+        return;
+      }
+      if (event.key !== "Enter") return;
+      const firstResult = el.adminSearchResults?.querySelector(".settings-search-result");
+      if (!(firstResult instanceof HTMLElement)) return;
+      event.preventDefault();
+      firstResult.click();
+    });
+  }
+  if (el.btnAdminSearchClear) {
+    el.btnAdminSearchClear.addEventListener("click", () => {
+      clearSearchInputValue(el.adminSearchInput, el.btnAdminSearchClear);
+      if (el.adminSearchResults) {
+        el.adminSearchResults.classList.add("hidden");
+        el.adminSearchResults.replaceChildren();
+      }
+      el.adminSearchInput?.focus();
+    });
   }
 
   if (el.settingsNavSignIn) {
@@ -17155,14 +18505,14 @@ function bindUI() {
     if (event.target && event.target.closest && event.target.closest(".row-menu")) return;
     const target = event.target;
     if (el.settingsSearchResults && el.settingsSearchInput) {
-      const inSettingsSearch = !!(target && target.closest && target.closest("#settings-search-input"));
+      const inSettingsSearch = !!(target && target.closest && target.closest(".settings-search"));
       const inSettingsResults = !!(target && target.closest && target.closest("#settings-search-results"));
       if (!inSettingsSearch && !inSettingsResults) {
         el.settingsSearchResults.classList.add("hidden");
       }
     }
     if (el.adminSearchResults && el.adminSearchInput) {
-      const inAdminSearch = !!(target && target.closest && target.closest("#admin-search-input"));
+      const inAdminSearch = !!(target && target.closest && target.closest(".settings-search"));
       const inAdminResults = !!(target && target.closest && target.closest("#admin-search-results"));
       if (!inAdminSearch && !inAdminResults) {
         el.adminSearchResults.classList.add("hidden");
@@ -17551,6 +18901,106 @@ function bindUI() {
       renderMailSettingsSenderList();
     });
   }
+  if (el.btnSettingsMailTriageCategoryNew) {
+    el.btnSettingsMailTriageCategoryNew.addEventListener("click", async () => {
+      try {
+        const input = await showPromptModal({
+          title: "New Category",
+          body: "Create a reusable category for conversation triage.",
+          label: "Category",
+          defaultValue: "",
+          confirmText: "Create",
+          cancelText: "Cancel",
+          trigger: el.btnSettingsMailTriageCategoryNew,
+        });
+        if (input === null) return;
+        await api("/api/v2/mail-triage/categories", {
+          method: "POST",
+          json: { name: String(input || "").trim() },
+          logErrors: false,
+        });
+        await loadMailTriageCatalog({ logErrors: false });
+        setMailSettingsNote("Category created.", "ok");
+      } catch (err) {
+        setMailSettingsNote(formatAPIError(err, "Failed to create category."), "error");
+      }
+    });
+  }
+  if (el.btnSettingsMailTriageCategoryDelete) {
+    el.btnSettingsMailTriageCategoryDelete.addEventListener("click", async () => {
+      const current = selectedMailTriageCategoryRecord();
+      if (!current) return;
+      try {
+        const confirmed = await showConfirmModal({
+          title: "Delete category?",
+          body: `${String(current.name || "This category")} will be removed and cleared from any conversations using it.`,
+          confirmText: "Delete",
+          cancelText: "Cancel",
+          trigger: el.btnSettingsMailTriageCategoryDelete,
+        });
+        if (!confirmed) return;
+        await api(`/api/v2/mail-triage/categories/${encodeURIComponent(String(current.id || "").trim())}`, {
+          method: "DELETE",
+          json: {},
+          logErrors: false,
+        });
+        await loadMailTriageCatalog({ logErrors: false });
+        setMailSettingsNote("Category deleted.", "ok");
+      } catch (err) {
+        setMailSettingsNote(formatAPIError(err, "Failed to delete category."), "error");
+      }
+    });
+  }
+  if (el.btnSettingsMailTriageTagNew) {
+    el.btnSettingsMailTriageTagNew.addEventListener("click", async () => {
+      try {
+        const input = await showPromptModal({
+          title: "New Tag",
+          body: "Create a reusable tag for conversation triage.",
+          label: "Tag",
+          defaultValue: "",
+          confirmText: "Create",
+          cancelText: "Cancel",
+          trigger: el.btnSettingsMailTriageTagNew,
+        });
+        if (input === null) return;
+        await api("/api/v2/mail-triage/tags", {
+          method: "POST",
+          json: { name: String(input || "").trim() },
+          logErrors: false,
+        });
+        await loadMailTriageCatalog({ logErrors: false });
+        setMailSettingsNote("Tag created.", "ok");
+      } catch (err) {
+        setMailSettingsNote(formatAPIError(err, "Failed to create tag."), "error");
+      }
+    });
+  }
+  if (el.btnSettingsMailTriageTagDelete) {
+    el.btnSettingsMailTriageTagDelete.addEventListener("click", async () => {
+      const current = selectedMailTriageTagRecord();
+      if (!current) return;
+      try {
+        const confirmed = await showConfirmModal({
+          title: "Delete tag?",
+          body: `${String(current.name || "This tag")} will be removed from every conversation using it.`,
+          confirmText: "Delete",
+          cancelText: "Cancel",
+          trigger: el.btnSettingsMailTriageTagDelete,
+        });
+        if (!confirmed) return;
+        await api(`/api/v2/mail-triage/tags/${encodeURIComponent(String(current.id || "").trim())}`, {
+          method: "DELETE",
+          json: {},
+          logErrors: false,
+        });
+        await loadMailTriageCatalog({ logErrors: false });
+        setMailSettingsNote("Tag deleted.", "ok");
+      } catch (err) {
+        setMailSettingsNote(formatAPIError(err, "Failed to delete tag."), "error");
+      }
+    });
+  }
   if (el.settingsMailRulesAccount) {
     el.settingsMailRulesAccount.addEventListener("change", async () => {
       state.settings.mail.rulesAccountID = String(el.settingsMailRulesAccount.value || "").trim();
@@ -17839,6 +19289,8 @@ function bindUI() {
             kind: "update",
             title: "Update Queued",
             target: updaterNotificationTarget,
+            source: "system",
+            delivery: "center",
             dedupeKey: targetVersion ? `updater:queued:${targetVersion}` : "updater:queued",
           }
         );
@@ -18348,6 +19800,7 @@ function bindUI() {
     try {
       await loadMailboxes();
       await loadMessages();
+      await pollDueMailTriageReminders();
     } catch (err) {
       presentAPIError(err, "Failed to load mail");
     }
@@ -18485,6 +19938,34 @@ function bindUI() {
     }
   };
 
+  if (el.searchInput) {
+    el.searchInput.addEventListener("input", () => {
+      syncSearchClearButton(el.searchInput, el.btnSearchClear);
+    });
+    el.searchInput.addEventListener("keydown", async (event) => {
+      if (event.key !== "Escape") return;
+      if (String(el.searchInput.value || "").trim() === "") return;
+      event.preventDefault();
+      event.stopPropagation();
+      try {
+        await clearMailSearchQuery();
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to clear search."), "error");
+      }
+    });
+  }
+
+  if (el.btnSearchClear) {
+    el.btnSearchClear.onclick = async () => {
+      try {
+        await clearMailSearchQuery();
+        el.searchInput?.focus();
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to clear search."), "error");
+      }
+    };
+  }
+
   for (const input of [
     el.searchInput,
     el.mailFilterFrom,
@@ -18492,6 +19973,7 @@ function bindUI() {
     el.mailFilterSubject,
     el.mailFilterDateFrom,
     el.mailFilterDateTo,
+    el.mailFilterTags,
   ]) {
     if (!input) continue;
     input.addEventListener("keydown", async (event) => {
@@ -18572,10 +20054,10 @@ function bindUI() {
 
   if (el.btnMailFilters) {
     el.btnMailFilters.onclick = () => {
-      const advancedAvailable = mailUsesIndexedMode() && !state.mail.indexedRuntimeFallback;
+      const advancedAvailable = !isDraftsMailboxSelected();
       if (!advancedAvailable) {
         closeMailViewMenu();
-        setStatus("Advanced filters require indexed mail.", "info");
+        setStatus("Conversation filters are unavailable in Drafts.", "info", { skipCenter: true });
         return;
       }
       state.mail.filterPanelOpen = !state.mail.filterPanelOpen;
@@ -18593,6 +20075,98 @@ function bindUI() {
         setStatus(err.message, "error");
       }
     };
+  }
+
+  [
+    el.btnMailFilterUnread,
+    el.btnMailFilterFlagged,
+    el.btnMailFilterAttachments,
+    el.btnMailFilterFollowUp,
+    el.btnMailFilterSnoozed,
+  ].forEach((button) => {
+    if (!button) return;
+    button.addEventListener("click", () => {
+      setMailFilterToggleButton(button, !mailFilterTogglePressed(button));
+    });
+  });
+
+  for (const menu of Array.from(document.querySelectorAll(".mail-triage-menu"))) {
+    menu.addEventListener("toggle", () => {
+      if (menu.open) {
+        closeOpenRowMenus(menu);
+      }
+    });
+  }
+
+  for (const trigger of Array.from(document.querySelectorAll("[data-triage-command]"))) {
+    trigger.addEventListener("click", async (event) => {
+      const command = String(trigger.getAttribute("data-triage-command") || "").trim();
+      const preset = String(trigger.getAttribute("data-triage-preset") || "").trim();
+      const menu = trigger.closest(".row-menu");
+      if (menu instanceof HTMLElement) {
+        menu.removeAttribute("open");
+      }
+      try {
+        if (command === "snooze-preset") {
+          await applyMailTriageMutation({ snoozed_until: nextMailTriagePresetDate(preset).toISOString() });
+          return;
+        }
+        if (command === "snooze-custom") {
+          const value = await promptMailTriageDateTime("snooze", trigger);
+          if (!value) return;
+          await applyMailTriageMutation({ snoozed_until: value });
+          return;
+        }
+        if (command === "clear-snooze") {
+          await applyMailTriageMutation({ clear_snooze: true });
+          return;
+        }
+        if (command === "remind-preset") {
+          await applyMailTriageMutation({ reminder_at: nextMailTriagePresetDate(preset).toISOString() });
+          return;
+        }
+        if (command === "remind-custom") {
+          const value = await promptMailTriageDateTime("remind", trigger);
+          if (!value) return;
+          await applyMailTriageMutation({ reminder_at: value });
+          return;
+        }
+        if (command === "clear-reminder") {
+          await applyMailTriageMutation({ clear_reminder: true });
+          return;
+        }
+        if (command === "set-category") {
+          const payload = await promptMailTriageCategoryChoice(trigger);
+          if (!payload) return;
+          await applyMailTriageMutation(payload, { refreshCatalog: !!payload.category_name });
+          return;
+        }
+        if (command === "clear-category") {
+          await applyMailTriageMutation({ clear_category: true });
+          return;
+        }
+        if (command === "add-tags") {
+          const payload = await promptMailTriageTagChange("add", trigger);
+          if (!payload) return;
+          await applyMailTriageMutation(payload, {
+            refreshCatalog: Array.isArray(payload.add_tag_names) && payload.add_tag_names.length > 0,
+          });
+          return;
+        }
+        if (command === "remove-tags") {
+          const payload = await promptMailTriageTagChange("remove", trigger);
+          if (!payload) return;
+          await applyMailTriageMutation(payload);
+          return;
+        }
+        if (command === "clear-tags") {
+          await applyMailTriageMutation({ clear_tags: true });
+        }
+      } catch (err) {
+        event.preventDefault();
+        setStatus(formatAPIError(err, "Conversation triage update failed."), "error");
+      }
+    });
   }
 
   if (el.btnReaderViewHTML) {
