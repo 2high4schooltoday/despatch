@@ -505,13 +505,21 @@ function parseMultipartRequest(request) {
   return { files, fields };
 }
 
-async function mockComposeReliabilityScenario(page) {
+async function mockComposeReliabilityScenario(page, options = {}) {
   const fixture = composeReliabilityFixture();
+  const opts = {
+    delayFirstPatchMs: 0,
+    ...options,
+  };
   const drafts = new Map();
   const attachmentBodies = new Map();
   let draftSeq = 1;
   let attachmentSeq = 1;
   let sendAttempts = 0;
+  let patchCount = 0;
+  const runtime = {
+    lastSendDraft: null,
+  };
 
   const draftList = () => Array
     .from(drafts.values())
@@ -556,6 +564,27 @@ async function mockComposeReliabilityScenario(page) {
     if (path === '/api/v2/security/mfa/webauthn') return ok({ items: [] });
     if (path === '/api/v2/security/mfa/trusted-devices') return ok({ items: [] });
     if (path === '/api/v2/security/sessions') return ok({ items: [] });
+    if (path === '/api/v2/mail/senders') {
+      return ok({
+        items: [{
+          id: 'sender-primary',
+          kind: 'primary',
+          name: 'Admin',
+          from_email: fixture.user.email,
+          reply_to: '',
+          signature_text: '',
+          signature_html: '',
+          account_id: 'acct-primary',
+          account_label: 'Primary Account',
+          account_login: fixture.user.email,
+          is_default: true,
+          is_primary: true,
+          can_delete: false,
+          can_schedule: true,
+          status: 'ok',
+        }],
+      });
+    }
     if (path === '/api/v1/mailboxes') {
       const draftCount = draftList().length;
       return ok(fixture.mailboxes.map((item) => (
@@ -584,9 +613,11 @@ async function mockComposeReliabilityScenario(page) {
         const draft = {
           id: `draft-${draftSeq++}`,
           account_id: payload.account_id || '',
+          sender_profile_id: payload.sender_profile_id || '',
           identity_id: payload.identity_id || '',
           compose_mode: payload.compose_mode || 'send',
           context_message_id: payload.context_message_id || '',
+          context_account_id: payload.context_account_id || '',
           from_mode: payload.from_mode || 'default',
           from_manual: payload.from_manual || '',
           client_state_json: payload.client_state_json || '',
@@ -597,6 +628,8 @@ async function mockComposeReliabilityScenario(page) {
           body_text: payload.body_text || '',
           body_html: payload.body_html || '',
           attachments_json: '[]',
+          send_mode: payload.send_mode || '',
+          scheduled_for: payload.scheduled_for || '',
           status: payload.status || 'active',
           last_send_error: payload.last_send_error || '',
           created_at: '2026-03-09T10:00:00.000Z',
@@ -678,6 +711,10 @@ async function mockComposeReliabilityScenario(page) {
       if (route.request().method() === 'GET') return ok(draft);
       if (route.request().method() === 'PATCH') {
         const payload = route.request().postDataJSON();
+        patchCount += 1;
+        if (opts.delayFirstPatchMs > 0 && patchCount === 1) {
+          await new Promise((resolve) => setTimeout(resolve, opts.delayFirstPatchMs));
+        }
         Object.assign(draft, payload, { updated_at: new Date().toISOString() });
         drafts.set(draftID, draft);
         return ok(draft);
@@ -692,6 +729,14 @@ async function mockComposeReliabilityScenario(page) {
       const draftID = decodeURIComponent(draftSendMatch[1]);
       const draft = drafts.get(draftID);
       if (!draft) return ok({ error: 'draft_not_found' }, { status: 404 });
+      runtime.lastSendDraft = { ...draft };
+      if (String(draft.send_mode || '').trim().toLowerCase() === 'scheduled' && String(draft.scheduled_for || '').trim()) {
+        draft.status = 'scheduled';
+        draft.last_send_error = '';
+        draft.updated_at = new Date().toISOString();
+        drafts.set(draftID, draft);
+        return ok({ status: 'scheduled', scheduled_for: draft.scheduled_for, draft_id: draft.id });
+      }
       sendAttempts += 1;
       if (sendAttempts === 1) {
         draft.status = 'failed';
@@ -718,6 +763,8 @@ async function mockComposeReliabilityScenario(page) {
       body: JSON.stringify({ error: path }),
     });
   });
+
+  return runtime;
 }
 
 async function mockIndexedAccountLockedScenario(page) {
@@ -1744,6 +1791,617 @@ async function mockThreadedMailScenario(page) {
   });
 }
 
+async function mockSingletonThreadScenario(page) {
+  const fixture = threadedMailFixture();
+  fixture.mailboxItems = [
+    {
+      id: 'single-1',
+      mailbox: 'INBOX',
+      from: 'mailer-daemon@example.com',
+      subject: 'Delivery report',
+      date: '2026-03-10T08:00:00.000Z',
+      seen: true,
+      answered: false,
+      flagged: false,
+      preview: 'Single thread item.',
+      thread_id: 'thread-single-1',
+    },
+  ];
+  fixture.messageDetails = {
+    'single-1': {
+      id: 'single-1',
+      mailbox: 'INBOX',
+      from: 'mailer-daemon@example.com',
+      to: ['admin@example.com'],
+      subject: 'Delivery report',
+      date: '2026-03-10T08:00:00.000Z',
+      seen: true,
+      flagged: false,
+      answered: false,
+      body: 'Single thread item.',
+      body_html: '',
+      attachments: [],
+      thread_id: 'thread-single-1',
+    },
+  };
+
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const ok = async (body) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    });
+
+    if (path === '/api/v1/public/captcha/config') return ok({ enabled: false });
+    if (path === '/api/v1/public/password-reset/capabilities') return ok({ enabled: false, reason: 'disabled' });
+    if (path === '/api/v1/public/auth/capabilities') {
+      return ok({
+        passkey_mfa_available: false,
+        passkey_passwordless_available: false,
+        passkey_usernameless_enabled: true,
+        reason: 'disabled',
+      });
+    }
+    if (path === '/api/v1/setup/status') {
+      return ok({
+        required: false,
+        base_domain: 'example.com',
+        default_admin_email: 'webmaster@example.com',
+        auth_mode: 'sql',
+        password_min_length: 12,
+        password_max_length: 128,
+        password_class_min: 3,
+        automatic_updates_enabled: true,
+        passkey_primary_sign_in_enabled: true,
+      });
+    }
+    if (path === '/api/v1/me') return ok(fixture.user);
+    if (path === '/api/v2/security/mfa/webauthn') return ok({ items: [] });
+    if (path === '/api/v2/security/mfa/trusted-devices') return ok({ items: [] });
+    if (path === '/api/v2/security/sessions') return ok({ items: [] });
+    if (path === '/api/v1/mailboxes') return ok(fixture.mailboxes);
+    if (path === '/api/v1/messages') return ok({ items: fixture.mailboxItems });
+    if (path === '/api/v1/threads/thread-single-1/messages') {
+      return ok({
+        thread_id: 'thread-single-1',
+        mailbox: 'INBOX',
+        scope: 'conversation',
+        truncated: false,
+        items: fixture.mailboxItems,
+      });
+    }
+    if (/^\/api\/v1\/messages\/[^/]+\/flags$/.test(path)) return ok({ ok: true });
+    const messageMatch = path.match(/^\/api\/v1\/messages\/([^/]+)$/);
+    if (messageMatch) {
+      const messageID = decodeURIComponent(messageMatch[1]);
+      const message = fixture.messageDetails[messageID];
+      if (message) return ok(message);
+    }
+    await route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: path }),
+    });
+  });
+}
+
+async function mockThreadedSummaryFallbackScenario(page) {
+  const fixture = threadedMailFixture();
+  fixture.mailboxItems = fixture.mailboxItems.map((item, index) => (
+    index === 0 ? { ...item, thread_id: '' } : item
+  ));
+  fixture.messageDetails.m1 = {
+    ...fixture.messageDetails.m1,
+    thread_id: 'thread-1',
+  };
+
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const ok = async (body) => route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(body),
+    });
+
+    if (path === '/api/v1/public/captcha/config') return ok({ enabled: false });
+    if (path === '/api/v1/public/password-reset/capabilities') return ok({ enabled: false, reason: 'disabled' });
+    if (path === '/api/v1/public/auth/capabilities') {
+      return ok({
+        passkey_mfa_available: false,
+        passkey_passwordless_available: false,
+        passkey_usernameless_enabled: true,
+        reason: 'disabled',
+      });
+    }
+    if (path === '/api/v1/setup/status') {
+      return ok({
+        required: false,
+        base_domain: 'example.com',
+        default_admin_email: 'webmaster@example.com',
+        auth_mode: 'sql',
+        password_min_length: 12,
+        password_max_length: 128,
+        password_class_min: 3,
+        automatic_updates_enabled: true,
+        passkey_primary_sign_in_enabled: true,
+      });
+    }
+    if (path === '/api/v1/me') return ok(fixture.user);
+    if (path === '/api/v2/security/mfa/webauthn') return ok({ items: [] });
+    if (path === '/api/v2/security/mfa/trusted-devices') return ok({ items: [] });
+    if (path === '/api/v2/security/sessions') return ok({ items: [] });
+    if (path === '/api/v1/mailboxes') return ok(fixture.mailboxes);
+    if (path === '/api/v1/messages') return ok({ items: fixture.mailboxItems });
+    if (path === '/api/v1/threads/thread-1/messages') {
+      return ok({
+        thread_id: 'thread-1',
+        mailbox: 'INBOX',
+        scope: 'conversation',
+        truncated: false,
+        items: fixture.threadItems,
+      });
+    }
+    if (/^\/api\/v1\/messages\/[^/]+\/flags$/.test(path)) return ok({ ok: true });
+    const messageMatch = path.match(/^\/api\/v1\/messages\/([^/]+)$/);
+    if (messageMatch) {
+      const messageID = decodeURIComponent(messageMatch[1]);
+      const message = fixture.messageDetails[messageID];
+      if (message) return ok(message);
+    }
+    await route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: path }),
+    });
+  });
+}
+
+async function mockReaderHTMLSizingScenario(page) {
+  const longHTML = [
+    '<div style="font-family: Georgia, serif; font-size: 18px; line-height: 1.5;">',
+    '<p><strong>Delivery report</strong> with a long quoted reply chain.</p>',
+    ...Array.from({ length: 20 }, (_, index) => (
+      `<p>Paragraph ${index + 1}: This reply contains enough HTML body content to exceed the visible reader pane and must stay fully reachable without clipping or a black void underneath the iframe.</p>`
+    )),
+    '<blockquote><p>Quoted message block with multiple lines to emulate a real forwarded or bounced message preview in HTML mode.</p><p>Additional quoted context keeps the document height non-trivial.</p></blockquote>',
+    '<p>Final paragraph at the bottom of the message body.</p>',
+    '</div>',
+  ].join('');
+  const shortHTML = '<div style="font-family: Georgia, serif; font-size: 18px; line-height: 1.5;"><p>Short HTML message.</p></div>';
+
+  const messages = new Map([
+    ['html-long', {
+      id: 'html-long',
+      mailbox: 'INBOX',
+      from: 'Mail Delivery System <mailer-daemon@example.com>',
+      to: ['admin@example.com'],
+      subject: 'Re: Long HTML preview check',
+      date: '2026-03-12T09:25:03.000Z',
+      seen: true,
+      answered: false,
+      flagged: false,
+      preview: 'Long HTML preview content for iframe sizing regression.',
+      body: 'Long HTML preview content for iframe sizing regression.',
+      body_html: longHTML,
+      attachments: [],
+      thread_id: 'thread-html-long',
+    }],
+    ['html-short', {
+      id: 'html-short',
+      mailbox: 'INBOX',
+      from: 'Support <support@example.com>',
+      to: ['admin@example.com'],
+      subject: 'Short HTML preview check',
+      date: '2026-03-11T08:10:00.000Z',
+      seen: true,
+      answered: false,
+      flagged: false,
+      preview: 'Short HTML preview content for iframe sizing regression.',
+      body: 'Short HTML preview content for iframe sizing regression.',
+      body_html: shortHTML,
+      attachments: [],
+      thread_id: 'thread-html-short',
+    }],
+  ]);
+
+  const summarize = (item) => ({
+    id: item.id,
+    mailbox: item.mailbox,
+    from: item.from,
+    subject: item.subject,
+    date: item.date,
+    seen: item.seen,
+    answered: item.answered,
+    flagged: item.flagged,
+    preview: item.preview,
+    thread_id: item.thread_id,
+  });
+
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const ok = async (body) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    };
+
+    if (path === '/api/v1/public/captcha/config') return ok({ enabled: false });
+    if (path === '/api/v1/public/password-reset/capabilities') return ok({ enabled: false, reason: 'disabled' });
+    if (path === '/api/v1/public/auth/capabilities') {
+      return ok({
+        passkey_mfa_available: false,
+        passkey_passwordless_available: false,
+        passkey_usernameless_enabled: true,
+        reason: 'disabled',
+      });
+    }
+    if (path === '/api/v1/setup/status') {
+      return ok({
+        required: false,
+        base_domain: 'example.com',
+        default_admin_email: 'webmaster@example.com',
+        auth_mode: 'sql',
+        password_min_length: 12,
+        password_max_length: 128,
+        password_class_min: 3,
+        automatic_updates_enabled: true,
+        passkey_primary_sign_in_enabled: true,
+      });
+    }
+    if (path === '/api/v1/me') {
+      return ok({
+        email: 'admin@example.com',
+        role: 'admin',
+        recovery_email: 'recovery@example.net',
+        needs_recovery_email: false,
+        auth_stage: 'authenticated',
+        mail_secret_required: false,
+      });
+    }
+    if (path === '/api/v2/security/mfa/webauthn') return ok({ items: [] });
+    if (path === '/api/v2/security/mfa/trusted-devices') return ok({ items: [] });
+    if (path === '/api/v2/security/sessions') return ok({ items: [] });
+    if (path === '/api/v2/drafts') return ok({ items: [], page: 1, page_size: 100, total: 0 });
+    if (path === '/api/v1/compose/identities') return ok({ items: [] });
+    if (path === '/api/v1/mailboxes') {
+      return ok([
+        { name: 'INBOX', role: 'inbox', unread: 0, messages: messages.size },
+      ]);
+    }
+    if (path === '/api/v1/messages') {
+      return ok({
+        items: Array.from(messages.values())
+          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+          .map(summarize),
+      });
+    }
+    const threadMatch = path.match(/^\/api\/v1\/threads\/([^/]+)\/messages$/);
+    if (threadMatch) {
+      const threadID = decodeURIComponent(threadMatch[1]);
+      return ok({
+        thread_id: threadID,
+        mailbox: 'INBOX',
+        scope: 'conversation',
+        truncated: false,
+        items: Array.from(messages.values()).filter((item) => item.thread_id === threadID).map(summarize),
+      });
+    }
+    if (/^\/api\/v1\/messages\/[^/]+\/flags$/.test(path)) return ok({ ok: true });
+    const messageMatch = path.match(/^\/api\/v1\/messages\/([^/]+)$/);
+    if (messageMatch) {
+      const message = messages.get(decodeURIComponent(messageMatch[1]));
+      if (message) return ok(message);
+    }
+
+    await route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: path }),
+    });
+  });
+}
+
+async function mockMailHealthQuotaScenario(page, options = {}) {
+  const quotaSupported = options.quotaSupported !== false;
+  const quotaAvailable = quotaSupported && options.quotaAvailable === true;
+  const quotaRefreshedAt = quotaSupported ? String(options.quotaRefreshedAt || '') : '';
+  const quotaLastError = quotaSupported
+    ? String(options.quotaLastError || '')
+    : 'Quota unavailable on this server.';
+  const account = {
+    id: 'acct-health-1',
+    user_id: 'user-admin',
+    display_name: 'webmaster',
+    login: 'webmaster',
+    is_default: true,
+    status: 'active',
+    last_sync_at: '2026-03-12T15:00:00.000Z',
+    last_error: '',
+  };
+  const healthItem = {
+    account_id: account.id,
+    account_label: 'webmaster',
+    is_default: true,
+    status: 'ok',
+    last_sync_at: '2026-03-12T15:00:00.000Z',
+    last_error: '',
+    quota_available: quotaAvailable,
+    quota_supported: quotaSupported,
+    used_bytes: quotaAvailable ? 1048576 : 0,
+    total_bytes: quotaAvailable ? 4194304 : 0,
+    used_messages: quotaAvailable ? 12 : 0,
+    total_messages: quotaAvailable ? 120 : 0,
+    quota_refreshed_at: quotaRefreshedAt,
+    quota_last_error: quotaLastError,
+    action_state: null,
+  };
+  const sender = {
+    id: 'sender-primary',
+    kind: 'primary',
+    name: 'webmaster',
+    from_email: 'webmaster@2h4s2d.ru',
+    reply_to: '',
+    signature_text: '',
+    signature_html: '',
+    account_id: account.id,
+    account_label: 'webmaster',
+    is_default: true,
+    is_primary: true,
+    can_delete: false,
+    can_schedule: true,
+    status: 'ok',
+  };
+
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const ok = async (body, extra = {}) => {
+      await route.fulfill({
+        status: extra.status || 200,
+        contentType: extra.contentType || 'application/json',
+        body: extra.rawBody ?? JSON.stringify(body),
+      });
+    };
+
+    if (path === '/api/v1/public/captcha/config') return ok({ enabled: false });
+    if (path === '/api/v1/public/password-reset/capabilities') return ok({ enabled: false, reason: 'disabled' });
+    if (path === '/api/v1/public/auth/capabilities') {
+      return ok({
+        passkey_mfa_available: false,
+        passkey_passwordless_available: false,
+        passkey_usernameless_enabled: true,
+        reason: 'disabled',
+      });
+    }
+    if (path === '/api/v1/setup/status') {
+      return ok({
+        required: false,
+        base_domain: 'example.com',
+        default_admin_email: 'webmaster@example.com',
+        auth_mode: 'sql',
+        password_min_length: 12,
+        password_max_length: 128,
+        password_class_min: 3,
+        automatic_updates_enabled: true,
+        passkey_primary_sign_in_enabled: true,
+      });
+    }
+    if (path === '/api/v1/me') {
+      return ok({
+        email: 'admin@example.com',
+        role: 'admin',
+        recovery_email: 'recovery@example.net',
+        needs_recovery_email: false,
+        auth_stage: 'authenticated',
+        mail_secret_required: false,
+      });
+    }
+    if (path === '/api/v2/security/mfa/webauthn') return ok({ items: [] });
+    if (path === '/api/v2/security/mfa/trusted-devices') return ok({ items: [] });
+    if (path === '/api/v2/security/sessions') return ok({ items: [] });
+    if (path === '/api/v2/accounts') return ok({ items: [account] });
+    if (path === '/api/v2/accounts/health') {
+      return ok({
+        summary: {
+          total_accounts: 1,
+          healthy_accounts: 1,
+          attention_accounts: 0,
+          error_accounts: 0,
+        },
+        items: [healthItem],
+      });
+    }
+    if (path === '/api/v2/mail/senders') return ok({ items: [sender] });
+    if (path === '/api/v2/saved-searches') return ok({ items: [] });
+    if (path === `/api/v2/accounts/${account.id}/mailboxes`) {
+      return ok([{ name: 'INBOX', role: 'inbox', unread: 0, messages: 0 }]);
+    }
+    if (path === '/api/v2/messages' || path === '/api/v2/search') return ok({ items: [], total: 0 });
+    if (path === '/api/v2/drafts') return ok({ items: [], page: 1, page_size: 100, total: 0 });
+    if (path === `/api/v2/accounts/${account.id}/health/sync`) return ok({ status: 'queued' }, { status: 202 });
+    if (path === `/api/v2/accounts/${account.id}/health/quota-refresh`) return ok({ status: 'queued' }, { status: 202 });
+    if (path === `/api/v2/accounts/${account.id}/health/reindex`) return ok({ status: 'queued' }, { status: 202 });
+    return ok({});
+  });
+}
+
+function buildUpdaterStatus(overrides = {}) {
+  return {
+    enabled: true,
+    configured: true,
+    current: {
+      version: 'v1.1.0-alpha.1',
+      commit: '8fhb424234b2sbf',
+      build_time: '2026-03-12T12:00:00.000Z',
+      source_repo: 'https://github.com/2high4schooltoday/despatch',
+    },
+    latest: {
+      tag_name: 'v1.1.0-alpha.1_01',
+      published_at: '2026-03-12T14:00:00.000Z',
+      html_url: 'https://github.com/2high4schooltoday/despatch/releases/tag/v1.1.0-alpha.1_01',
+    },
+    last_checked_at: '2026-03-12T15:05:00.000Z',
+    last_check_error: '',
+    update_available: true,
+    apply: {
+      state: 'idle',
+      request_id: '',
+      target_version: '',
+      to_version: '',
+      error: '',
+      finished_at: '',
+    },
+    auto_update: {
+      enabled: true,
+      state: 'idle',
+      target_version: '',
+      downloaded_at: '',
+      scheduled_for: '',
+      error: '',
+    },
+    ...overrides,
+  };
+}
+
+async function mockUpdaterNotificationScenario(page, options = {}) {
+  const account = {
+    id: 'acct-updater-1',
+    user_id: 'user-admin',
+    display_name: 'webmaster',
+    login: 'webmaster',
+    is_default: true,
+    status: 'active',
+    last_sync_at: '2026-03-12T15:00:00.000Z',
+    last_error: '',
+  };
+  const sender = {
+    id: 'sender-primary',
+    kind: 'primary',
+    name: 'webmaster',
+    from_email: 'webmaster@2h4s2d.ru',
+    reply_to: '',
+    signature_text: '',
+    signature_html: '',
+    account_id: account.id,
+    account_label: 'webmaster',
+    is_default: true,
+    is_primary: true,
+    can_delete: false,
+    can_schedule: true,
+    status: 'ok',
+  };
+  const healthItem = {
+    account_id: account.id,
+    account_label: 'webmaster',
+    is_default: true,
+    status: 'ok',
+    last_sync_at: '2026-03-12T15:00:00.000Z',
+    last_error: '',
+    quota_available: false,
+    quota_supported: false,
+    used_bytes: 0,
+    total_bytes: 0,
+    used_messages: 0,
+    total_messages: 0,
+    quota_refreshed_at: '',
+    quota_last_error: 'Quota unavailable on this server.',
+    action_state: null,
+  };
+  const runtime = {
+    statusCalls: 0,
+  };
+  const statusSequence = Array.isArray(options.statusSequence) && options.statusSequence.length
+    ? options.statusSequence
+    : [buildUpdaterStatus()];
+  const checkStatus = options.checkStatus || statusSequence[statusSequence.length - 1];
+
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const ok = async (body, extra = {}) => {
+      await route.fulfill({
+        status: extra.status || 200,
+        contentType: extra.contentType || 'application/json',
+        body: extra.rawBody ?? JSON.stringify(body),
+      });
+    };
+
+    if (path === '/api/v1/public/captcha/config') return ok({ enabled: false });
+    if (path === '/api/v1/public/password-reset/capabilities') return ok({ enabled: false, reason: 'disabled' });
+    if (path === '/api/v1/public/auth/capabilities') {
+      return ok({
+        passkey_mfa_available: false,
+        passkey_passwordless_available: false,
+        passkey_usernameless_enabled: true,
+        reason: 'disabled',
+      });
+    }
+    if (path === '/api/v1/setup/status') {
+      return ok({
+        required: false,
+        base_domain: 'example.com',
+        default_admin_email: 'webmaster@example.com',
+        auth_mode: 'sql',
+        password_min_length: 12,
+        password_max_length: 128,
+        password_class_min: 3,
+        automatic_updates_enabled: true,
+        passkey_primary_sign_in_enabled: true,
+      });
+    }
+    if (path === '/api/v1/me') {
+      return ok({
+        email: 'admin@example.com',
+        role: 'admin',
+        recovery_email: 'recovery@example.net',
+        needs_recovery_email: false,
+        auth_stage: 'authenticated',
+        mail_secret_required: false,
+      });
+    }
+    if (path === '/api/v2/security/mfa/webauthn') return ok({ items: [] });
+    if (path === '/api/v2/security/mfa/trusted-devices') return ok({ items: [] });
+    if (path === '/api/v2/security/sessions') return ok({ items: [] });
+    if (path === '/api/v2/accounts') return ok({ items: [account] });
+    if (path === '/api/v2/accounts/health') {
+      return ok({
+        summary: {
+          total_accounts: 1,
+          healthy_accounts: 1,
+          attention_accounts: 0,
+          error_accounts: 0,
+        },
+        items: [healthItem],
+      });
+    }
+    if (path === '/api/v2/mail/senders') return ok({ items: [sender] });
+    if (path === '/api/v2/saved-searches') return ok({ items: [] });
+    if (path === `/api/v2/accounts/${account.id}/mailboxes`) {
+      return ok([{ name: 'INBOX', role: 'inbox', unread: 0, messages: 0 }]);
+    }
+    if (path === '/api/v2/messages' || path === '/api/v2/search') return ok({ items: [], total: 0 });
+    if (path === '/api/v2/drafts') return ok({ items: [], page: 1, page_size: 100, total: 0 });
+    if (path === '/api/v1/admin/system/update/status') {
+      const index = Math.min(runtime.statusCalls, statusSequence.length - 1);
+      runtime.statusCalls += 1;
+      return ok(statusSequence[index]);
+    }
+    if (path === '/api/v1/admin/system/update/check') return ok(checkStatus);
+    if (path === '/api/v1/admin/system/update/apply') return ok({ ok: true });
+    if (path === '/api/v1/admin/system/update/automatic') return ok({ ok: true });
+    if (path === '/api/v1/admin/system/update/cancel-scheduled') return ok({ ok: true });
+    return ok({});
+  });
+
+  return runtime;
+}
+
 test('auth hides passkey sign-in when unavailable', async ({ page }) => {
   await page.route('**/api/v1/public/auth/capabilities', async (route) => {
     await route.fulfill({
@@ -1897,6 +2555,36 @@ test('reader conversation rail supports direct thread navigation on desktop', as
   await expect(page.locator('#thread-selection-status')).toHaveText(/Viewing 1 of 4/i);
 });
 
+test('reader conversation rail stays visible for singleton threads', async ({ page }) => {
+  await mockSingletonThreadScenario(page);
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await page.locator('.message-row-btn').first().click();
+  await page.waitForTimeout(200);
+
+  await expect(page.locator('#thread-strip')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#thread-position')).toHaveText(/Conversation · 1 message/i);
+  await expect(page.locator('#thread-selection-status')).toHaveText(/Viewing current message/i);
+  await expect(page.locator('#btn-thread-prev')).toBeDisabled();
+  await expect(page.locator('#btn-thread-next')).toBeDisabled();
+  await expect(page.locator('#btn-thread-collapse')).toBeHidden();
+});
+
+test('reader conversation rail recovers when list summary lacks thread id but detail has it', async ({ page }) => {
+  await mockThreadedSummaryFallbackScenario(page);
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await page.locator('.message-row-btn').first().click();
+  await page.waitForTimeout(200);
+
+  await expect(page.locator('#thread-strip')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#thread-position')).toHaveText(/Conversation · 4 messages/i);
+  await expect(page.locator('#thread-selection-status')).toHaveText(/Viewing 2 of 4/i);
+  await expect(page.locator('#thread-list .thread-row')).toHaveCount(4);
+});
+
 test('reader conversation rail stays inline and tappable on mobile', async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
@@ -1922,6 +2610,254 @@ test('reader conversation rail stays inline and tappable on mobile', async ({ br
   await expect(page.locator('#thread-selection-status')).toHaveText(/Viewing 3 of 4/i);
 
   await context.close();
+});
+
+test('reader HTML preview resizes to content without clipping', async ({ page }) => {
+  await mockReaderHTMLSizingScenario(page);
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  const frameMetrics = async () => page.locator('#message-body-html').evaluate((node) => {
+    if (!(node instanceof HTMLIFrameElement)) return null;
+    const host = node.parentElement?.parentElement;
+    const doc = node.contentDocument;
+    const root = doc?.documentElement;
+    const body = doc?.body;
+    const docHeight = Math.max(
+      Math.ceil(root?.scrollHeight || 0),
+      Math.ceil(root?.offsetHeight || 0),
+      Math.ceil(root?.getBoundingClientRect?.().height || 0),
+      Math.ceil(body?.scrollHeight || 0),
+      Math.ceil(body?.offsetHeight || 0),
+      Math.ceil(body?.getBoundingClientRect?.().height || 0),
+    );
+    return {
+      frameHeight: Math.ceil(node.getBoundingClientRect().height),
+      hostHeight: Math.ceil(host?.clientHeight || 0),
+      hostScrollHeight: Math.ceil(host?.scrollHeight || 0),
+      hostScrollTop: Math.ceil(host?.scrollTop || 0),
+      docHeight,
+    };
+  });
+
+  await expect(page.locator('.message-row-btn')).toHaveCount(2);
+  await page.locator('.message-row-btn').first().click();
+  await expect(page.locator('#btn-reader-view-html')).toHaveClass(/is-active/);
+  await expect(page.locator('#message-body-html-wrap')).not.toHaveClass(/hidden/);
+  await page.waitForTimeout(900);
+
+  const longMetrics = await frameMetrics();
+  expect(longMetrics).not.toBeNull();
+  expect(longMetrics.docHeight).toBeGreaterThan(longMetrics.hostHeight);
+  expect(longMetrics.frameHeight).toBeGreaterThanOrEqual(longMetrics.docHeight - 2);
+  expect(longMetrics.hostScrollHeight).toBeGreaterThan(longMetrics.hostHeight);
+
+  await page.locator('.reader-body-host').evaluate((node) => {
+    node.scrollTop = node.scrollHeight;
+  });
+  const scrolledMetrics = await frameMetrics();
+  expect(scrolledMetrics.hostScrollTop).toBeGreaterThan(0);
+
+  await page.click('#btn-reader-view-plain');
+  await expect(page.locator('#message-body-html-wrap')).toHaveClass(/hidden/);
+  await page.click('#btn-reader-view-html');
+  await expect(page.locator('#message-body-html-wrap')).not.toHaveClass(/hidden/);
+  await page.waitForTimeout(500);
+
+  const reopenedMetrics = await frameMetrics();
+  expect(reopenedMetrics.frameHeight).toBeGreaterThanOrEqual(reopenedMetrics.docHeight - 2);
+
+  await page.locator('.message-row-btn').nth(1).click();
+  await expect(page.locator('#message-subject-anchor')).toHaveText(/Short HTML preview check/i);
+  await page.waitForTimeout(400);
+
+  const shortMetrics = await frameMetrics();
+  expect(shortMetrics).not.toBeNull();
+  expect(shortMetrics.docHeight).toBeLessThanOrEqual(shortMetrics.hostHeight);
+  expect(shortMetrics.frameHeight).toBeGreaterThanOrEqual(shortMetrics.hostHeight);
+
+  await page.setViewportSize({ width: 980, height: 760 });
+  await page.waitForTimeout(900);
+
+  const resizedMetrics = await frameMetrics();
+  expect(resizedMetrics).not.toBeNull();
+  expect(resizedMetrics.frameHeight).toBeGreaterThanOrEqual(resizedMetrics.docHeight - 2);
+});
+
+test('mail health hides quota controls when quota is unsupported', async ({ page }) => {
+  await mockMailHealthQuotaScenario(page, { quotaSupported: false });
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await expect(page.locator('#btn-mail-health-toggle')).toBeVisible();
+  await page.click('#btn-mail-health-toggle');
+
+  const row = page.locator('.mail-health-row').first();
+  await expect(row).toContainText('webmaster');
+  await expect(row).toContainText('Retry Sync Now');
+  await expect(row).toContainText('Rebuild Index');
+  await expect(row).not.toContainText('Refresh Quota');
+  await expect(row).not.toContainText('Quota unavailable on this server.');
+  await expect(row.locator('.mail-health-meta-label')).toHaveText(['Sync']);
+});
+
+test('mail health keeps quota controls when quota is supported but not refreshed yet', async ({ page }) => {
+  await mockMailHealthQuotaScenario(page, { quotaSupported: true, quotaAvailable: false });
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await expect(page.locator('#btn-mail-health-toggle')).toBeVisible();
+  await page.click('#btn-mail-health-toggle');
+
+  const row = page.locator('.mail-health-row').first();
+  await expect(row).toContainText('Refresh Quota');
+  await expect(row).toContainText('Quota not refreshed yet.');
+  await expect(row).toContainText('Not refreshed');
+  await expect(row.locator('.mail-health-meta-label')).toHaveText(['Sync', 'Quota', 'Quota Refresh']);
+});
+
+test('updater status stays truthful for scheduled releases and notifications use human versions', async ({ page }) => {
+  const historicalCompleted = buildUpdaterStatus({
+    current: {
+      version: 'v1.1.0-alpha.1',
+      commit: '8fhb424234b2sbf',
+      build_time: '2026-03-12T12:00:00.000Z',
+      source_repo: 'https://github.com/2high4schooltoday/despatch',
+    },
+    apply: {
+      state: 'completed',
+      request_id: 'apply-old',
+      target_version: 'v1.1.0-alpha.1',
+      to_version: 'v1.1.0-alpha.1',
+      error: '',
+      finished_at: '2026-03-12T12:15:00.000Z',
+    },
+  });
+  const scheduledNext = buildUpdaterStatus({
+    current: historicalCompleted.current,
+    apply: historicalCompleted.apply,
+    auto_update: {
+      enabled: true,
+      state: 'scheduled',
+      target_version: 'v1.1.0-alpha.1_01',
+      downloaded_at: '2026-03-12T15:10:00.000Z',
+      scheduled_for: '2026-03-13T02:00:00.000Z',
+      error: '',
+    },
+  });
+
+  await mockUpdaterNotificationScenario(page, {
+    statusSequence: [historicalCompleted],
+    checkStatus: scheduledNext,
+  });
+
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await page.click('#tab-admin');
+  await expect(page.locator('#update-current-version')).toHaveText('Alpha 1.1.0');
+  await expect(page.locator('#update-latest-version')).toHaveText('Alpha 1.1.0_01');
+  await expect(page.locator('#update-current-commit')).toHaveClass(/hidden/);
+
+  await page.click('#btn-update-check');
+  await expect(page.locator('#update-hero-headline')).toHaveText(/Update scheduled/i);
+  await expect(page.locator('#update-hero-subline')).toContainText('Alpha 1.1.0_01');
+  await expect(page.locator('#update-note')).toContainText(/scheduled/i);
+
+  await expect(page.locator('#notification-unread-badge')).not.toHaveClass(/hidden/);
+  await page.click('#btn-notification-center');
+  await expect(page.locator('#notification-center')).toBeVisible();
+  await expect(page.locator('.notification-card-title', { hasText: 'Update Scheduled' })).toBeVisible();
+  await expect(page.locator('#notification-center-list')).toContainText('Alpha 1.1.0_01');
+  await expect(page.locator('#notification-center-list')).not.toContainText('Update Installed');
+  await expect(page.locator('#notification-center-list')).not.toContainText('v1.1.0-alpha.1_01');
+
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.click('#tab-admin');
+  await page.click('#btn-notification-center');
+  await expect(page.locator('#notification-center-list')).toContainText('Update Scheduled');
+  await expect(page.locator('#notification-center-list')).toContainText('Alpha 1.1.0_01');
+});
+
+test('updater completion notification appears once and routes back to admin system', async ({ page }) => {
+  const applyingStatus = buildUpdaterStatus({
+    current: {
+      version: 'v1.1.0-alpha.1',
+      commit: '8fhb424234b2sbf',
+      build_time: '2026-03-12T12:00:00.000Z',
+      source_repo: 'https://github.com/2high4schooltoday/despatch',
+    },
+    update_available: false,
+    apply: {
+      state: 'in_progress',
+      request_id: 'apply-new',
+      target_version: 'v1.1.0-alpha.1_01',
+      to_version: '',
+      error: '',
+      finished_at: '',
+    },
+    auto_update: {
+      enabled: true,
+      state: 'applying',
+      target_version: 'v1.1.0-alpha.1_01',
+      downloaded_at: '2026-03-12T15:10:00.000Z',
+      scheduled_for: '',
+      error: '',
+    },
+  });
+  const completedStatus = buildUpdaterStatus({
+    current: {
+      version: 'v1.1.0-alpha.1_01',
+      commit: '9abcedf234bcde12',
+      build_time: '2026-03-12T15:18:00.000Z',
+      source_repo: 'https://github.com/2high4schooltoday/despatch',
+    },
+    update_available: false,
+    apply: {
+      state: 'completed',
+      request_id: 'apply-new',
+      target_version: 'v1.1.0-alpha.1_01',
+      to_version: 'v1.1.0-alpha.1_01',
+      error: '',
+      finished_at: '2026-03-12T15:18:30.000Z',
+    },
+    auto_update: {
+      enabled: true,
+      state: 'idle',
+      target_version: '',
+      downloaded_at: '',
+      scheduled_for: '',
+      error: '',
+    },
+  });
+
+  await mockUpdaterNotificationScenario(page, {
+    statusSequence: [applyingStatus, completedStatus, completedStatus],
+  });
+
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await page.click('#tab-admin');
+  await expect(page.locator('#update-hero-headline')).toHaveText(/Installing update/i);
+  await page.waitForTimeout(2800);
+  await expect(page.locator('#update-hero-headline')).toHaveText(/up to date/i);
+
+  await page.click('#tab-mail');
+  await expect(page.locator('#view-mail')).toBeVisible();
+
+  await expect(page.locator('#notification-unread-badge')).not.toHaveClass(/hidden/);
+  await page.click('#btn-notification-center');
+  const installedCard = page.locator('.notification-card', { hasText: 'Update Installed' }).first();
+  await expect(installedCard).toContainText('Alpha 1.1.0_01');
+  await expect(installedCard).not.toContainText('v1.1.0-alpha.1_01');
+  await installedCard.click();
+
+  await expect(page.locator('#view-admin')).toBeVisible();
+  await expect(page.locator('#admin-section-system')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#update-current-version')).toHaveText('Alpha 1.1.0_01');
+  await page.click('#btn-notification-center');
+  await expect(page.locator('.notification-card', { hasText: 'Update Installed' })).toHaveCount(1);
 });
 
 test('compose drafts keep media and retry send after temporary failure', async ({ page }) => {
@@ -1996,6 +2932,121 @@ test('compose drafts keep media and retry send after temporary failure', async (
   await page.click('#btn-compose-send');
   await expect(page.locator('#compose-overlay')).toHaveClass(/hidden/);
   await expect(page.locator('.message-row-btn')).toHaveCount(0);
+});
+
+test('compose delivery stays on Schedule across stale autosave responses', async ({ page }) => {
+  const runtime = await mockComposeReliabilityScenario(page, { delayFirstPatchMs: 1400 });
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await expect(page.locator('#view-mail')).toBeVisible();
+  await page.click('#btn-compose-open');
+  await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#compose-send-mode')).toHaveValue('send_now');
+
+  await page.fill('#compose-to-input', 'alice@example.com');
+  await page.fill('#compose-subject-input', 'Scheduled compose check');
+  await page.locator('#compose-editor').click();
+  await page.keyboard.type('First saved body.');
+  await page.waitForTimeout(1100);
+
+  await page.locator('#compose-editor').click();
+  await page.keyboard.type(' More text to trigger a delayed save.');
+  await page.waitForTimeout(950);
+
+  await page.locator('#compose-send-mode').selectOption('scheduled');
+  await expect(page.locator('#compose-send-mode')).toHaveValue('scheduled');
+  await expect(page.locator('#compose-scheduled-for')).toBeVisible();
+  await expect(page.locator('#btn-compose-send')).toHaveText(/Schedule/i);
+
+  await page.waitForTimeout(1600);
+  await expect(page.locator('#compose-send-mode')).toHaveValue('scheduled');
+  await expect(page.locator('#compose-scheduled-for')).toBeVisible();
+  await expect(page.locator('#btn-compose-send')).toHaveText(/Schedule/i);
+  expect((await page.locator('#compose-scheduled-for').inputValue()).trim()).not.toBe('');
+
+  await page.click('#btn-compose-send');
+  await expect(page.locator('#compose-overlay')).toHaveClass(/hidden/);
+  await expect(page.locator('#status-line')).toContainText(/scheduled/i);
+  expect(runtime.lastSendDraft).not.toBeNull();
+  expect(String(runtime.lastSendDraft?.send_mode || '')).toBe('scheduled');
+  expect(String(runtime.lastSendDraft?.scheduled_for || '')).not.toBe('');
+});
+
+test('compose HTML mode previews source live and restores draft mode', async ({ page }) => {
+  await mockComposeReliabilityScenario(page);
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await expect(page.locator('#view-mail')).toBeVisible();
+  await page.click('#btn-compose-open');
+  await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#compose-editor')).toBeVisible();
+
+  await page.click('#btn-compose-mode-html');
+  await expect(page.locator('#compose-html-workspace')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#compose-editor')).toHaveClass(/hidden/);
+  await expect(page.locator('#compose-toggle-formatting')).toHaveClass(/hidden/);
+  await expect(page.locator('#btn-compose-mode-html')).toHaveAttribute('aria-pressed', 'true');
+
+  await page.fill('#compose-to-input', 'alice@example.com');
+  await page.fill('#compose-subject-input', 'HTML compose draft');
+  await page.locator('#compose-html-input').fill([
+    '<style>',
+    'h1 { color: rgb(255, 0, 0); }',
+    '</style>',
+    '<h1>Hello HTML</h1>',
+    '<p>Preview body</p>',
+  ].join('\n'));
+  await expect(page.locator('#compose-html-gutter-lines')).toContainText('5');
+  await expect(page.frameLocator('#compose-html-preview').locator('h1')).toHaveText('Hello HTML');
+  await expect(page.frameLocator('#compose-html-preview').locator('p')).toHaveText('Preview body');
+
+  await page.setInputFiles('#compose-attachments-input', {
+    name: 'template.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAgMBgJ4M3hQAAAAASUVORK5CYII=', 'base64'),
+  });
+  await expect(page.locator('#compose-editor img[data-compose-inline-image-id]')).toHaveCount(0);
+  await expect(page.locator('#compose-assets-list .compose-asset-row')).toHaveCount(1);
+
+  await page.waitForTimeout(1200);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(250);
+
+  const draftsMailbox = page.locator('#mailboxes .mailbox-row button[role="option"]', { hasText: /^Drafts/ });
+  await draftsMailbox.click();
+  await expect(page.locator('.message-row-btn')).toHaveCount(1);
+  await page.locator('.message-row-btn').first().click();
+  await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#compose-html-workspace')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#btn-compose-mode-html')).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.locator('#compose-html-input')).toHaveValue(/Hello HTML/);
+  await expect(page.frameLocator('#compose-html-preview').locator('h1')).toHaveText('Hello HTML');
+});
+
+test('compose HTML mode only switches back to rich text for simple fragments', async ({ page }) => {
+  await mockComposeReliabilityScenario(page);
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await expect(page.locator('#view-mail')).toBeVisible();
+  await page.click('#btn-compose-open');
+  await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
+
+  await page.click('#btn-compose-mode-html');
+  await page.locator('#compose-html-input').fill('<p>Simple <strong>fragment</strong></p>');
+  await page.click('#btn-compose-mode-rich');
+  await expect(page.locator('#compose-html-workspace')).toHaveClass(/hidden/);
+  await expect(page.locator('#compose-editor')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#compose-editor')).toContainText('Simple');
+
+  await page.click('#btn-compose-mode-html');
+  await page.locator('#compose-html-input').fill('<!doctype html><html><head><style>body { color: red; }</style></head><body><p>Advanced document</p></body></html>');
+  await page.click('#btn-compose-mode-rich');
+  await expect(page.locator('#compose-html-workspace')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#compose-html-note')).toContainText(/Keep editing this message in HTML mode/i);
+  await expect(page.locator('#btn-compose-mode-html')).toHaveAttribute('aria-pressed', 'true');
 });
 
 test('indexed account mail opens and sends without unlocking session mail', async ({ page }) => {
@@ -2410,10 +3461,12 @@ test('desktop ux pass', async ({ page }) => {
   await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
   await expect(page.locator('#compose-toolbar-layer')).toBeVisible();
   await expect(page.locator('#compose-window-more-menu')).toHaveCount(0);
-  await expect(page.locator('#compose-toolbar-layer .compose-window-actions--right > button')).toHaveCount(3);
+  await expect(page.locator('#compose-toolbar-layer .compose-window-actions--right > button')).toHaveCount(4);
   await expect(page.locator('#btn-compose-discard')).toBeVisible();
   await expect(page.locator('#compose-draft-note')).toHaveClass(/hidden/);
   await expect(page.locator('#compose-tool-attach')).toBeVisible();
+  await expect(page.locator('#btn-compose-mode-rich')).toBeVisible();
+  await expect(page.locator('#btn-compose-mode-html')).toBeVisible();
   await expect(page.locator('#compose-toggle-formatting')).toBeVisible();
   await expect(page.locator('#compose-editor-tools')).toHaveClass(/hidden/);
   await page.click('#compose-toggle-formatting');

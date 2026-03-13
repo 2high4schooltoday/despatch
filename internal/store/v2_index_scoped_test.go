@@ -318,6 +318,82 @@ func TestRepairIndexedThreadHeadersByAccountRecoversFromCorruptedReferences(t *t
 	}
 }
 
+func TestRepairIndexedThreadHeadersByAccountRepairsBlankThreadIDsFromRawSource(t *testing.T) {
+	st := newV2ScopedStore(t)
+	ctx := context.Background()
+	user, err := st.CreateUser(ctx, "thread-blank@example.com", "hash", "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	createMailAccountForTest(t, st, user.ID, "acct-thread-blank", "thread-blank-login")
+
+	now := time.Now().UTC()
+	rootRaw := "From: Alice <alice@example.com>\r\nTo: user@example.com\r\nSubject: Topic\r\nMessage-ID: <root-blank@example.com>\r\n\r\nRoot body"
+	replyRaw := "From: Bob <bob@example.com>\r\nTo: user@example.com\r\nSubject: Re: Topic\r\nMessage-ID: <reply-blank@example.com>\r\nIn-Reply-To: <root-blank@example.com>\r\nReferences: <root-blank@example.com>\r\n\r\nReply body"
+	if _, err := st.db.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
+		t.Fatalf("disable foreign keys: %v", err)
+	}
+	defer func() {
+		_, _ = st.db.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`)
+	}()
+
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO message_index(
+			id,account_id,mailbox,uid,thread_id,message_id_header,in_reply_to_header,references_header,
+			from_value,to_value,cc_value,bcc_value,subject,snippet,body_text,body_html_sanitized,raw_source,
+			seen,flagged,answered,draft,has_attachments,importance,dkim_status,spf_status,dmarc_status,phishing_score,
+			remote_images_blocked,remote_images_allowed,date_header,internal_date,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"msg-root-blank", "acct-thread-blank", "INBOX", 1, "", "", "", "",
+		"Alice <alice@example.com>", "user@example.com", "", "", "Topic", "Root body", "Root body", "", rootRaw,
+		0, 0, 0, 0, 0, 0, "unknown", "unknown", "unknown", 0.0,
+		1, 0, now, now, now, now,
+	); err != nil {
+		t.Fatalf("insert root blank-thread message: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx,
+		`INSERT INTO message_index(
+			id,account_id,mailbox,uid,thread_id,message_id_header,in_reply_to_header,references_header,
+			from_value,to_value,cc_value,bcc_value,subject,snippet,body_text,body_html_sanitized,raw_source,
+			seen,flagged,answered,draft,has_attachments,importance,dkim_status,spf_status,dmarc_status,phishing_score,
+			remote_images_blocked,remote_images_allowed,date_header,internal_date,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"msg-reply-blank", "acct-thread-blank", "INBOX", 2, "", "", "", "",
+		"Bob <bob@example.com>", "user@example.com", "", "", "Re: Topic", "Reply body", "Reply body", "", replyRaw,
+		0, 0, 0, 0, 0, 0, "unknown", "unknown", "unknown", 0.0,
+		1, 0, now.Add(time.Minute), now.Add(time.Minute), now.Add(time.Minute), now.Add(time.Minute),
+	); err != nil {
+		t.Fatalf("insert reply blank-thread message: %v", err)
+	}
+	if _, err := st.db.ExecContext(ctx, `PRAGMA foreign_keys=ON`); err != nil {
+		t.Fatalf("re-enable foreign keys: %v", err)
+	}
+
+	if err := st.RepairIndexedThreadHeadersByAccount(ctx, "acct-thread-blank"); err != nil {
+		t.Fatalf("RepairIndexedThreadHeadersByAccount: %v", err)
+	}
+
+	root, err := st.GetIndexedMessageByID(ctx, "acct-thread-blank", "msg-root-blank")
+	if err != nil {
+		t.Fatalf("load repaired root: %v", err)
+	}
+	reply, err := st.GetIndexedMessageByID(ctx, "acct-thread-blank", "msg-reply-blank")
+	if err != nil {
+		t.Fatalf("load repaired reply: %v", err)
+	}
+	if root.ThreadID == "" || reply.ThreadID == "" || root.ThreadID != reply.ThreadID {
+		t.Fatalf("expected repair to backfill blank thread ids, got root=%q reply=%q", root.ThreadID, reply.ThreadID)
+	}
+
+	threads, total, err := st.ListThreads(ctx, "acct-thread-blank", "INBOX", "", 20, 0)
+	if err != nil {
+		t.Fatalf("list rebuilt threads: %v", err)
+	}
+	if total != 1 || len(threads) != 1 {
+		t.Fatalf("expected one rebuilt thread, got total=%d threads=%+v", total, threads)
+	}
+}
+
 func TestUpsertIndexedMessageScopesIDsPerAccount(t *testing.T) {
 	st := newV2ScopedStore(t)
 	ctx := context.Background()

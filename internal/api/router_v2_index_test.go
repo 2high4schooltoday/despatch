@@ -136,6 +136,80 @@ func TestV2ListMessagesUsesIndexedSummaries(t *testing.T) {
 	}
 }
 
+func TestV2IndexedPresentationBackfillsBlankThreadIDFromHeaders(t *testing.T) {
+	router, st, account := newIndexedRouterWithStore(t)
+	raw := strings.Join([]string{
+		"From: Alice <alice@example.com>",
+		"To: account@example.com",
+		"Subject: Topic",
+		"Message-ID: <topic-root@example.com>",
+		"",
+		"Root body",
+	}, "\r\n")
+	seedIndexedTestMessage(t, st, models.IndexedMessage{
+		ID:           "msg-blank-thread",
+		AccountID:    account.ID,
+		Mailbox:      "INBOX",
+		UID:          16,
+		ThreadID:     "",
+		FromValue:    "Alice <alice@example.com>",
+		ToValue:      "account@example.com",
+		Subject:      "Topic",
+		Snippet:      "Root body",
+		BodyText:     "Root body",
+		RawSource:    raw,
+		DateHeader:   time.Date(2026, 3, 10, 11, 30, 0, 0, time.UTC),
+		InternalDate: time.Date(2026, 3, 10, 11, 30, 0, 0, time.UTC),
+	})
+
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	listRec := authedV1Get(t, router, "/api/v2/messages?account_id="+url.QueryEscape(account.ID)+"&mailbox=INBOX&page=1&page_size=10", sessionCookie, csrfCookie)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list 200, got %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listPayload struct {
+		Items []mail.MessageSummary `json:"items"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode list payload: %v body=%s", err, listRec.Body.String())
+	}
+	if len(listPayload.Items) != 1 || strings.TrimSpace(listPayload.Items[0].ThreadID) == "" {
+		t.Fatalf("expected list summary to backfill thread_id, got %+v", listPayload.Items)
+	}
+
+	searchRec := authedV1Get(t, router, "/api/v2/search?account_id="+url.QueryEscape(account.ID)+"&mailbox=INBOX&q="+url.QueryEscape("Topic"), sessionCookie, csrfCookie)
+	if searchRec.Code != http.StatusOK {
+		t.Fatalf("expected search 200, got %d body=%s", searchRec.Code, searchRec.Body.String())
+	}
+	var searchPayload struct {
+		Items []mail.MessageSummary `json:"items"`
+	}
+	if err := json.Unmarshal(searchRec.Body.Bytes(), &searchPayload); err != nil {
+		t.Fatalf("decode search payload: %v body=%s", err, searchRec.Body.String())
+	}
+	if len(searchPayload.Items) != 1 || strings.TrimSpace(searchPayload.Items[0].ThreadID) == "" {
+		t.Fatalf("expected search summary to backfill thread_id, got %+v", searchPayload.Items)
+	}
+
+	detailRec := authedV1Get(t, router, "/api/v2/messages/msg-blank-thread?account_id="+url.QueryEscape(account.ID), sessionCookie, csrfCookie)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("expected detail 200, got %d body=%s", detailRec.Code, detailRec.Body.String())
+	}
+	var detailPayload struct {
+		Message models.IndexedMessage `json:"message"`
+	}
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &detailPayload); err != nil {
+		t.Fatalf("decode detail payload: %v body=%s", err, detailRec.Body.String())
+	}
+	if strings.TrimSpace(detailPayload.Message.ThreadID) == "" {
+		t.Fatalf("expected detail thread_id to be backfilled, got %+v", detailPayload.Message)
+	}
+	if detailPayload.Message.ThreadID != listPayload.Items[0].ThreadID {
+		t.Fatalf("expected consistent backfilled thread id, got detail=%q list=%q", detailPayload.Message.ThreadID, listPayload.Items[0].ThreadID)
+	}
+}
+
 func TestV2SearchTreatsFilterLikeQueryTextAsPlainSearch(t *testing.T) {
 	router, st, account := newIndexedRouterWithStore(t)
 	seedIndexedTestMessage(t, st, models.IndexedMessage{

@@ -1860,15 +1860,42 @@ func indexedMessageSummary(item models.IndexedMessage) mail.MessageSummary {
 	}
 }
 
+func ensureIndexedPresentedThreadID(item models.IndexedMessage) string {
+	threadID := strings.TrimSpace(mail.UnscopeIndexedThreadID(item.ThreadID))
+	if threadID != "" {
+		return threadID
+	}
+	messageID := mail.NormalizeMessageIDHeader(item.MessageIDHeader)
+	inReplyTo := mail.NormalizeMessageIDHeader(item.InReplyToHeader)
+	references := mail.ParseMessageIDList(item.ReferencesHeader)
+	if (messageID == "" || (inReplyTo == "" && len(references) == 0)) && strings.TrimSpace(item.RawSource) != "" {
+		if parsed, err := mail.ParseRawMessage([]byte(item.RawSource), item.Mailbox, item.UID); err == nil {
+			if messageID == "" {
+				messageID = mail.NormalizeMessageIDHeader(parsed.MessageID)
+			}
+			if inReplyTo == "" {
+				inReplyTo = mail.NormalizeMessageIDHeader(parsed.InReplyTo)
+			}
+			if len(references) == 0 {
+				references = mail.NormalizeMessageIDHeaders(parsed.References)
+			}
+		}
+	}
+	return mail.UnscopeIndexedThreadID(mail.NormalizeIndexedThreadID(
+		item.AccountID,
+		mail.DeriveIndexedThreadID(messageID, inReplyTo, references, item.Subject, item.FromValue),
+	))
+}
+
 func presentIndexedMessage(item models.IndexedMessage) models.IndexedMessage {
 	item.ID = mail.UnscopeIndexedMessageID(item.ID)
-	item.ThreadID = mail.UnscopeIndexedThreadID(item.ThreadID)
 	item.Source = "indexed"
 	item.FromValue = mail.DecodeAddressListValue(item.FromValue)
 	item.ToValue = mail.DecodeAddressListValue(item.ToValue)
 	item.CCValue = mail.DecodeAddressListValue(item.CCValue)
 	item.BCCValue = mail.DecodeAddressListValue(item.BCCValue)
 	item.Subject = mail.DecodeHeaderText(item.Subject)
+	item.ThreadID = ensureIndexedPresentedThreadID(item)
 	item.Snippet = mail.BestAvailablePreview(item.Snippet, item.BodyText, item.BodyHTMLSanitized, item.RawSource, mail.DefaultPreviewMaxChars)
 	return item
 }

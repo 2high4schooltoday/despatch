@@ -30,6 +30,34 @@
         <div class="topbar-tools">
           <button id="tab-settings" class="tab topbar-utility" type="button">Settings</button>
           <button id="tab-admin" class="tab topbar-utility" type="button">Admin</button>
+          <div class="notification-shell">
+            <button
+              id="btn-notification-center"
+              class="cmd-btn cmd-btn--dense cmd-btn--ghost notification-toggle"
+              type="button"
+              aria-label="Open notification centre"
+              aria-haspopup="dialog"
+              aria-expanded="false"
+            >
+              <span class="notification-toggle-label">Alerts</span>
+              <span id="notification-unread-badge" class="notification-unread-badge hidden">0</span>
+            </button>
+            <aside id="notification-center" class="notification-center hidden" aria-label="Notification Centre">
+              <div id="notification-center-panel" class="notification-center-panel" role="dialog" aria-modal="false" aria-labelledby="notification-center-title">
+                <header class="notification-center-head">
+                  <div class="notification-center-copy">
+                    <p class="notification-center-kicker">Noticeboard</p>
+                    <h2 id="notification-center-title" class="notification-center-title">Notification Centre</h2>
+                  </div>
+                  <div class="notification-center-actions">
+                    <button id="btn-notification-mark-read" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Mark All Read</button>
+                    <button id="btn-notification-clear" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Clear All</button>
+                  </div>
+                </header>
+                <div id="notification-center-list" class="notification-center-list"></div>
+              </div>
+            </aside>
+          </div>
           <button id="btn-theme" class="cmd-btn cmd-btn--dense cmd-btn--ghost theme-toggle" type="button" aria-label="Toggle theme">Theme: Machine</button>
           <button id="btn-logout" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Sign Out</button>
         </div>
@@ -754,9 +782,10 @@
                 <button id="btn-search" class="cmd-btn cmd-btn--dense" type="button">Search</button>
               </div>
             </div>
+            <div id="mail-toolbar-primary-tools" class="mail-toolbar-cluster mail-toolbar-cluster--primary-tools"></div>
           </div>
-          <div class="mail-toolbar-secondary">
-            <div class="mail-toolbar-secondary-main">
+          <div id="mail-toolbar-secondary" class="mail-toolbar-secondary">
+            <div id="mail-toolbar-secondary-main" class="mail-toolbar-secondary-main">
               <div class="mail-toolbar-cluster mail-toolbar-cluster--scope">
                 <label id="mail-account-switcher-wrap" class="mail-account-switcher hidden">
                   <span class="mail-account-switcher-label">Scope</span>
@@ -764,31 +793,30 @@
                 </label>
               </div>
             </div>
-            <div class="mail-toolbar-secondary-tools">
-              <div class="mail-toolbar-cluster mail-toolbar-cluster--context">
-                <div id="mail-health-panel" class="mail-health-panel hidden" aria-label="Mail account health">
-                  <button id="btn-mail-health-toggle" class="mail-health-toggle" type="button" aria-expanded="false" aria-controls="mail-health-body">
-                    <span class="mail-health-toggle-copy">
-                      <strong id="mail-index-status" class="mail-index-status">Live mailbox</strong>
-                      <span id="mail-health-toggle-summary" class="mail-health-toggle-summary">No accounts configured.</span>
-                    </span>
-                    <span id="mail-health-toggle-caret" class="mail-health-toggle-caret" aria-hidden="true">+</span>
-                  </button>
-                  <div id="mail-health-body" class="mail-health-body hidden">
-                    <div id="mail-health-summary-strip" class="mail-health-summary-strip hidden"></div>
-                    <div id="mail-health-list" class="mail-health-list"></div>
-                  </div>
+            <div id="mail-toolbar-secondary-tools" class="mail-toolbar-secondary-tools"></div>
+            <div id="mail-toolbar-context-cluster" class="mail-toolbar-cluster mail-toolbar-cluster--context">
+              <div id="mail-health-panel" class="mail-health-panel hidden" aria-label="Mail account health">
+                <button id="btn-mail-health-toggle" class="mail-health-toggle" type="button" aria-expanded="false" aria-controls="mail-health-body">
+                  <span class="mail-health-toggle-copy">
+                    <strong id="mail-index-status" class="mail-index-status">Live mailbox</strong>
+                    <span id="mail-health-toggle-summary" class="mail-health-toggle-summary hidden">No accounts configured.</span>
+                  </span>
+                  <span id="mail-health-toggle-caret" class="mail-health-toggle-caret" aria-hidden="true">+</span>
+                </button>
+                <div id="mail-health-body" class="mail-health-body hidden">
+                  <div id="mail-health-summary-strip" class="mail-health-summary-strip hidden"></div>
+                  <div id="mail-health-list" class="mail-health-list"></div>
                 </div>
-                <details id="mail-view-menu" class="row-menu mail-view-menu">
-                  <summary class="cmd-btn cmd-btn--dense cmd-btn--ghost">More</summary>
-                  <div class="row-menu-body mail-view-menu-body">
-                    <button id="btn-mail-filters" class="menu-action-btn" type="button">Filters</button>
-                    <button id="btn-mail-shortcuts" class="menu-action-btn" type="button">Shortcuts</button>
-                    <button id="btn-mail-save-search" class="menu-action-btn" type="button">Save View</button>
-                    <button id="btn-mail-delete-search" class="menu-action-btn hidden" type="button">Delete View</button>
-                  </div>
-                </details>
               </div>
+              <details id="mail-view-menu" class="row-menu mail-view-menu">
+                <summary class="cmd-btn cmd-btn--dense cmd-btn--ghost">More</summary>
+                <div class="row-menu-body mail-view-menu-body">
+                  <button id="btn-mail-filters" class="menu-action-btn" type="button">Filters</button>
+                  <button id="btn-mail-shortcuts" class="menu-action-btn" type="button">Shortcuts</button>
+                  <button id="btn-mail-save-search" class="menu-action-btn" type="button">Save View</button>
+                  <button id="btn-mail-delete-search" class="menu-action-btn hidden" type="button">Delete View</button>
+                </div>
+              </details>
             </div>
           </div>
           <div id="mail-selection-bar" class="mail-selection-bar hidden" aria-label="Selected message actions">
@@ -1319,6 +1347,10 @@
           </div>
           <div class="compose-window-actions compose-window-actions--right">
             <button id="compose-tool-attach" class="cmd-btn cmd-btn--dense compose-window-btn" type="button" title="Attach files">Attach</button>
+            <div id="compose-mode-switch" class="compose-mode-switch" role="group" aria-label="Compose body mode">
+              <button id="btn-compose-mode-rich" class="cmd-btn cmd-btn--dense compose-window-btn compose-mode-btn" type="button" aria-pressed="true">Rich Text</button>
+              <button id="btn-compose-mode-html" class="cmd-btn cmd-btn--dense compose-window-btn compose-mode-btn" type="button" aria-pressed="false">HTML</button>
+            </div>
             <button id="compose-toggle-formatting" class="cmd-btn cmd-btn--dense compose-window-btn" type="button" aria-expanded="false">Formatting</button>
             <button id="btn-compose-history" class="cmd-btn cmd-btn--dense compose-window-btn" type="button">History</button>
             <button id="btn-compose-send" class="cmd-btn cmd-btn--primary compose-send-btn" type="submit">Send</button>
@@ -1393,6 +1425,7 @@
         <section class="compose-body-layer">
           <p id="compose-draft-note" class="compose-inline-note hidden" aria-live="polite"></p>
           <p id="compose-recipient-note" class="compose-inline-note hidden" aria-live="polite"></p>
+          <p id="compose-html-note" class="compose-inline-note hidden" aria-live="polite"></p>
           <section id="compose-assets" class="compose-assets hidden" aria-label="Draft attachments">
             <div class="compose-assets-head">
               <span class="compose-assets-title">Attachments</span>
@@ -1409,6 +1442,42 @@
             <button id="compose-tool-link" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Insert link">Link</button>
             <button id="compose-tool-clear" class="cmd-btn cmd-btn--dense compose-tool-btn" type="button" title="Clear formatting">Clear</button>
           </div>
+          <section id="compose-html-workspace" class="compose-html-workspace hidden" aria-label="HTML compose workspace">
+            <section class="compose-html-pane compose-html-pane--editor">
+              <div class="compose-html-pane-head">
+                <span class="compose-html-pane-title">HTML Source</span>
+                <span id="compose-html-source-meta" class="compose-html-pane-meta">Live preview updates as you type.</span>
+              </div>
+              <div class="compose-html-editor-shell">
+                <div id="compose-html-gutter" class="compose-html-gutter" aria-hidden="true">
+                  <pre id="compose-html-gutter-lines" class="compose-html-gutter-lines">1</pre>
+                </div>
+                <div class="compose-html-editor-stack">
+                  <pre id="compose-html-highlight" class="compose-html-highlight" aria-hidden="true"></pre>
+                  <textarea
+                    id="compose-html-input"
+                    class="compose-html-input"
+                    spellcheck="false"
+                    autocapitalize="off"
+                    autocomplete="off"
+                    autocorrect="off"
+                    wrap="off"
+                    aria-label="HTML source editor"
+                    placeholder="<p>Write HTML email markup here</p>"
+                  ></textarea>
+                </div>
+              </div>
+            </section>
+            <section class="compose-html-pane compose-html-pane--preview">
+              <div class="compose-html-pane-head">
+                <span class="compose-html-pane-title">Preview</span>
+                <span class="compose-html-pane-meta">Remote images may load here.</span>
+              </div>
+              <div class="compose-html-preview-wrap">
+                <iframe id="compose-html-preview" class="compose-html-preview" title="HTML compose preview" sandbox="" referrerpolicy="no-referrer"></iframe>
+              </div>
+            </section>
+          </section>
           <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write your message"></div>
           <div id="compose-recipient-suggestions" class="compose-recipient-menu hidden" role="listbox" aria-label="Recipient suggestions"></div>
         </section>

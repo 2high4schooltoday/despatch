@@ -28,6 +28,14 @@ function createMailFilterState(overrides = {}) {
   };
 }
 
+function createNotificationState(overrides = {}) {
+  return {
+    items: [],
+    centerOpen: false,
+    ...overrides,
+  };
+}
+
 const state = {
   user: null,
   mailbox: "INBOX",
@@ -114,7 +122,9 @@ const state = {
     cancelingScheduled: false,
     lastStatus: null,
     apiMissing: false,
+    notificationsPrimed: false,
   },
+  notifications: createNotificationState(),
   captcha: {
     config: null,
     token: "",
@@ -128,6 +138,8 @@ const state = {
     authEmail: "",
     senders: [],
     fromMode: "sender",
+    bodyMode: "rich",
+    htmlSource: "",
     typographyMode: "p",
     selectedSenderID: "",
     selectedAccountID: "",
@@ -166,6 +178,7 @@ const state = {
     draftSessionToken: 0,
     draftSavePromise: null,
     draftSaveSessionToken: 0,
+    deliveryRevision: 0,
   },
   ui: {
     activeAuthTask: "login",
@@ -292,6 +305,13 @@ const el = {
   tabContacts: document.getElementById("tab-contacts"),
   tabSettings: document.getElementById("tab-settings"),
   tabAdmin: document.getElementById("tab-admin"),
+  btnNotificationCenter: document.getElementById("btn-notification-center"),
+  notificationUnreadBadge: document.getElementById("notification-unread-badge"),
+  notificationCenter: document.getElementById("notification-center"),
+  notificationCenterPanel: document.getElementById("notification-center-panel"),
+  notificationCenterList: document.getElementById("notification-center-list"),
+  btnNotificationMarkRead: document.getElementById("btn-notification-mark-read"),
+  btnNotificationClear: document.getElementById("btn-notification-clear"),
   btnLogout: document.getElementById("btn-logout"),
   viewSetup: document.getElementById("view-setup"),
   viewAuth: document.getElementById("view-auth"),
@@ -368,6 +388,12 @@ const el = {
   btnMailClearFilters: document.getElementById("btn-mail-clear-filters"),
   mailFilterLiveHint: document.getElementById("mail-filter-live-hint"),
   btnSearch: document.getElementById("btn-search"),
+  mailCommandbar: document.querySelector("#view-mail .mail-commandbar"),
+  mailToolbarPrimaryTools: document.getElementById("mail-toolbar-primary-tools"),
+  mailToolbarSecondary: document.getElementById("mail-toolbar-secondary"),
+  mailToolbarSecondaryMain: document.getElementById("mail-toolbar-secondary-main"),
+  mailToolbarSecondaryTools: document.getElementById("mail-toolbar-secondary-tools"),
+  mailToolbarContextCluster: document.getElementById("mail-toolbar-context-cluster"),
   mailAccountSwitcherWrap: document.getElementById("mail-account-switcher-wrap"),
   mailAccountSwitcher: document.getElementById("mail-account-switcher"),
   mailIndexStatus: document.getElementById("mail-index-status"),
@@ -413,6 +439,8 @@ const el = {
   composeForm: document.getElementById("form-compose"),
   btnComposeHistory: document.getElementById("btn-compose-history"),
   btnComposeSend: document.getElementById("btn-compose-send"),
+  btnComposeModeRich: document.getElementById("btn-compose-mode-rich"),
+  btnComposeModeHTML: document.getElementById("btn-compose-mode-html"),
   composeToggleCc: document.getElementById("compose-toggle-cc"),
   composeToggleBcc: document.getElementById("compose-toggle-bcc"),
   composeCcRow: document.getElementById("compose-cc-row"),
@@ -441,11 +469,18 @@ const el = {
   composeBodyHTMLInput: document.getElementById("compose-body-html"),
   composeDraftState: document.getElementById("compose-draft-state"),
   composeDraftNote: document.getElementById("compose-draft-note"),
+  composeHTMLNote: document.getElementById("compose-html-note"),
   composeAssets: document.getElementById("compose-assets"),
   composeAssetsList: document.getElementById("compose-assets-list"),
   composeToggleFormatting: document.getElementById("compose-toggle-formatting"),
   composeEditorTools: document.getElementById("compose-editor-tools"),
   composeEditor: document.getElementById("compose-editor"),
+  composeHTMLWorkspace: document.getElementById("compose-html-workspace"),
+  composeHTMLSourceMeta: document.getElementById("compose-html-source-meta"),
+  composeHTMLGutterLines: document.getElementById("compose-html-gutter-lines"),
+  composeHTMLHighlight: document.getElementById("compose-html-highlight"),
+  composeHTMLInput: document.getElementById("compose-html-input"),
+  composeHTMLPreview: document.getElementById("compose-html-preview"),
   composeAttachmentsInput: document.getElementById("compose-attachments-input"),
   composeToolUndo: document.getElementById("compose-tool-undo"),
   composeToolTypography: document.getElementById("compose-tool-typography"),
@@ -734,6 +769,18 @@ const el = {
   setupModalConfirm: document.getElementById("setup-modal-confirm"),
 };
 
+const readerHTMLSizing = {
+  token: 0,
+  raf: 0,
+  timers: new Set(),
+  contentObserver: null,
+  hostObserver: null,
+};
+
+const composeHTMLPreviewState = {
+  timer: 0,
+};
+
 const APP_DRAFTS_MAILBOX = "__despatch_app_drafts__";
 const MAIL_SMART_VIEWS = [
   { id: "waiting", name: "Waiting" },
@@ -777,6 +824,11 @@ function normalizeRecoveryEmailInput(value) {
   return String(value || "").trim().toLowerCase();
 }
 
+const notificationStorageKey = "ui.notifications.v1";
+const maxStoredNotifications = 48;
+const updaterNotificationTarget = Object.freeze({ view: "admin", domain: "system" });
+const updaterPendingAutoStates = new Set(["preparing", "downloaded", "scheduled", "applying"]);
+
 const ThemeController = {
   getTheme() {
     return state.theme;
@@ -802,6 +854,382 @@ const ThemeController = {
   },
 };
 
+function coerceNotificationKind(kind) {
+  const value = String(kind || "").trim().toLowerCase();
+  if (value === "ok") return "success";
+  if (value === "warn") return "info";
+  if (value === "success" || value === "error" || value === "update") return value;
+  return "info";
+}
+
+function defaultNotificationTitle(kind) {
+  if (kind === "success") return "Done";
+  if (kind === "error") return "Needs Attention";
+  if (kind === "update") return "Software Update";
+  return "Notice";
+}
+
+function notificationKindLabel(kind) {
+  if (kind === "success") return "Success";
+  if (kind === "error") return "Error";
+  if (kind === "update") return "Update";
+  return "Info";
+}
+
+function formatNotificationClock(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function createNotificationID() {
+  if (window.crypto && typeof window.crypto.randomUUID === "function") {
+    return window.crypto.randomUUID();
+  }
+  return `notice-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function normalizeNotificationTarget(target) {
+  if (!target || typeof target !== "object") return null;
+  const view = String(target.view || "").trim();
+  const domain = String(target.domain || "").trim();
+  const type = String(target.type || "").trim();
+  const detailId = String(target.detailId || "").trim();
+  const accountId = String(target.accountId || "").trim();
+  if (!view && !domain && !type && !detailId && !accountId) {
+    return null;
+  }
+  return {
+    view,
+    domain,
+    type,
+    detailId,
+    accountId,
+  };
+}
+
+function normalizeNotificationItem(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const kind = coerceNotificationKind(raw.kind);
+  const body = String(raw.body || raw.text || "").trim();
+  const title = String(raw.title || defaultNotificationTitle(kind)).trim() || defaultNotificationTitle(kind);
+  const createdAt = raw.created_at ? new Date(raw.created_at) : new Date();
+  const createdAtValue = Number.isNaN(createdAt.getTime()) ? new Date().toISOString() : createdAt.toISOString();
+  return {
+    id: String(raw.id || createNotificationID()),
+    kind,
+    title,
+    body,
+    created_at: createdAtValue,
+    read: raw.read === true,
+    target: normalizeNotificationTarget(raw.target),
+    dedupeKey: String(raw.dedupeKey || raw.dedupe_key || "").trim(),
+  };
+}
+
+function saveNotifications() {
+  try {
+    localStorage.setItem(notificationStorageKey, JSON.stringify(state.notifications.items.slice(0, maxStoredNotifications)));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function unreadNotificationCount() {
+  return state.notifications.items.reduce((count, item) => count + (item && item.read !== true ? 1 : 0), 0);
+}
+
+function createNotificationEmptyState() {
+  const empty = document.createElement("div");
+  empty.className = "notification-center-empty";
+  const title = document.createElement("div");
+  title.className = "notification-center-empty-title";
+  title.textContent = "All clear";
+  const copy = document.createElement("div");
+  copy.className = "notification-center-empty-copy";
+  copy.textContent = "New updates, alerts, and activity notes will appear here.";
+  empty.append(title, copy);
+  return empty;
+}
+
+function markNotificationRead(id) {
+  const targetID = String(id || "").trim();
+  if (!targetID) return;
+  let changed = false;
+  state.notifications.items = state.notifications.items.map((item) => {
+    if (!item || item.id !== targetID || item.read === true) return item;
+    changed = true;
+    return { ...item, read: true };
+  });
+  if (!changed) return;
+  saveNotifications();
+  renderNotificationCenter();
+}
+
+function markAllNotificationsRead() {
+  if (!state.notifications.items.some((item) => item && item.read !== true)) return;
+  state.notifications.items = state.notifications.items.map((item) => (item ? { ...item, read: true } : item));
+  saveNotifications();
+  renderNotificationCenter();
+}
+
+function clearNotifications() {
+  if (!state.notifications.items.length) return;
+  state.notifications.items = [];
+  saveNotifications();
+  renderNotificationCenter();
+}
+
+function setNotificationCenterOpen(open) {
+  state.notifications.centerOpen = !!open;
+  if (el.notificationCenter) {
+    el.notificationCenter.classList.toggle("hidden", !state.notifications.centerOpen);
+  }
+  if (el.btnNotificationCenter) {
+    el.btnNotificationCenter.setAttribute("aria-expanded", state.notifications.centerOpen ? "true" : "false");
+  }
+}
+
+function renderNotificationCenter() {
+  const items = Array.isArray(state.notifications.items) ? state.notifications.items : [];
+  const unread = unreadNotificationCount();
+  if (el.notificationUnreadBadge) {
+    el.notificationUnreadBadge.textContent = unread > 99 ? "99+" : String(unread);
+    el.notificationUnreadBadge.classList.toggle("hidden", unread <= 0);
+  }
+  if (el.notificationCenterList) {
+    el.notificationCenterList.replaceChildren();
+    if (!items.length) {
+      el.notificationCenterList.appendChild(createNotificationEmptyState());
+    } else {
+      items.forEach((item) => {
+        const row = document.createElement("button");
+        row.type = "button";
+        row.className = "notification-card";
+        row.dataset.kind = coerceNotificationKind(item.kind);
+        if (item.read === true) row.classList.add("is-read");
+
+        const head = document.createElement("div");
+        head.className = "notification-card-head";
+
+        const title = document.createElement("div");
+        title.className = "notification-card-title";
+        title.textContent = item.title || defaultNotificationTitle(item.kind);
+        head.appendChild(title);
+
+        const time = document.createElement("div");
+        time.className = "notification-card-time";
+        time.textContent = formatNotificationClock(item.created_at);
+        head.appendChild(time);
+
+        const body = document.createElement("div");
+        body.className = "notification-card-body";
+        body.textContent = item.body || "";
+
+        const meta = document.createElement("div");
+        meta.className = "notification-card-meta";
+
+        const kind = document.createElement("span");
+        kind.className = "notification-card-kind";
+        kind.textContent = notificationKindLabel(item.kind);
+        meta.appendChild(kind);
+
+        const unreadDot = document.createElement("span");
+        unreadDot.className = "notification-card-unread";
+        meta.appendChild(unreadDot);
+
+        row.append(head, body, meta);
+        row.addEventListener("click", () => {
+          void handleNotificationClick(item.id);
+        });
+        el.notificationCenterList.appendChild(row);
+      });
+    }
+  }
+  if (el.btnNotificationMarkRead) {
+    el.btnNotificationMarkRead.disabled = unread <= 0;
+  }
+  if (el.btnNotificationClear) {
+    el.btnNotificationClear.disabled = items.length <= 0;
+  }
+  setNotificationCenterOpen(state.notifications.centerOpen);
+}
+
+function loadStoredNotifications() {
+  try {
+    const raw = localStorage.getItem(notificationStorageKey);
+    const parsed = raw ? JSON.parse(raw) : [];
+    const items = Array.isArray(parsed) ? parsed.map(normalizeNotificationItem).filter(Boolean).slice(0, maxStoredNotifications) : [];
+    state.notifications.items = items;
+  } catch {
+    state.notifications.items = [];
+  }
+  renderNotificationCenter();
+}
+
+function pushNotification(raw) {
+  const item = normalizeNotificationItem(raw);
+  if (!item) return null;
+  const next = Array.isArray(state.notifications.items) ? state.notifications.items.slice() : [];
+  if (item.dedupeKey) {
+    const existingIndex = next.findIndex((entry) => entry && entry.dedupeKey === item.dedupeKey);
+    if (existingIndex >= 0) {
+      const existing = next.splice(existingIndex, 1)[0];
+      const merged = {
+        ...existing,
+        ...item,
+        id: existing.id,
+        read: false,
+      };
+      next.unshift(merged);
+      state.notifications.items = next.slice(0, maxStoredNotifications);
+      saveNotifications();
+      renderNotificationCenter();
+      return merged;
+    }
+  }
+  next.unshift(item);
+  state.notifications.items = next.slice(0, maxStoredNotifications);
+  saveNotifications();
+  renderNotificationCenter();
+  return item;
+}
+
+function renderStatusToast(item) {
+  const host = el.status;
+  if (!host || !item) return;
+  const toast = document.createElement("div");
+  toast.className = "status-toast";
+  toast.classList.add(`status-toast--${coerceNotificationKind(item.kind)}`);
+  toast.setAttribute("role", item.kind === "error" ? "alert" : "status");
+
+  const main = document.createElement("div");
+  main.className = "status-toast-main";
+
+  const head = document.createElement("div");
+  head.className = "status-toast-head";
+
+  const title = document.createElement("span");
+  title.className = "status-toast-title";
+  title.textContent = item.title || defaultNotificationTitle(item.kind);
+  head.appendChild(title);
+
+  const time = document.createElement("span");
+  time.className = "status-toast-time";
+  time.textContent = formatNotificationClock(item.created_at);
+  head.appendChild(time);
+
+  const copy = document.createElement("div");
+  copy.className = "status-toast-copy";
+  copy.textContent = item.body || "";
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "status-toast-dismiss";
+  dismiss.setAttribute("aria-label", "Dismiss message");
+  dismiss.textContent = "×";
+
+  const removeToast = () => {
+    toast.classList.add("is-leaving");
+    window.setTimeout(() => {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, prefersReducedMotion() ? 0 : 180);
+  };
+  dismiss.addEventListener("click", removeToast);
+
+  main.append(head, copy);
+  toast.append(main, dismiss);
+  host.appendChild(toast);
+  const lifetime = item.kind === "error" ? 7200 : item.kind === "success" ? 3600 : 4200;
+  window.setTimeout(removeToast, lifetime);
+}
+
+async function openNotificationTarget(target) {
+  const next = normalizeNotificationTarget(target);
+  if (!next || !next.view) return;
+  if (next.view === "admin") {
+    if (!state.user || state.user.role !== "admin") return;
+    if (el.tabAdmin && typeof el.tabAdmin.onclick === "function") {
+      await el.tabAdmin.onclick();
+    } else {
+      setActiveTab(el.tabAdmin);
+      showView("admin");
+    }
+    await navigateAdminTarget(next.domain ? next : { domain: "system" });
+    return;
+  }
+  if (next.view === "settings") {
+    if (!state.user) return;
+    if (el.tabSettings && typeof el.tabSettings.onclick === "function") {
+      await el.tabSettings.onclick();
+    } else {
+      setActiveTab(el.tabSettings);
+      showView("settings");
+    }
+    await navigateSettingsTarget(next.domain ? next : { domain: "signin" });
+    return;
+  }
+  if (next.view === "contacts") {
+    if (!state.user) return;
+    if (el.tabContacts && typeof el.tabContacts.onclick === "function") {
+      await el.tabContacts.onclick();
+    } else {
+      setActiveTab(el.tabContacts);
+      showView("contacts");
+      setActiveContactsSection(state.ui.activeContactsSection || "people");
+      await loadContactsWorkspace();
+    }
+    return;
+  }
+  if (next.view === "mail") {
+    if (!state.user) return;
+    if (el.tabMail && typeof el.tabMail.onclick === "function") {
+      await el.tabMail.onclick();
+    } else {
+      setActiveTab(el.tabMail);
+      showView("mail");
+      setActiveMailPane(state.selectedMessage ? "reader" : "messages");
+      await loadMailboxes();
+      await loadMessages();
+    }
+  }
+}
+
+async function handleNotificationClick(id) {
+  const targetID = String(id || "").trim();
+  if (!targetID) return;
+  const item = state.notifications.items.find((entry) => entry && entry.id === targetID);
+  if (!item) return;
+  markNotificationRead(targetID);
+  setNotificationCenterOpen(false);
+  if (item.target) {
+    await openNotificationTarget(item.target);
+  }
+}
+
+function formatHumanVersion(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const match = /^v(\d+)\.(\d+)\.(\d+)-alpha\.1(?:_(\d{2}))?$/i.exec(raw);
+  if (!match) return raw;
+  return `Alpha ${match[1]}.${match[2]}.${match[3]}${match[4] ? `_${match[4]}` : ""}`;
+}
+
+function isFinalApplyState(stateName) {
+  const value = String(stateName || "").trim().toLowerCase();
+  return value === "completed" || value === "failed" || value === "rolled_back";
+}
+
+function applyEventKey(apply) {
+  if (!apply || typeof apply !== "object") return "";
+  const requestID = String(apply.request_id || "").trim();
+  const finishedAt = String(apply.finished_at || "").trim();
+  const toVersion = String(apply.to_version || apply.target_version || "").trim();
+  const stateName = String(apply.state || "").trim();
+  if (!requestID && !finishedAt && !toVersion && !stateName) return "";
+  return [requestID, finishedAt, toVersion, stateName].join("|");
+}
+
 function workspaceTitleForView(name) {
   const key = String(name || "").trim();
   if (key === "setup") return "Setup Assistant";
@@ -821,35 +1249,23 @@ function renderWorkspaceTitle(name) {
   document.title = title === "Despatch" ? "Despatch" : `${title} · Despatch`;
 }
 
-function setStatus(text, type = "info") {
-  const host = el.status;
+function setStatus(text, type = "info", options = {}) {
   const message = String(text || "").trim();
-  if (!host || !message) return;
-  const toast = document.createElement("div");
-  toast.className = "status-toast";
-  if (type === "error") toast.classList.add("status-toast--error");
-  else if (type === "ok") toast.classList.add("status-toast--ok");
-  else toast.classList.add("status-toast--info");
-  toast.setAttribute("role", type === "error" ? "alert" : "status");
-  const copy = document.createElement("span");
-  copy.className = "status-toast-copy";
-  copy.textContent = message;
-  const dismiss = document.createElement("button");
-  dismiss.type = "button";
-  dismiss.className = "status-toast-dismiss";
-  dismiss.setAttribute("aria-label", "Dismiss message");
-  dismiss.textContent = "×";
-  const removeToast = () => {
-    toast.classList.add("is-leaving");
-    window.setTimeout(() => {
-      if (toast.parentNode) toast.parentNode.removeChild(toast);
-    }, prefersReducedMotion() ? 0 : 180);
+  if (!message) return;
+  const config = options && typeof options === "object" ? options : {};
+  const kind = coerceNotificationKind(config.kind || type);
+  const title = String(config.title || defaultNotificationTitle(kind)).trim() || defaultNotificationTitle(kind);
+  const payload = {
+    kind,
+    title,
+    body: message,
+    created_at: config.created_at || new Date().toISOString(),
+    target: config.target || null,
+    dedupeKey: config.dedupeKey || "",
   };
-  dismiss.addEventListener("click", removeToast);
-  toast.append(copy, dismiss);
-  host.appendChild(toast);
-  const lifetime = type === "error" ? 7200 : type === "ok" ? 3600 : 4200;
-  window.setTimeout(removeToast, lifetime);
+  const notification = config.skipCenter === true ? normalizeNotificationItem(payload) : pushNotification(payload);
+  if (config.skipToast === true) return;
+  renderStatusToast(notification || normalizeNotificationItem(payload));
 }
 
 function setSetupInlineStatus(text, type = "info") {
@@ -1156,6 +1572,7 @@ function normalizeComposeClientStateJSON(raw) {
 
 function composeClientStateObject() {
   return {
+    body_mode: normalizeComposeBodyMode(state.compose.bodyMode),
     cc_visible: !!state.compose.ccVisible,
     bcc_visible: !!state.compose.bccVisible,
     format_tools_visible: !!state.compose.formatToolsVisible,
@@ -1167,6 +1584,10 @@ function composeClientStateObject() {
 
 function composeClientStateJSON() {
   return normalizeComposeClientStateJSON(composeClientStateObject());
+}
+
+function normalizeComposeBodyMode(raw) {
+  return String(raw || "").trim().toLowerCase() === "html" ? "html" : "rich";
 }
 
 function composeComparableDraftPayload(raw = {}) {
@@ -1414,6 +1835,443 @@ function composeCreateMissingMediaNode(doc, kind) {
   return node;
 }
 
+function composeBodyUsesHTMLMode() {
+  return normalizeComposeBodyMode(state.compose.bodyMode) === "html";
+}
+
+function setComposeHTMLNote(text = "", tone = "muted") {
+  if (!el.composeHTMLNote) return;
+  const msg = String(text || "").trim();
+  el.composeHTMLNote.classList.remove("compose-inline-note--ok", "compose-inline-note--warn", "compose-inline-note--error");
+  if (!msg) {
+    el.composeHTMLNote.textContent = "";
+    el.composeHTMLNote.classList.add("hidden");
+    return;
+  }
+  el.composeHTMLNote.textContent = msg;
+  el.composeHTMLNote.classList.remove("hidden");
+  if (tone === "ok") {
+    el.composeHTMLNote.classList.add("compose-inline-note--ok");
+  } else if (tone === "warn") {
+    el.composeHTMLNote.classList.add("compose-inline-note--warn");
+  } else if (tone === "error") {
+    el.composeHTMLNote.classList.add("compose-inline-note--error");
+  }
+}
+
+function composeHTMLSourceValue() {
+  if (el.composeHTMLInput) {
+    return String(el.composeHTMLInput.value || "");
+  }
+  return String(state.compose.htmlSource || "");
+}
+
+function composeHTMLSourcePlainText(rawHTML) {
+  const source = String(rawHTML || "");
+  if (!source.trim()) return "";
+  try {
+    const parsed = new DOMParser().parseFromString(source, "text/html");
+    return String(parsed?.body?.textContent || parsed?.documentElement?.textContent || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  } catch {
+    return stripHTMLToText(source);
+  }
+}
+
+function composeHTMLSourceSnapshot(raw = composeHTMLSourceValue()) {
+  const html = String(raw || "");
+  const text = composeHTMLSourcePlainText(html);
+  const hasRenderableMedia = /<(?:img|svg|video|audio|canvas|picture|source|table|hr|iframe|object|embed|math)\b/i.test(html);
+  return {
+    html: html.trim(),
+    text,
+    hasContent: text !== "" || hasRenderableMedia,
+  };
+}
+
+function composeLineCount(value) {
+  const source = String(value || "");
+  if (source === "") return 1;
+  return source.split("\n").length;
+}
+
+function renderComposeHTMLLineNumbers(raw = composeHTMLSourceValue()) {
+  if (!el.composeHTMLGutterLines) return;
+  const count = composeLineCount(raw);
+  el.composeHTMLGutterLines.textContent = Array.from({ length: count }, (_, index) => String(index + 1)).join("\n");
+}
+
+function highlightComposeCSSText(rawCSS) {
+  const source = String(rawCSS || "");
+  const commentPattern = /\/\*[\s\S]*?\*\//g;
+  let last = 0;
+  let out = "";
+  const pushChunk = (chunk) => {
+    const escaped = escapeHtml(chunk);
+    const highlighted = escaped.replace(/(^|[{};\n]\s*)([a-z-]+)(\s*:)/gi, (match, prefix, prop, suffix) => (
+      `${prefix}<span class="compose-html-token-property">${prop}</span>${suffix}`
+    ));
+    out += highlighted.replace(/(#(?:[0-9a-f]{3,8})\b|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/gi, (match) => (
+      `<span class="compose-html-token-value">${match}</span>`
+    )).replace(/(^|[{};\n])([^{}\n]+)(\s*\{)/g, (match, prefix, selector, suffix) => {
+      const trimmed = selector.trim();
+      if (!trimmed) return match;
+      return `${prefix}<span class="compose-html-token-selector">${selector}</span>${suffix}`;
+    });
+  };
+  for (const match of source.matchAll(commentPattern)) {
+    const start = match.index || 0;
+    pushChunk(source.slice(last, start));
+    out += `<span class="compose-html-token-comment">${escapeHtml(match[0])}</span>`;
+    last = start + match[0].length;
+  }
+  pushChunk(source.slice(last));
+  return out;
+}
+
+function highlightComposeHTMLTagToken(rawTag) {
+  const source = String(rawTag || "");
+  if (!source) return "";
+  if (/^<!--[\s\S]*-->$/.test(source)) {
+    return `<span class="compose-html-token-comment">${escapeHtml(source)}</span>`;
+  }
+  if (/^<!doctype/i.test(source)) {
+    return `<span class="compose-html-token-doctype">${escapeHtml(source)}</span>`;
+  }
+  let cursor = 0;
+  let out = "";
+  const pushText = (text) => {
+    out += escapeHtml(text);
+  };
+  const pushMatch = (pattern, className) => {
+    const match = pattern.exec(source.slice(cursor));
+    if (!match || match.index !== 0) return false;
+    out += `<span class="${className}">${escapeHtml(match[0])}</span>`;
+    cursor += match[0].length;
+    return true;
+  };
+
+  pushMatch(/^</, "compose-html-token-punct");
+  pushMatch(/^\//, "compose-html-token-punct");
+  pushMatch(/^[A-Za-z][\w:-]*/, "compose-html-token-tag");
+  while (cursor < source.length) {
+    if (pushMatch(/^\s+/, "compose-html-token-text")) continue;
+    if (pushMatch(/^\/?>/, "compose-html-token-punct")) continue;
+    const attrMatch = /^[^\s=/>]+/.exec(source.slice(cursor));
+    if (attrMatch) {
+      out += `<span class="compose-html-token-attr">${escapeHtml(attrMatch[0])}</span>`;
+      cursor += attrMatch[0].length;
+      if (pushMatch(/^\s*=\s*/, "compose-html-token-punct")) {
+        if (pushMatch(/^"(?:[^"\\]|\\.)*"/, "compose-html-token-value")) continue;
+        if (pushMatch(/^'(?:[^'\\]|\\.)*'/, "compose-html-token-value")) continue;
+        pushMatch(/^[^\s>]+/, "compose-html-token-value");
+      }
+      continue;
+    }
+    pushText(source.slice(cursor, cursor + 1));
+    cursor += 1;
+  }
+  return out;
+}
+
+function highlightComposeHTMLSource(rawSource) {
+  const source = String(rawSource || "");
+  if (!source) return "";
+  const tokenPattern = /<!--[\s\S]*?-->|<!doctype[\s\S]*?>|<style\b[^>]*>[\s\S]*?<\/style\s*>|<\/?[A-Za-z][^>]*>/gi;
+  let out = "";
+  let last = 0;
+  for (const match of source.matchAll(tokenPattern)) {
+    const start = match.index || 0;
+    const token = match[0];
+    if (start > last) {
+      out += `<span class="compose-html-token-text">${escapeHtml(source.slice(last, start))}</span>`;
+    }
+    if (/^<style\b/i.test(token)) {
+      const openEnd = token.indexOf(">") + 1;
+      const closeStart = token.toLowerCase().lastIndexOf("</style");
+      const openTag = token.slice(0, openEnd);
+      const cssText = closeStart > openEnd ? token.slice(openEnd, closeStart) : "";
+      const closeTag = closeStart >= 0 ? token.slice(closeStart) : "";
+      out += highlightComposeHTMLTagToken(openTag);
+      out += highlightComposeCSSText(cssText);
+      out += highlightComposeHTMLTagToken(closeTag);
+    } else {
+      out += highlightComposeHTMLTagToken(token);
+    }
+    last = start + token.length;
+  }
+  if (last < source.length) {
+    out += `<span class="compose-html-token-text">${escapeHtml(source.slice(last))}</span>`;
+  }
+  return out;
+}
+
+function syncComposeHTMLSourceScroll() {
+  if (!el.composeHTMLInput) return;
+  const scrollTop = el.composeHTMLInput.scrollTop;
+  const scrollLeft = el.composeHTMLInput.scrollLeft;
+  if (el.composeHTMLHighlight) {
+    el.composeHTMLHighlight.style.transform = `translate(${-scrollLeft}px, ${-scrollTop}px)`;
+  }
+  if (el.composeHTMLGutterLines) {
+    el.composeHTMLGutterLines.style.transform = `translateY(${-scrollTop}px)`;
+  }
+}
+
+function renderComposeHTMLSourceDecorations(raw = composeHTMLSourceValue()) {
+  state.compose.htmlSource = String(raw || "");
+  if (el.composeHTMLHighlight) {
+    el.composeHTMLHighlight.innerHTML = highlightComposeHTMLSource(state.compose.htmlSource);
+  }
+  renderComposeHTMLLineNumbers(state.compose.htmlSource);
+  syncComposeHTMLSourceScroll();
+  if (el.composeHTMLSourceMeta) {
+    el.composeHTMLSourceMeta.textContent = `${composeLineCount(state.compose.htmlSource)} line${composeLineCount(state.compose.htmlSource) === 1 ? "" : "s"} · live preview`;
+  }
+}
+
+function clearComposeHTMLPreviewTimer() {
+  if (!composeHTMLPreviewState.timer) return;
+  window.clearTimeout(composeHTMLPreviewState.timer);
+  composeHTMLPreviewState.timer = 0;
+}
+
+function composeHTMLLooksLikeDocument(rawHTML) {
+  return /<!doctype|<html\b|<head\b|<body\b/i.test(String(rawHTML || ""));
+}
+
+function composePreviewBaseStyle() {
+  return [
+    ":root{color-scheme:light;}",
+    "html,body{margin:0;padding:0;background:#ffffff;color:#000000;}",
+    "body{padding:14px;font:16px/1.55 -apple-system,BlinkMacSystemFont,\"Segoe UI\",Helvetica,Arial,sans-serif;word-break:break-word;overflow-wrap:anywhere;-webkit-text-size-adjust:100%;}",
+    "img,svg,video,canvas{max-width:100%;height:auto;}",
+    "blockquote{margin:0 0 0 10px;padding-left:12px;border-left:2px solid #d5d5d5;}",
+    "pre{white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;}",
+    "table{max-width:100%;}",
+  ].join("");
+}
+
+function composePreviewCSP() {
+  return [
+    "default-src 'none'",
+    "img-src data: blob: https: http:",
+    "media-src data: blob: https: http:",
+    "style-src 'unsafe-inline'",
+    "font-src data: https: http:",
+    "script-src 'none'",
+    "connect-src 'none'",
+    "object-src 'none'",
+    "frame-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+  ].join("; ");
+}
+
+function buildComposeHTMLPreviewSrcdoc(rawHTML) {
+  const source = String(rawHTML || "");
+  const csp = composePreviewCSP();
+  const previewStyle = composePreviewBaseStyle();
+  if (composeHTMLLooksLikeDocument(source)) {
+    try {
+      const parsed = new DOMParser().parseFromString(source, "text/html");
+      if (!parsed.head) {
+        parsed.documentElement.insertBefore(parsed.createElement("head"), parsed.body || parsed.documentElement.firstChild);
+      }
+      const head = parsed.head || parsed.createElement("head");
+      const metaCharset = parsed.createElement("meta");
+      metaCharset.setAttribute("charset", "utf-8");
+      head.prepend(metaCharset);
+      const metaColor = parsed.createElement("meta");
+      metaColor.setAttribute("name", "color-scheme");
+      metaColor.setAttribute("content", "light");
+      head.appendChild(metaColor);
+      const metaCSP = parsed.createElement("meta");
+      metaCSP.setAttribute("http-equiv", "Content-Security-Policy");
+      metaCSP.setAttribute("content", csp);
+      head.appendChild(metaCSP);
+      const style = parsed.createElement("style");
+      style.textContent = previewStyle;
+      head.appendChild(style);
+      return `<!doctype html>\n${parsed.documentElement.outerHTML}`;
+    } catch {
+      // fall back to fragment wrapper below
+    }
+  }
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="color-scheme" content="light"><meta http-equiv="Content-Security-Policy" content="${csp}"><style>${previewStyle}</style></head><body>${source}</body></html>`;
+}
+
+function renderComposeHTMLPreview(raw = composeHTMLSourceValue()) {
+  if (!(el.composeHTMLPreview instanceof HTMLIFrameElement)) return;
+  el.composeHTMLPreview.srcdoc = buildComposeHTMLPreviewSrcdoc(raw);
+}
+
+function scheduleComposeHTMLPreviewRefresh(immediate = false) {
+  clearComposeHTMLPreviewTimer();
+  if (immediate) {
+    renderComposeHTMLPreview();
+    return;
+  }
+  composeHTMLPreviewState.timer = window.setTimeout(() => {
+    composeHTMLPreviewState.timer = 0;
+    renderComposeHTMLPreview();
+  }, 120);
+}
+
+function composeHTMLSourceLooksAdvanced(rawHTML) {
+  return /<!doctype|<html\b|<head\b|<body\b|<style\b|<script\b|<link\b|<meta\b|<base\b|<form\b/i.test(String(rawHTML || ""));
+}
+
+function hydrateComposeRichEditorFromHTML(rawHTML) {
+  if (!el.composeEditor) return;
+  el.composeEditor.innerHTML = String(rawHTML || "").trim();
+}
+
+function syncComposeBodyModeUI(options = {}) {
+  const htmlMode = composeBodyUsesHTMLMode();
+  if (el.composeBodyHTMLInput) {
+    el.composeBodyHTMLInput.dataset.composeMode = htmlMode ? "html" : "rich";
+  }
+  if (el.composeHTMLWorkspace) {
+    el.composeHTMLWorkspace.classList.toggle("hidden", !htmlMode);
+  }
+  if (el.composeEditor) {
+    el.composeEditor.classList.toggle("hidden", htmlMode);
+  }
+  if (el.composeToggleFormatting) {
+    el.composeToggleFormatting.classList.toggle("hidden", htmlMode);
+  }
+  if (el.composeEditorTools) {
+    el.composeEditorTools.classList.toggle("hidden", htmlMode || !state.compose.formatToolsVisible);
+  }
+  if (el.btnComposeModeRich) {
+    el.btnComposeModeRich.classList.toggle("is-active", !htmlMode);
+    el.btnComposeModeRich.setAttribute("aria-pressed", htmlMode ? "false" : "true");
+  }
+  if (el.btnComposeModeHTML) {
+    el.btnComposeModeHTML.classList.toggle("is-active", htmlMode);
+    el.btnComposeModeHTML.setAttribute("aria-pressed", htmlMode ? "true" : "false");
+  }
+  if (htmlMode) {
+    renderComposeHTMLSourceDecorations();
+    scheduleComposeHTMLPreviewRefresh(true);
+  } else {
+    clearComposeHTMLPreviewTimer();
+    if (el.composeHTMLPreview) {
+      el.composeHTMLPreview.srcdoc = "";
+    }
+  }
+  if (options.focus === true) {
+    if (htmlMode) {
+      if (el.composeHTMLInput) {
+        el.composeHTMLInput.focus();
+        if (options.preferStart) {
+          el.composeHTMLInput.setSelectionRange(0, 0);
+        } else {
+          const end = el.composeHTMLInput.value.length;
+          el.composeHTMLInput.setSelectionRange(end, end);
+        }
+      }
+    } else if (options.preferStart) {
+      focusComposeEditorForComposeStart();
+    } else {
+      focusComposeEditorAtEnd();
+    }
+  }
+}
+
+function setComposeBodyMode(mode, options = {}) {
+  const nextMode = normalizeComposeBodyMode(mode);
+  const currentMode = normalizeComposeBodyMode(state.compose.bodyMode);
+  if (nextMode === currentMode) {
+    syncComposeBodyModeUI(options);
+    return true;
+  }
+  if (nextMode === "html") {
+    state.compose.htmlSource = composeRichEditorHTML();
+    if (el.composeHTMLInput) {
+      el.composeHTMLInput.value = state.compose.htmlSource;
+    }
+    setComposeHTMLNote("");
+  } else {
+    const source = composeHTMLSourceValue();
+    if (composeHTMLSourceLooksAdvanced(source)) {
+      setComposeHTMLNote("Rich Text can only reopen simpler body fragments. Keep editing this message in HTML mode.", "warn");
+      return false;
+    }
+    hydrateComposeRichEditorFromHTML(source);
+    setComposeHTMLNote("");
+  }
+  state.compose.bodyMode = nextMode;
+  syncComposeBodyModeUI(options);
+  syncComposeDraftFields();
+  if (options.persist !== false) {
+    queueComposeDraftSave();
+  }
+  updateComposeSubmitState();
+  return true;
+}
+
+const composeHTMLIndentUnit = "  ";
+
+function indentComposeHTMLSelection(outdent = false) {
+  if (!el.composeHTMLInput) return false;
+  const input = el.composeHTMLInput;
+  const value = String(input.value || "");
+  const start = input.selectionStart || 0;
+  const end = input.selectionEnd || 0;
+  const lineStart = value.lastIndexOf("\n", Math.max(0, start - 1)) + 1;
+  const lineEndIndex = value.indexOf("\n", end);
+  const sliceEnd = lineEndIndex >= 0 ? lineEndIndex : value.length;
+  const block = value.slice(lineStart, sliceEnd);
+  const lines = block.split("\n");
+  let deltaStart = 0;
+  let deltaEnd = 0;
+  const nextLines = lines.map((line, index) => {
+    if (!outdent) {
+      if (index === 0) deltaStart += composeHTMLIndentUnit.length;
+      deltaEnd += composeHTMLIndentUnit.length;
+      return `${composeHTMLIndentUnit}${line}`;
+    }
+    if (line.startsWith(composeHTMLIndentUnit)) {
+      if (index === 0) deltaStart -= Math.min(composeHTMLIndentUnit.length, start - lineStart);
+      deltaEnd -= composeHTMLIndentUnit.length;
+      return line.slice(composeHTMLIndentUnit.length);
+    }
+    if (line.startsWith("\t")) {
+      if (index === 0) deltaStart -= Math.min(1, start - lineStart);
+      deltaEnd -= 1;
+      return line.slice(1);
+    }
+    return line;
+  });
+  input.value = `${value.slice(0, lineStart)}${nextLines.join("\n")}${value.slice(sliceEnd)}`;
+  state.compose.htmlSource = input.value;
+  const nextStart = Math.max(lineStart, start + deltaStart);
+  const nextEnd = Math.max(nextStart, end + deltaEnd);
+  input.setSelectionRange(nextStart, nextEnd);
+  renderComposeHTMLSourceDecorations();
+  scheduleComposeHTMLPreviewRefresh();
+  syncComposeDraftFields();
+  queueComposeDraftSave();
+  updateComposeSubmitState();
+  return true;
+}
+
+function composeRichEditorHTML() {
+  return composeEditorSnapshot("draft").html;
+}
+
+function composeRichEditorText() {
+  return composeEditorSnapshot("live").text;
+}
+
+function composeRichEditorHasContent() {
+  return composeEditorSnapshot("live").hasContent;
+}
+
 function composeEditorSnapshot(mode = "live") {
   const root = document.createElement("div");
   root.innerHTML = String(el.composeEditor?.innerHTML || "");
@@ -1498,15 +2356,15 @@ function composeEditorSnapshot(mode = "live") {
 }
 
 function composeEditorHTML() {
-  return composeEditorSnapshot("draft").html;
+  return composeBodyUsesHTMLMode() ? composeHTMLSourceSnapshot().html : composeRichEditorHTML();
 }
 
 function composeEditorText() {
-  return composeEditorSnapshot("live").text;
+  return composeBodyUsesHTMLMode() ? composeHTMLSourceSnapshot().text : composeRichEditorText();
 }
 
 function composeEditorHasContent() {
-  return composeEditorSnapshot("live").hasContent;
+  return composeBodyUsesHTMLMode() ? composeHTMLSourceSnapshot().hasContent : composeRichEditorHasContent();
 }
 
 function composeAuthEmailValue() {
@@ -1548,13 +2406,52 @@ function composeScheduledForISOValue() {
   return date.toISOString();
 }
 
+function normalizeComposeSendMode(raw) {
+  return String(raw || "").trim().toLowerCase() === "scheduled" ? "scheduled" : "send_now";
+}
+
+function bumpComposeDeliveryRevision() {
+  state.compose.deliveryRevision = Number(state.compose.deliveryRevision || 0) + 1;
+  return state.compose.deliveryRevision;
+}
+
+function applyComposeSendModeSelection(raw, options = {}) {
+  const nextMode = normalizeComposeSendMode(raw);
+  const currentMode = normalizeComposeSendMode(state.compose.sendMode);
+  const changed = nextMode !== currentMode;
+  state.compose.sendMode = nextMode;
+  if (nextMode !== "scheduled") {
+    state.compose.scheduledFor = "";
+  }
+  if (changed && options.bumpRevision !== false) {
+    bumpComposeDeliveryRevision();
+  }
+  syncComposeDraftFields();
+  updateComposeSubmitState();
+  return changed;
+}
+
+function applyComposeScheduledForSelection(raw, options = {}) {
+  const nextValue = String(raw || "").trim();
+  const currentValue = String(state.compose.scheduledFor || "").trim();
+  const changed = nextValue !== currentValue;
+  state.compose.scheduledFor = nextValue;
+  if (changed && options.bumpRevision !== false) {
+    bumpComposeDeliveryRevision();
+  }
+  syncComposeDraftFields();
+  updateComposeSubmitState();
+  return changed;
+}
+
 function syncComposeDeliveryControls() {
+  const scheduled = normalizeComposeSendMode(state.compose.sendMode) === "scheduled";
   if (el.composeSendMode) {
-    el.composeSendMode.value = state.compose.sendMode === "scheduled" ? "scheduled" : "send_now";
+    el.composeSendMode.value = scheduled ? "scheduled" : "send_now";
   }
   if (el.composeScheduledForInput) {
-    el.composeScheduledForInput.classList.toggle("hidden", state.compose.sendMode !== "scheduled");
-    if (state.compose.sendMode === "scheduled") {
+    el.composeScheduledForInput.classList.toggle("hidden", !scheduled);
+    if (scheduled) {
       if (!state.compose.scheduledFor) {
         state.compose.scheduledFor = composeDefaultScheduledLocalValue();
       }
@@ -1563,7 +2460,7 @@ function syncComposeDeliveryControls() {
       el.composeScheduledForInput.value = "";
     }
   }
-  if (state.compose.sendMode !== "scheduled") {
+  if (!scheduled) {
     setComposeDeliveryNote("Schedule uses your local time zone.");
     return;
   }
@@ -1824,6 +2721,11 @@ function syncComposeServerDraftState(draft, options = {}) {
   const record = draft && typeof draft === "object" ? draft : {};
   const oldDraftID = String(state.compose.draftID || "");
   const nextDraftID = String(record.id || oldDraftID);
+  const responseDeliveryRevision = Number(options.deliveryRevision);
+  const hasResponseDeliveryRevision = Number.isFinite(responseDeliveryRevision);
+  const shouldHydrateDelivery = options.forceDeliveryState === true
+    || !hasResponseDeliveryRevision
+    || responseDeliveryRevision >= Number(state.compose.deliveryRevision || 0);
   if (nextDraftID) {
     state.compose.draftID = nextDraftID;
     state.compose.draftLoaded = true;
@@ -1835,14 +2737,12 @@ function syncComposeServerDraftState(draft, options = {}) {
   state.compose.draftError = "";
   state.compose.draftStatus = String(record.status || state.compose.draftStatus || "active").trim().toLowerCase() || "active";
   state.compose.lastSendError = String(record.last_send_error || "").trim();
-  if (Object.prototype.hasOwnProperty.call(record, "send_mode")) {
-    state.compose.sendMode = String(record.send_mode || "").trim().toLowerCase() === "scheduled"
-      ? "scheduled"
-      : "send_now";
+  if (shouldHydrateDelivery && Object.prototype.hasOwnProperty.call(record, "send_mode")) {
+    state.compose.sendMode = normalizeComposeSendMode(record.send_mode);
   }
-  if (Object.prototype.hasOwnProperty.call(record, "scheduled_for")) {
+  if (shouldHydrateDelivery && Object.prototype.hasOwnProperty.call(record, "scheduled_for")) {
     state.compose.scheduledFor = composeScheduledLocalValueFromISO(record.scheduled_for);
-  } else if (state.compose.sendMode !== "scheduled") {
+  } else if (shouldHydrateDelivery && normalizeComposeSendMode(state.compose.sendMode) !== "scheduled") {
     state.compose.scheduledFor = "";
   }
   state.compose.draftLastSavedAt = String(record.updated_at || state.compose.draftLastSavedAt || new Date().toISOString());
@@ -2054,7 +2954,7 @@ function setComposeBccVisible(visible, opts = {}) {
 function setComposeFormatToolsVisible(visible) {
   state.compose.formatToolsVisible = !!visible;
   if (el.composeEditorTools) {
-    el.composeEditorTools.classList.toggle("hidden", !state.compose.formatToolsVisible);
+    el.composeEditorTools.classList.toggle("hidden", composeBodyUsesHTMLMode() || !state.compose.formatToolsVisible);
   }
   if (el.composeToggleFormatting) {
     el.composeToggleFormatting.setAttribute("aria-expanded", state.compose.formatToolsVisible ? "true" : "false");
@@ -2147,10 +3047,16 @@ function clearComposeDraft() {
   state.compose.lastSendError = "";
   state.compose.draftLastSavedAt = "";
   state.compose.draftBaselineJSON = "";
+  state.compose.bodyMode = "rich";
+  state.compose.htmlSource = "";
   state.compose.sendMode = "send_now";
   state.compose.scheduledFor = "";
+  state.compose.deliveryRevision = 0;
   clearComposeRecipientSuggestions();
   setComposeRecipientNote("");
+  setComposeHTMLNote("");
+  clearComposeHTMLPreviewTimer();
+  if (el.composeHTMLPreview) el.composeHTMLPreview.srcdoc = "";
   clearComposeCrashBuffer();
 }
 
@@ -2192,24 +3098,34 @@ function applyComposeDraftPayload(payload, opts = {}) {
   if (el.composeCcInput) el.composeCcInput.value = String(clientState.cc_pending || "");
   if (el.composeBccInput) el.composeBccInput.value = String(clientState.bcc_pending || "");
   if (el.composeSubjectInput) el.composeSubjectInput.value = draft.subject;
+  let nextHTMLSource = "";
   if (el.composeEditor) {
     if (draft.body_html) {
       el.composeEditor.innerHTML = draft.body_html;
+      nextHTMLSource = draft.body_html;
       if (opts.normalizeDraftMedia) normalizeComposeEditorDraftMedia();
     } else if (draft.body_text) {
       const lines = draft.body_text.split(/\r?\n/);
-      el.composeEditor.innerHTML = lines.map((line) => `<p>${escapeHtml(line || "")}</p>`).join("");
+      nextHTMLSource = lines.map((line) => `<p>${escapeHtml(line || "")}</p>`).join("");
+      el.composeEditor.innerHTML = nextHTMLSource;
     } else {
       el.composeEditor.innerHTML = "";
+      nextHTMLSource = "";
     }
+  }
+  state.compose.bodyMode = normalizeComposeBodyMode(clientState.body_mode);
+  state.compose.htmlSource = nextHTMLSource;
+  if (el.composeHTMLInput) {
+    el.composeHTMLInput.value = nextHTMLSource;
   }
   state.compose.draftStatus = draft.status || "active";
   state.compose.lastSendError = draft.last_send_error || "";
   state.compose.fromMode = "sender";
   state.compose.selectedSenderID = draft.sender_profile_id || draft.identity_id || "";
   state.compose.selectedAccountID = draft.account_id || "";
-  state.compose.sendMode = draft.send_mode === "scheduled" ? "scheduled" : "send_now";
+  state.compose.sendMode = normalizeComposeSendMode(draft.send_mode);
   state.compose.scheduledFor = composeScheduledLocalValueFromISO(draft.scheduled_for);
+  state.compose.deliveryRevision = 0;
   setComposeSendContext(draft.compose_mode || "send", draft.context_message_id || "", draft.context_account_id || "");
   renderComposeFromControls();
   if (el.composeFromSelect && state.compose.selectedSenderID) {
@@ -2225,6 +3141,8 @@ function applyComposeDraftPayload(payload, opts = {}) {
   setComposeCcVisible(Boolean(clientState.cc_visible || draft.cc || String(clientState.cc_pending || "").trim() !== ""), { clearWhenHidden: false });
   setComposeBccVisible(Boolean(clientState.bcc_visible || draft.bcc || String(clientState.bcc_pending || "").trim() !== ""), { clearWhenHidden: false });
   setComposeFormatToolsVisible(Boolean(clientState.format_tools_visible));
+  setComposeHTMLNote("");
+  syncComposeBodyModeUI();
   syncComposeDeliveryControls();
   syncComposeDraftFields();
 }
@@ -2414,6 +3332,7 @@ async function flushComposeDraft(options = {}) {
   syncComposeDraftFields();
   const payload = composeCurrentDraftPayload();
   const payloadJSON = composeDraftPayloadJSON(payload);
+  const requestDeliveryRevision = Number(state.compose.deliveryRevision || 0);
   const forceCreate = options.forceCreate === true;
   writeComposeCrashBuffer(state.compose.draftID || "");
 
@@ -2440,7 +3359,7 @@ async function flushComposeDraft(options = {}) {
         await cleanupStaleComposeDraftRecord(saved);
         return null;
       }
-      syncComposeServerDraftState(saved || payload);
+      syncComposeServerDraftState(saved || payload, { deliveryRevision: requestDeliveryRevision });
       updateComposeSubmitState();
       return saved || payload;
     } catch (err) {
@@ -3174,17 +4093,18 @@ function cleanupComposeInlineReferences() {
 function addComposeFiles(files) {
   if (!files || files.length === 0) return;
   for (const file of Array.from(files)) {
+    const inlineCandidate = !composeBodyUsesHTMLMode() && composeFileLooksInlineImage(file);
     const item = {
       id: composeID("compose-asset"),
       file,
       name: String(file?.name || "attachment.bin"),
       size: Number(file?.size || 0),
       contentType: String(file?.type || "application/octet-stream"),
-      inline: composeFileLooksInlineImage(file),
+      inline: inlineCandidate,
       contentID: composeID("cid"),
       sortOrder: composeAssets().length,
       status: "uploading",
-      objectURL: composeFileLooksInlineImage(file) ? URL.createObjectURL(file) : "",
+      objectURL: inlineCandidate ? URL.createObjectURL(file) : "",
       error: "",
       createdAtMs: Date.now(),
     };
@@ -3443,7 +4363,110 @@ function insertComposeSignatureNode(senderItem) {
   return node;
 }
 
+function parseComposeHTMLSourceDocument(rawHTML) {
+  const source = String(rawHTML || "");
+  if (composeHTMLLooksLikeDocument(source)) {
+    const doc = new DOMParser().parseFromString(source, "text/html");
+    return {
+      kind: "document",
+      source,
+      doc,
+      container: doc.body || doc.documentElement,
+    };
+  }
+  const doc = document.implementation.createHTMLDocument("");
+  doc.body.innerHTML = source;
+  return {
+    kind: "fragment",
+    source,
+    doc,
+    container: doc.body,
+  };
+}
+
+function serializeComposeHTMLSourceDocument(ctx) {
+  if (!ctx || !ctx.doc) return "";
+  if (ctx.kind === "document") {
+    const root = ctx.doc.documentElement;
+    if (!root) return "";
+    const hasDoctype = /<!doctype/i.test(String(ctx.source || ""));
+    return `${hasDoctype ? "<!doctype html>\n" : ""}${root.outerHTML}`.trim();
+  }
+  return String(ctx.container?.innerHTML || "").trim();
+}
+
+function applyComposeHTMLSourceValue(nextHTML, options = {}) {
+  const next = String(nextHTML || "");
+  state.compose.htmlSource = next;
+  if (el.composeHTMLInput && el.composeHTMLInput.value !== next) {
+    const input = el.composeHTMLInput;
+    const hadFocus = document.activeElement === input;
+    const nextSelectionStart = Math.min(input.selectionStart || 0, next.length);
+    const nextSelectionEnd = Math.min(input.selectionEnd || 0, next.length);
+    input.value = next;
+    if (hadFocus) {
+      input.focus();
+      input.setSelectionRange(nextSelectionStart, nextSelectionEnd);
+    }
+  }
+  renderComposeHTMLSourceDecorations(next);
+  scheduleComposeHTMLPreviewRefresh(options.previewImmediate === true);
+  syncComposeDraftFields();
+  if (options.queueSave === true) {
+    queueComposeDraftSave();
+  }
+  updateComposeSubmitState();
+}
+
+function applyComposeHTMLSenderSignature(senderItem, opts = {}) {
+  const replaceUntouched = opts.replaceUntouched === true;
+  const source = composeHTMLSourceValue();
+  const ctx = parseComposeHTMLSourceDocument(source);
+  const root = ctx.container || ctx.doc.body || ctx.doc.documentElement;
+  if (!root) return null;
+  const signatureNode = ctx.doc.querySelector('[data-compose-signature="true"]');
+  const nextInnerHTML = composeSignatureInnerHTMLForSender(senderItem);
+  if (!signatureNode) {
+    if (replaceUntouched || !nextInnerHTML) return null;
+    const node = ctx.doc.createElement("div");
+    node.className = "compose-signature-block";
+    node.innerHTML = nextInnerHTML;
+    updateComposeSignatureNodeMetadata(node, senderItem);
+    const anchor = ctx.doc.querySelector("[data-compose-quoted]");
+    if (anchor?.parentNode) {
+      anchor.parentNode.insertBefore(node, anchor);
+    } else {
+      root.appendChild(node);
+    }
+    applyComposeHTMLSourceValue(serializeComposeHTMLSourceDocument(ctx), {
+      previewImmediate: true,
+      queueSave: opts.queueSave === true,
+    });
+    return node;
+  }
+  if (!replaceUntouched) {
+    return signatureNode;
+  }
+  if (!composeSignatureNodeUntouched(signatureNode)) {
+    return signatureNode;
+  }
+  if (!nextInnerHTML) {
+    signatureNode.remove();
+  } else {
+    signatureNode.innerHTML = nextInnerHTML;
+    updateComposeSignatureNodeMetadata(signatureNode, senderItem);
+  }
+  applyComposeHTMLSourceValue(serializeComposeHTMLSourceDocument(ctx), {
+    previewImmediate: true,
+    queueSave: opts.queueSave === true,
+  });
+  return null;
+}
+
 function applyComposeSenderSignature(senderItem, opts = {}) {
+  if (composeBodyUsesHTMLMode()) {
+    return applyComposeHTMLSenderSignature(senderItem, opts);
+  }
   const replaceUntouched = opts.replaceUntouched === true;
   const signatureNode = composeSignatureNode();
   const nextInnerHTML = composeSignatureInnerHTMLForSender(senderItem);
@@ -3517,12 +4540,20 @@ function resetComposeDraftSession(options = {}) {
   state.compose.draftLastSavedAt = "";
   state.compose.draftBaselineJSON = "";
   state.compose.fromMode = "sender";
+  state.compose.bodyMode = "rich";
+  state.compose.htmlSource = "";
   state.compose.selectedSenderID = "";
   state.compose.selectedAccountID = "";
   state.compose.sendMode = "send_now";
   state.compose.scheduledFor = "";
+  state.compose.deliveryRevision = 0;
   clearComposeRecipientSuggestions();
   setComposeRecipientNote("");
+  setComposeHTMLNote("");
+  clearComposeHTMLPreviewTimer();
+  if (el.composeHTMLPreview) {
+    el.composeHTMLPreview.srcdoc = "";
+  }
   clearComposeAssets({ removeEditorNodes: false });
   state.mail.selectedDraftID = "";
   if (!keepCrash) {
@@ -3650,6 +4681,7 @@ function applyComposePrefill(prefill = {}) {
   const subject = String(prefill.subject || "").trim();
   const bodyText = String(prefill.bodyText || "");
   const bodyHTML = String(prefill.bodyHTML || "").trim();
+  let nextHTMLSource = bodyHTML;
 
   state.compose.recipients.to = [];
   state.compose.recipients.cc = [];
@@ -3673,9 +4705,17 @@ function applyComposePrefill(prefill = {}) {
     } else {
       const normalized = bodyText.replace(/\r\n/g, "\n");
       const lines = normalized.split("\n");
-      el.composeEditor.innerHTML = lines.map((line) => `<p>${escapeHtml(line || "")}</p>`).join("");
+      nextHTMLSource = lines.map((line) => `<p>${escapeHtml(line || "")}</p>`).join("");
+      el.composeEditor.innerHTML = nextHTMLSource;
     }
   }
+  state.compose.bodyMode = "rich";
+  state.compose.htmlSource = nextHTMLSource;
+  if (el.composeHTMLInput) {
+    el.composeHTMLInput.value = nextHTMLSource;
+  }
+  setComposeHTMLNote("");
+  syncComposeBodyModeUI();
 }
 
 async function openComposeOverlay(trigger = null, opts = {}) {
@@ -3715,9 +4755,14 @@ async function openComposeOverlay(trigger = null, opts = {}) {
   setComposeFromNote("");
   setComposeDraftNote("");
   setComposeRecipientNote("");
+  setComposeHTMLNote("");
   setComposeDraftState("Draft", "muted");
   syncComposeDeliveryControls();
   if (el.composeEditor) el.composeEditor.innerHTML = "";
+  if (el.composeHTMLInput) el.composeHTMLInput.value = "";
+  state.compose.htmlSource = "";
+  state.compose.bodyMode = "rich";
+  syncComposeBodyModeUI();
   await loadComposeSenders();
   let shouldAutoInsertSignature = false;
   let preferComposeStartFocus = false;
@@ -3760,11 +4805,7 @@ async function openComposeOverlay(trigger = null, opts = {}) {
   applyComposeSendFailurePresentation();
   syncComposeDraftFields();
   updateComposeSubmitState();
-  if (preferComposeStartFocus) {
-    focusComposeEditorForComposeStart();
-  } else {
-    focusComposeEditorAtEnd();
-  }
+  syncComposeBodyModeUI({ focus: true, preferStart: preferComposeStartFocus });
 }
 
 function closeComposeOverlay(options = true) {
@@ -3788,12 +4829,17 @@ function closeComposeOverlay(options = true) {
   el.composeOverlay.setAttribute("aria-hidden", "true");
   document.body.style.overflow = state.ui.modalOpen || state.ui.mfaModalOpen ? "hidden" : "";
   state.compose.submitInFlight = false;
+  clearComposeHTMLPreviewTimer();
+  if (el.composeHTMLPreview) {
+    el.composeHTMLPreview.srcdoc = "";
+  }
   if (!persistDraft) {
     if (el.composeTitle) {
       el.composeTitle.textContent = "New Message";
     }
     clearComposeAssets();
     setComposeDraftNote("");
+    setComposeHTMLNote("");
   }
   if (restoreFocus && state.ui.composeLastTrigger && typeof state.ui.composeLastTrigger.focus === "function") {
     state.ui.composeLastTrigger.focus();
@@ -3807,6 +4853,16 @@ function handleComposeOverlayKeydown(event) {
   if (event.key === "Escape") {
     event.preventDefault();
     closeComposeOverlay(true);
+    return;
+  }
+  if (
+    event.key === "Tab"
+    && composeBodyUsesHTMLMode()
+    && el.composeHTMLInput
+    && event.target === el.composeHTMLInput
+  ) {
+    event.preventDefault();
+    indentComposeHTMLSelection(event.shiftKey);
     return;
   }
   if (event.key !== "Tab") return;
@@ -6654,12 +7710,14 @@ function applyNavVisibility() {
   }
 
   if (state.setup.required) {
+    setNotificationCenterOpen(false);
     el.tabSetup.style.display = "inline-block";
     el.tabAuth.style.display = "none";
     el.tabMail.style.display = "none";
     el.tabContacts.style.display = "none";
     el.tabSettings.style.display = "none";
     el.tabAdmin.style.display = "none";
+    if (el.btnNotificationCenter) el.btnNotificationCenter.style.display = "none";
     el.btnTheme.style.display = "none";
     el.btnLogout.style.display = "none";
     return;
@@ -6668,11 +7726,13 @@ function applyNavVisibility() {
   el.tabSetup.style.display = "none";
   el.btnTheme.style.display = "inline-block";
   if (!state.user) {
+    setNotificationCenterOpen(false);
     el.tabAuth.style.display = "inline-block";
     el.tabMail.style.display = "none";
     el.tabContacts.style.display = "none";
     el.tabSettings.style.display = "none";
     el.tabAdmin.style.display = "none";
+    if (el.btnNotificationCenter) el.btnNotificationCenter.style.display = "none";
     el.btnLogout.style.display = "none";
     return;
   }
@@ -6681,6 +7741,7 @@ function applyNavVisibility() {
   el.tabContacts.style.display = "inline-block";
   el.tabSettings.style.display = "inline-block";
   el.tabAdmin.style.display = state.user.role === "admin" ? "inline-block" : "none";
+  if (el.btnNotificationCenter) el.btnNotificationCenter.style.display = "inline-flex";
   el.btnLogout.style.display = "inline-block";
 }
 
@@ -10097,6 +11158,37 @@ function closeMailViewMenu() {
   }
 }
 
+function shouldUseExpandedMailToolbar() {
+  const showScope = indexedAccountsList().length > 1;
+  const advancedAvailable = mailUsesIndexedMode() && !state.mail.indexedRuntimeFallback;
+  const panelOpen = advancedAvailable && !!state.mail.filterPanelOpen;
+  return showScope || panelOpen;
+}
+
+function syncMailToolbarLayout() {
+  if (!el.mailCommandbar || !el.mailToolbarContextCluster) return;
+  const expanded = shouldUseExpandedMailToolbar();
+  const scopeVisible = !!el.mailAccountSwitcherWrap && !el.mailAccountSwitcherWrap.classList.contains("hidden");
+  const primaryTarget = el.mailToolbarPrimaryTools;
+  const secondaryTarget = el.mailToolbarSecondaryTools;
+  const target = expanded ? secondaryTarget : primaryTarget;
+  if (target && el.mailToolbarContextCluster.parentElement !== target) {
+    target.appendChild(el.mailToolbarContextCluster);
+  }
+  el.mailCommandbar.classList.toggle("mail-commandbar--compact", !expanded);
+  el.mailCommandbar.classList.toggle("mail-commandbar--expanded", expanded);
+  if (el.mailToolbarSecondary) {
+    el.mailToolbarSecondary.classList.toggle("hidden", !expanded);
+    el.mailToolbarSecondary.classList.toggle("is-context-only", expanded && !scopeVisible);
+  }
+  if (el.mailToolbarSecondaryMain) {
+    el.mailToolbarSecondaryMain.classList.toggle("hidden", !expanded || !scopeVisible);
+  }
+  if (el.mailToolbarPrimaryTools) {
+    el.mailToolbarPrimaryTools.classList.toggle("hidden", expanded);
+  }
+}
+
 function renderMailFilterBar(options = {}) {
   const syncControls = options.syncControls !== false;
   const advancedAvailable = mailUsesIndexedMode() && !state.mail.indexedRuntimeFallback;
@@ -10121,6 +11213,7 @@ function renderMailFilterBar(options = {}) {
     renderMailFilterAccountChips(currentMailScope() === "all" ? selectedPendingMailFilterAccountIDs() : []);
   }
   renderAppliedMailFilterChips();
+  syncMailToolbarLayout();
 }
 
 async function openMailShortcutsHelp(trigger = null) {
@@ -10780,6 +11873,7 @@ async function maybeAutoRefreshVisibleQuota() {
   for (const item of visible) {
     const accountID = String(item?.account_id || "").trim();
     if (!accountID) continue;
+    if (item?.quota_supported === false) continue;
     if (state.mail.healthAutoQuotaRequested[accountID]) continue;
     if (!healthQuotaRefreshIsStale(item)) continue;
     if (accountHealthActionRunning(item)) continue;
@@ -10822,30 +11916,35 @@ function renderMailHealthPanel() {
   el.mailHealthPanel.classList.toggle("is-open", !!state.mail.healthExpanded);
   const summary = state.mail.accountHealth?.summary || {};
   const summaryText = items.length === 0
-    ? "No accounts configured."
+    ? ""
     : currentMailScope() === "all"
-      ? `${Number(summary.total_accounts || items.length)} accounts · ${Number(summary.attention_accounts || 0) + Number(summary.error_accounts || 0)} need attention`
+      ? (() => {
+        const needsAttention = Number(summary.attention_accounts || 0) + Number(summary.error_accounts || 0);
+        return needsAttention > 0 ? `${needsAttention} need attention` : "";
+      })()
       : (() => {
         const item = items[0];
-        const statusText = String(item?.status || "").trim() || "unknown";
         const label = String(item?.account_label || indexedAccountLabel(item?.account_id || "")).trim() || "Unknown account";
-        return `${label} · ${statusText}`;
+        const hasError = !!String(item?.last_error || "").trim() || String(item?.status || "").trim() === "error";
+        return hasError ? `${label} needs attention` : "";
       })();
   if (el.mailHealthToggleSummary) {
     el.mailHealthToggleSummary.textContent = summaryText;
+    el.mailHealthToggleSummary.classList.toggle("hidden", !summaryText);
   }
   el.btnMailHealthToggle.setAttribute("aria-expanded", state.mail.healthExpanded ? "true" : "false");
   if (el.mailHealthToggleCaret) {
     el.mailHealthToggleCaret.textContent = state.mail.healthExpanded ? "−" : "+";
   }
   el.mailHealthBody.classList.toggle("hidden", !state.mail.healthExpanded);
+  syncMailToolbarLayout();
   renderMailHealthSummaryStrip(items);
   el.mailHealthList.replaceChildren();
   if (!state.mail.healthExpanded) return;
   if (items.length === 0) {
     const empty = document.createElement("div");
     empty.className = "mail-health-empty";
-    empty.textContent = "Connect a mail account to see sync health, quota usage, and repair actions here.";
+    empty.textContent = "Connect a mail account to see sync health and repair actions here.";
     el.mailHealthList.appendChild(empty);
     return;
   }
@@ -10854,6 +11953,7 @@ function renderMailHealthPanel() {
     const tone = String(item?.status || "attention").trim() || "attention";
     row.className = `mail-health-row mail-health-row--${tone}`;
     const syncText = item?.last_sync_at ? formatMailIndexFreshness(item.last_sync_at) : "never synced";
+    const quotaSupported = item?.quota_supported !== false;
     const quotaText = item?.quota_supported === false
       ? "Quota unavailable on this server."
       : item?.quota_available
@@ -10891,14 +11991,16 @@ function renderMailHealthPanel() {
         setStatus(formatAPIError(err, "Failed to queue sync."), "error");
       }
     }, String(item?.action_state?.kind || "") === "sync" && actionsDisabled));
-    actions.appendChild(makeActionButton("Refresh Quota", "Refreshing…", async () => {
-      try {
-        state.mail.healthAutoQuotaRequested[String(item.account_id || "").trim()] = true;
-        await postMailHealthAction(item.account_id, "quota-refresh", { statusText: `Quota refresh queued for ${item.account_label}.` });
-      } catch (err) {
-        setStatus(formatAPIError(err, "Failed to refresh quota."), "error");
-      }
-    }, String(item?.action_state?.kind || "") === "quota_refresh" && actionsDisabled));
+    if (quotaSupported) {
+      actions.appendChild(makeActionButton("Refresh Quota", "Refreshing…", async () => {
+        try {
+          state.mail.healthAutoQuotaRequested[String(item.account_id || "").trim()] = true;
+          await postMailHealthAction(item.account_id, "quota-refresh", { statusText: `Quota refresh queued for ${item.account_label}.` });
+        } catch (err) {
+          setStatus(formatAPIError(err, "Failed to refresh quota."), "error");
+        }
+      }, String(item?.action_state?.kind || "") === "quota_refresh" && actionsDisabled));
+    }
     actions.appendChild(makeActionButton("Rebuild Index", "Rebuilding…", async () => {
       try {
         await postMailHealthAction(item.account_id, "reindex", { statusText: `Rebuild queued for ${item.account_label}.` });
@@ -10910,20 +12012,27 @@ function renderMailHealthPanel() {
     row.appendChild(title);
     const meta = document.createElement("div");
     meta.className = "mail-health-meta";
-    meta.innerHTML = `
-      <div class="mail-health-meta-block">
-        <span class="mail-health-meta-label">Sync</span>
-        <span class="mail-health-meta-value">${escapeHtml(syncText)}</span>
-      </div>
-      <div class="mail-health-meta-block">
-        <span class="mail-health-meta-label">Quota</span>
-        <span class="mail-health-meta-value">${escapeHtml(quotaText)}</span>
-      </div>
-      <div class="mail-health-meta-block">
-        <span class="mail-health-meta-label">Quota Refresh</span>
-        <span class="mail-health-meta-value">${escapeHtml(quotaRefreshed)}</span>
-      </div>
-    `;
+    meta.innerHTML = quotaSupported
+      ? `
+        <div class="mail-health-meta-block">
+          <span class="mail-health-meta-label">Sync</span>
+          <span class="mail-health-meta-value">${escapeHtml(syncText)}</span>
+        </div>
+        <div class="mail-health-meta-block">
+          <span class="mail-health-meta-label">Quota</span>
+          <span class="mail-health-meta-value">${escapeHtml(quotaText)}</span>
+        </div>
+        <div class="mail-health-meta-block">
+          <span class="mail-health-meta-label">Quota Refresh</span>
+          <span class="mail-health-meta-value">${escapeHtml(quotaRefreshed)}</span>
+        </div>
+      `
+      : `
+        <div class="mail-health-meta-block">
+          <span class="mail-health-meta-label">Sync</span>
+          <span class="mail-health-meta-value">${escapeHtml(syncText)}</span>
+        </div>
+      `;
     row.appendChild(meta);
     if (String(item?.last_error || "").trim()) {
       const syncError = document.createElement("div");
@@ -10931,7 +12040,7 @@ function renderMailHealthPanel() {
       syncError.textContent = `Sync error: ${String(item.last_error).trim()}`;
       row.appendChild(syncError);
     }
-    if (String(item?.quota_last_error || "").trim()) {
+    if (quotaSupported && String(item?.quota_last_error || "").trim()) {
       const quotaError = document.createElement("div");
       quotaError.className = "mail-health-action-status";
       quotaError.textContent = `Quota: ${String(item.quota_last_error).trim()}`;
@@ -10955,6 +12064,7 @@ function renderMailScopeSwitcher() {
   el.mailAccountSwitcherWrap.classList.toggle("hidden", !show);
   if (!show) {
     el.mailAccountSwitcher.replaceChildren();
+    syncMailToolbarLayout();
     return;
   }
   const currentValue = currentMailScope() === "all"
@@ -10972,6 +12082,7 @@ function renderMailScopeSwitcher() {
     el.mailAccountSwitcher.appendChild(option);
   }
   el.mailAccountSwitcher.value = currentValue;
+  syncMailToolbarLayout();
 }
 
 function renderMailIndexStatus() {
@@ -10989,12 +12100,10 @@ function renderMailIndexStatus() {
     tone = "warn";
   } else if (currentMailScope() === "all") {
     const broken = accounts.filter((item) => String(item?.last_error || "").trim() !== "").length;
-    text = broken > 0
-      ? `Indexed · ${accounts.length} accounts · ${broken} need attention`
-      : `Indexed · ${accounts.length} accounts`;
+    text = `Indexed · ${accounts.length} accounts`;
     tone = broken > 0 ? "warn" : "ok";
   } else if (sync?.last_error) {
-    text = `Indexed · ${formatMailIndexFreshness(sync?.last_sync_at)} · ${String(sync.last_error).trim()}`;
+    text = "Indexed · needs attention";
     tone = "warn";
   } else if (sync?.last_sync_at) {
     text = `Indexed · ${formatMailIndexFreshness(sync.last_sync_at)}`;
@@ -11319,6 +12428,59 @@ function normalizeIndexedMessageDetail(payload, accountID = "") {
     attachments: (Array.isArray(payload?.attachments) ? payload.attachments : []).map((item) => normalizeIndexedAttachment(item)),
     source: "indexed",
   };
+}
+
+function synthesizeThreadSummary(summary = null, detail = null, mailboxHint = "") {
+  const source = mailItemSource(summary) || mailItemSource(detail) || "";
+  const accountID = source === "indexed"
+    ? String(summary?.account_id || detail?.account_id || currentIndexedAccountID() || "").trim()
+    : "";
+  const mailbox = String(summary?.mailbox || detail?.mailbox || mailboxHint || state.mailbox || "INBOX").trim() || "INBOX";
+  const item = {
+    id: String(detail?.id || summary?.id || "").trim(),
+    account_id: accountID,
+    mailbox,
+    source: source || (accountID ? "indexed" : "live"),
+    from: String(summary?.from || detail?.from || "").trim(),
+    subject: String(summary?.subject || detail?.subject || "").trim(),
+    date: detail?.date || summary?.date || "",
+    seen: detail?.seen ?? summary?.seen ?? false,
+    flagged: detail?.flagged ?? summary?.flagged ?? false,
+    answered: detail?.answered ?? summary?.answered ?? false,
+    preview: "",
+    thread_id: String(summary?.thread_id || detail?.thread_id || "").trim(),
+    has_attachments: Boolean(
+      summary?.has_attachments
+      || summary?.hasAttachments
+      || detail?.has_attachments
+      || detail?.hasAttachments
+      || (Array.isArray(detail?.attachments) && detail.attachments.length > 0)
+    ),
+  };
+  item.preview = mailSummaryPreviewText({
+    ...item,
+    preview: summary?.preview || detail?.preview || "",
+    snippet: summary?.snippet || detail?.snippet || "",
+    body: detail?.body || summary?.body || "",
+    body_text: detail?.body_text || summary?.body_text || "",
+    body_html: detail?.body_html || summary?.body_html || "",
+  });
+  return item;
+}
+
+function singletonThreadState(summary = null, detail = null, mailboxHint = "", options = {}) {
+  const expanded = options.expanded !== false;
+  const item = synthesizeThreadSummary(summary, detail, mailboxHint);
+  const fallbackID = String(item?.thread_id || item?.id || options.messageID || "").trim();
+  const hasItem = !!String(item?.id || "").trim();
+  return createThreadState({
+    id: fallbackID,
+    items: hasItem ? [item] : [],
+    index: hasItem ? 0 : -1,
+    truncated: false,
+    mailbox: String(item?.mailbox || mailboxHint || state.mailbox || "INBOX").trim() || "INBOX",
+    expanded,
+  });
 }
 
 function filterWaitingIndexedSummaries(items) {
@@ -12640,6 +13802,138 @@ function buildReaderHTMLSrcdoc(rawHTML) {
   return `<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"color-scheme\" content=\"light\"><meta http-equiv=\"Content-Security-Policy\" content=\"${csp}\"><style>${baseStyle}</style></head><body>${bodyHTML}</body></html>`;
 }
 
+function clearReaderHTMLSizingObservers() {
+  if (readerHTMLSizing.contentObserver) {
+    readerHTMLSizing.contentObserver.disconnect();
+    readerHTMLSizing.contentObserver = null;
+  }
+  if (readerHTMLSizing.hostObserver) {
+    readerHTMLSizing.hostObserver.disconnect();
+    readerHTMLSizing.hostObserver = null;
+  }
+}
+
+function resetReaderHTMLSizing({ resetFrame = false } = {}) {
+  readerHTMLSizing.token += 1;
+  if (readerHTMLSizing.raf) {
+    window.cancelAnimationFrame(readerHTMLSizing.raf);
+    readerHTMLSizing.raf = 0;
+  }
+  for (const timer of readerHTMLSizing.timers) {
+    window.clearTimeout(timer);
+  }
+  readerHTMLSizing.timers.clear();
+  clearReaderHTMLSizingObservers();
+  if (resetFrame && el.bodyHTMLFrame) {
+    el.bodyHTMLFrame.style.height = "";
+  }
+}
+
+function readerHTMLHostNode() {
+  if (el.bodyHTMLWrap?.parentElement instanceof HTMLElement) {
+    return el.bodyHTMLWrap.parentElement;
+  }
+  return null;
+}
+
+function readerHTMLHostHeight() {
+  const host = readerHTMLHostNode();
+  if (!host) return 0;
+  const rect = host.getBoundingClientRect();
+  return Math.max(Math.ceil(host.clientHeight || 0), Math.ceil(rect.height || 0));
+}
+
+function measureReaderHTMLContentHeight(frame = el.bodyHTMLFrame) {
+  if (!(frame instanceof HTMLIFrameElement)) return 0;
+  try {
+    const doc = frame.contentDocument;
+    const root = doc?.documentElement;
+    const body = doc?.body;
+    return Math.max(
+      Math.ceil(root?.scrollHeight || 0),
+      Math.ceil(root?.offsetHeight || 0),
+      Math.ceil(root?.getBoundingClientRect?.().height || 0),
+      Math.ceil(body?.scrollHeight || 0),
+      Math.ceil(body?.offsetHeight || 0),
+      Math.ceil(body?.getBoundingClientRect?.().height || 0),
+    );
+  } catch {
+    return 0;
+  }
+}
+
+function applyReaderHTMLFrameHeight(token = readerHTMLSizing.token) {
+  if (token !== readerHTMLSizing.token) return;
+  const frame = el.bodyHTMLFrame;
+  if (!(frame instanceof HTMLIFrameElement)) return;
+  const hostHeight = Math.max(readerHTMLHostHeight(), 160);
+  const contentHeight = measureReaderHTMLContentHeight(frame);
+  frame.style.height = `${Math.max(hostHeight, contentHeight)}px`;
+}
+
+function scheduleReaderHTMLFrameHeight(token = readerHTMLSizing.token, delay = 0) {
+  if (token !== readerHTMLSizing.token) return;
+  if (delay > 0) {
+    const timer = window.setTimeout(() => {
+      readerHTMLSizing.timers.delete(timer);
+      scheduleReaderHTMLFrameHeight(token);
+    }, delay);
+    readerHTMLSizing.timers.add(timer);
+    return;
+  }
+  if (readerHTMLSizing.raf) return;
+  readerHTMLSizing.raf = window.requestAnimationFrame(() => {
+    readerHTMLSizing.raf = 0;
+    applyReaderHTMLFrameHeight(token);
+  });
+}
+
+function bindReaderHTMLSizingObservers(token = readerHTMLSizing.token) {
+  if (token !== readerHTMLSizing.token || typeof ResizeObserver !== "function") return;
+  const frame = el.bodyHTMLFrame;
+  if (!(frame instanceof HTMLIFrameElement)) return;
+  const host = readerHTMLHostNode();
+  try {
+    const doc = frame.contentDocument;
+    const root = doc?.documentElement;
+    const body = doc?.body;
+    if (root || body) {
+      readerHTMLSizing.contentObserver = new ResizeObserver(() => {
+        scheduleReaderHTMLFrameHeight(token);
+      });
+      if (root) {
+        readerHTMLSizing.contentObserver.observe(root);
+      }
+      if (body && body !== root) {
+        readerHTMLSizing.contentObserver.observe(body);
+      }
+    }
+  } catch {}
+  if (host) {
+    readerHTMLSizing.hostObserver = new ResizeObserver(() => {
+      scheduleReaderHTMLFrameHeight(token);
+    });
+    readerHTMLSizing.hostObserver.observe(host);
+  }
+}
+
+function loadReaderHTMLDocument(rawHTML) {
+  const frame = el.bodyHTMLFrame;
+  if (!(frame instanceof HTMLIFrameElement)) return;
+  resetReaderHTMLSizing({ resetFrame: true });
+  const token = readerHTMLSizing.token;
+  frame.style.height = `${Math.max(readerHTMLHostHeight(), 160)}px`;
+  frame.addEventListener("load", () => {
+    if (token !== readerHTMLSizing.token) return;
+    bindReaderHTMLSizingObservers(token);
+    scheduleReaderHTMLFrameHeight(token);
+    [40, 140, 320, 700, 1200].forEach((delay) => {
+      scheduleReaderHTMLFrameHeight(token, delay);
+    });
+  }, { once: true });
+  frame.srcdoc = buildReaderHTMLSrcdoc(rawHTML || "");
+}
+
 function renderReaderBody(message = state.selectedMessage) {
   const hasMessage = !!message;
   const hasHTML = hasMessage && messageHasHTML(message);
@@ -12658,6 +13952,7 @@ function renderReaderBody(message = state.selectedMessage) {
 
   if (!hasMessage) {
     state.ui.readerViewMode = "plain";
+    resetReaderHTMLSizing({ resetFrame: true });
     if (el.bodyHTMLWrap) el.bodyHTMLWrap.classList.add("hidden");
     if (el.bodyHTMLFrame) el.bodyHTMLFrame.srcdoc = "";
     if (el.bodyPlain) {
@@ -12670,12 +13965,13 @@ function renderReaderBody(message = state.selectedMessage) {
   if (mode === "html") {
     if (el.bodyHTMLWrap) el.bodyHTMLWrap.classList.remove("hidden");
     if (el.bodyHTMLFrame) {
-      el.bodyHTMLFrame.srcdoc = buildReaderHTMLSrcdoc(message.body_html || "");
+      loadReaderHTMLDocument(message.body_html || "");
     }
     if (el.bodyPlain) el.bodyPlain.classList.add("hidden");
     return;
   }
 
+  resetReaderHTMLSizing({ resetFrame: true });
   if (el.bodyHTMLWrap) el.bodyHTMLWrap.classList.add("hidden");
   if (el.bodyHTMLFrame) el.bodyHTMLFrame.srcdoc = "";
   if (el.bodyPlain) {
@@ -12884,8 +14180,8 @@ function renderThreadContext() {
   const hasMultiple = hasThread && items.length > 1;
   const expanded = hasMultiple && threadRailExpanded(thread);
   const canCollapse = threadCanCollapse(thread);
-  el.threadStrip.classList.toggle("hidden", !hasSelection || !hasMultiple);
-  el.threadStrip.classList.toggle("is-expanded", expanded);
+  el.threadStrip.classList.toggle("hidden", !hasSelection);
+  el.threadStrip.classList.toggle("is-expanded", hasMultiple && expanded);
   el.threadStrip.classList.toggle("is-collapsed", hasMultiple && !expanded);
   el.threadPosition.textContent = formatThreadCountLabel(thread, hasSelection);
   const selectionLabel = formatThreadSelectionLabel(thread, hasSelection);
@@ -12900,20 +14196,41 @@ function renderThreadContext() {
   renderThreadList();
 }
 
-async function loadThreadContext(summary, messageID, mailboxHint = "") {
+async function loadThreadContext(summary, messageID, mailboxHint = "", options = {}) {
   const expanded = state.thread?.expanded !== false;
-  const threadID = String(summary?.thread_id || "").trim();
+  const contextItem = synthesizeThreadSummary(summary, options.message || state.selectedMessage || null, mailboxHint);
+  const threadID = String(contextItem?.thread_id || "").trim();
+  const baseMailbox = String(contextItem?.mailbox || mailboxHint || state.mailbox || "INBOX").trim() || "INBOX";
+  const fallbackToSingleton = (message) => {
+    state.thread = singletonThreadState(contextItem, options.message || state.selectedMessage || null, baseMailbox, {
+      expanded,
+      messageID,
+    });
+    renderThreadContext();
+    if (!options.quiet && message) {
+      setStatus(message, "info");
+    }
+  };
   if (!threadID) {
-    state.thread = createThreadState({ expanded });
+    state.thread = singletonThreadState(contextItem, options.message || state.selectedMessage || null, baseMailbox, {
+      expanded,
+      messageID,
+    });
     renderThreadContext();
     return;
   }
-  const baseMailbox = String(mailboxHint || summary?.mailbox || state.mailbox || "INBOX").trim() || "INBOX";
-  if (activeMailUsesIndexedSource(summary)) {
+  if (activeMailUsesIndexedSource(contextItem)) {
     try {
-      const accountID = String(summary?.account_id || currentIndexedAccountID() || "").trim();
+      const accountID = String(contextItem?.account_id || currentIndexedAccountID() || "").trim();
       const payload = await api(`/api/v2/threads/${encodeURIComponent(threadID)}?account_id=${encodeURIComponent(accountID)}`, { logErrors: false });
       const items = (Array.isArray(payload?.items) ? payload.items : []).map((item) => normalizeIndexedMessageSummary(item));
+      if (!items.some((it) => String(it?.id || "") === String(messageID || "")) && String(contextItem?.id || "") === String(messageID || "")) {
+        items.push(contextItem);
+      }
+      if (items.length === 0) {
+        fallbackToSingleton("Conversation context unavailable. Showing the current message only.");
+        return;
+      }
       items.sort((a, b) => new Date(a?.date || 0).getTime() - new Date(b?.date || 0).getTime());
       let index = items.findIndex((it) => String(it?.id || "") === String(messageID || ""));
       if (index < 0 && items.length > 0) {
@@ -12930,16 +14247,19 @@ async function loadThreadContext(summary, messageID, mailboxHint = "") {
       renderThreadContext();
       return;
     } catch {
-      state.thread = createThreadState({ expanded });
-      renderThreadContext();
+      fallbackToSingleton("Conversation context unavailable. Showing the current message only.");
       return;
     }
   }
   try {
     const payload = await api(`/api/v1/threads/${encodeURIComponent(threadID)}/messages?mailbox=${encodeURIComponent(baseMailbox)}&scope=conversation&page=1&page_size=100`, { logErrors: false });
     const items = (Array.isArray(payload?.items) ? payload.items : []).map((item) => normalizeLiveMessageSummary(item, baseMailbox));
-    if (!items.some((it) => String(it?.id || "") === String(messageID || "")) && summary?.id && String(summary.id) === String(messageID || "")) {
-      items.push(normalizeLiveMessageSummary(summary, baseMailbox));
+    if (!items.some((it) => String(it?.id || "") === String(messageID || "")) && String(contextItem?.id || "") === String(messageID || "")) {
+      items.push(contextItem);
+    }
+    if (items.length === 0) {
+      fallbackToSingleton("Conversation context unavailable. Showing the current message only.");
+      return;
     }
     items.sort((a, b) => {
       const da = new Date(a?.date || 0).getTime();
@@ -12959,7 +14279,8 @@ async function loadThreadContext(summary, messageID, mailboxHint = "") {
       expanded,
     });
   } catch {
-    state.thread = createThreadState({ expanded });
+    fallbackToSingleton("Conversation context unavailable. Showing the current message only.");
+    return;
   }
   renderThreadContext();
 }
@@ -12993,13 +14314,14 @@ async function openThreadBoundary(position) {
 
 async function refreshSelectedThreadContext(opts = {}) {
   const message = state.selectedMessage;
-  const summary = state.selectedMessageSummary || message || null;
+  const summary = synthesizeThreadSummary(state.selectedMessageSummary || message || null, message, state.selectedMessageSummary?.mailbox || message?.mailbox || state.mailbox || "INBOX");
   if (!message || !summary) {
     renderThreadContext();
     return;
   }
+  state.selectedMessageSummary = summary;
   const mailboxHint = String(summary?.mailbox || message?.mailbox || state.mailbox || "INBOX").trim() || "INBOX";
-  await loadThreadContext(summary, message.id, mailboxHint);
+  await loadThreadContext(summary, message.id, mailboxHint, { quiet: opts.quiet, message });
   if (!opts.quiet) {
     renderThreadContext();
   }
@@ -13578,14 +14900,16 @@ async function openMessage(id, summary = null) {
       accountID,
     )
     : normalizeLiveMessageDetail(await api(`/api/v1/messages/${encodeURIComponent(id)}`));
+  const threadSummary = synthesizeThreadSummary(knownSummary, m, knownSummary?.mailbox || m.mailbox || state.mailbox || "INBOX");
+  state.selectedMessageSummary = threadSummary;
   state.selectedMessage = m;
   renderSelectedMessageChrome(m);
   state.ui.readerViewMode = messageHasHTML(m) ? "html" : "plain";
   renderReaderBody(m);
   renderAttachmentLinks(m);
-  const threadMailbox = String(knownSummary?.mailbox || m.mailbox || state.mailbox || "INBOX").trim() || "INBOX";
-  await loadThreadContext(knownSummary, m.id, threadMailbox);
-  if (knownSummary && !knownSummary.seen) {
+  const threadMailbox = String(threadSummary?.mailbox || m.mailbox || state.mailbox || "INBOX").trim() || "INBOX";
+  await loadThreadContext(threadSummary, m.id, threadMailbox, { message: m });
+  if (threadSummary && !threadSummary.seen) {
     applyLocalMessagePatch(m.id, { seen: true });
     const request = shouldUseIndexed
       ? api("/api/v2/messages/bulk", {
@@ -13818,6 +15142,92 @@ function setUpdateNote(text, type = "info") {
   else el.updateNote.classList.add("update-note--info");
 }
 
+function maybeNotifyUpdater(previousStatus, nextStatus) {
+  if (!nextStatus || typeof nextStatus !== "object" || nextStatus.legacy_backend) {
+    state.update.notificationsPrimed = true;
+    return;
+  }
+  if (!state.update.notificationsPrimed) {
+    state.update.notificationsPrimed = true;
+    return;
+  }
+
+  const previous = previousStatus && typeof previousStatus === "object" ? previousStatus : null;
+  const nextAutoState = String(nextStatus.auto_update?.state || "idle").trim().toLowerCase();
+  const prevAutoState = String(previous?.auto_update?.state || "idle").trim().toLowerCase();
+  const nextApplyState = String(nextStatus.apply?.state || "idle").trim().toLowerCase();
+  const prevApplyState = String(previous?.apply?.state || "idle").trim().toLowerCase();
+  const nextLatestTag = String(nextStatus.latest?.tag_name || "").trim();
+  const prevLatestTag = String(previous?.latest?.tag_name || "").trim();
+  const nextApplyKey = applyEventKey(nextStatus.apply);
+  const prevApplyKey = applyEventKey(previous?.apply);
+  const nextTargetVersion = formatHumanVersion(nextStatus.auto_update?.target_version || nextStatus.apply?.target_version || nextStatus.apply?.to_version || nextLatestTag);
+
+  if (
+    nextStatus.update_available &&
+    nextLatestTag &&
+    (!previous || !previous.update_available || prevLatestTag !== nextLatestTag)
+  ) {
+    setStatus(`${formatHumanVersion(nextLatestTag)} is ready to install.`, "info", {
+      kind: "update",
+      title: "Update Available",
+      target: updaterNotificationTarget,
+      dedupeKey: `updater:available:${nextLatestTag}`,
+    });
+  }
+
+  if (
+    nextAutoState === "preparing" &&
+    (prevAutoState !== "preparing" || String(previous?.auto_update?.target_version || "").trim() !== String(nextStatus.auto_update?.target_version || "").trim())
+  ) {
+    setStatus(`${nextTargetVersion || "The next release"} is being downloaded and verified.`, "info", {
+      kind: "update",
+      title: "Preparing Update",
+      target: updaterNotificationTarget,
+      dedupeKey: `updater:auto:preparing:${String(nextStatus.auto_update?.target_version || "").trim()}`,
+    });
+  }
+
+  if (
+    nextAutoState === "scheduled" &&
+    (
+      prevAutoState !== "scheduled" ||
+      String(previous?.auto_update?.target_version || "").trim() !== String(nextStatus.auto_update?.target_version || "").trim() ||
+      String(previous?.auto_update?.scheduled_for || "").trim() !== String(nextStatus.auto_update?.scheduled_for || "").trim()
+    )
+  ) {
+    setStatus(
+      `${nextTargetVersion || "The next release"} is scheduled for ${formatDate(nextStatus.auto_update?.scheduled_for) || "the nightly maintenance window"}.`,
+      "ok",
+      {
+        kind: "update",
+        title: "Update Scheduled",
+        target: updaterNotificationTarget,
+        dedupeKey: `updater:auto:scheduled:${String(nextStatus.auto_update?.target_version || "").trim()}:${String(nextStatus.auto_update?.scheduled_for || "").trim()}`,
+      }
+    );
+  }
+
+  const pendingAuto = updaterPendingAutoStates.has(nextAutoState);
+  if (!pendingAuto && isFinalApplyState(nextApplyState) && nextApplyKey && (nextApplyKey !== prevApplyKey || !isFinalApplyState(prevApplyState))) {
+    if (nextApplyState === "completed") {
+      setStatus(`${formatHumanVersion(nextStatus.apply?.to_version || nextStatus.apply?.target_version || "") || "The new release"} is now installed.`, "ok", {
+        kind: "update",
+        title: "Update Installed",
+        target: updaterNotificationTarget,
+        dedupeKey: `updater:apply:completed:${nextApplyKey}`,
+      });
+      return;
+    }
+    setStatus(nextStatus.apply?.error || "The updater rolled back the release.", "error", {
+      kind: "update",
+      title: nextApplyState === "rolled_back" ? "Update Rolled Back" : "Update Failed",
+      target: updaterNotificationTarget,
+      dedupeKey: `updater:apply:${nextApplyState}:${nextApplyKey}`,
+    });
+  }
+}
+
 function updateConfigDiagnosticMessage(status) {
   const diag = status && typeof status === "object" ? status.config_diagnostic : null;
   if (!diag || typeof diag !== "object") {
@@ -13874,10 +15284,15 @@ function applyUpdateControls(status) {
 }
 
 function renderUpdateStatus(status) {
+  const previousStatus = state.update.lastStatus;
   state.update.lastStatus = status || null;
+  maybeNotifyUpdater(previousStatus, status);
   if (!status) {
     if (el.updateCurrentVersion) el.updateCurrentVersion.textContent = "-";
-    if (el.updateCurrentCommit) el.updateCurrentCommit.textContent = "-";
+    if (el.updateCurrentCommit) {
+      el.updateCurrentCommit.textContent = "";
+      el.updateCurrentCommit.classList.add("hidden");
+    }
     if (el.updateLatestVersion) el.updateLatestVersion.textContent = "-";
     if (el.updateLatestPublished) el.updateLatestPublished.textContent = "-";
     if (el.updateAvailable) el.updateAvailable.textContent = "-";
@@ -13894,9 +15309,14 @@ function renderUpdateStatus(status) {
     applyUpdateControls();
     return;
   }
-  if (el.updateCurrentVersion) el.updateCurrentVersion.textContent = status.current?.version || "-";
-  if (el.updateCurrentCommit) el.updateCurrentCommit.textContent = status.current?.commit ? `commit ${status.current.commit}` : "-";
-  if (el.updateLatestVersion) el.updateLatestVersion.textContent = status.latest?.tag_name || "-";
+  const currentVersionLabel = formatHumanVersion(status.current?.version || "") || "-";
+  const latestVersionLabel = formatHumanVersion(status.latest?.tag_name || "") || "-";
+  if (el.updateCurrentVersion) el.updateCurrentVersion.textContent = currentVersionLabel;
+  if (el.updateCurrentCommit) {
+    el.updateCurrentCommit.textContent = "";
+    el.updateCurrentCommit.classList.add("hidden");
+  }
+  if (el.updateLatestVersion) el.updateLatestVersion.textContent = latestVersionLabel;
   if (el.updateLatestPublished) el.updateLatestPublished.textContent = formatDate(status.latest?.published_at) || "-";
   if (el.updateAvailable) el.updateAvailable.textContent = status.update_available ? "Available" : "Up to date";
   if (el.updateLastChecked) el.updateLastChecked.textContent = formatDate(status.last_checked_at) || "-";
@@ -13911,11 +15331,11 @@ function renderUpdateStatus(status) {
     const autoState = String(status.auto_update?.state || "idle");
     let autoLabel = autoEnabled ? "Automatic updates on" : "Automatic updates off";
     if (autoEnabled && autoState === "scheduled" && status.auto_update?.target_version) {
-      autoLabel = `Scheduled for ${status.auto_update.target_version}`;
+      autoLabel = `Scheduled for ${formatHumanVersion(status.auto_update.target_version)}`;
     } else if (autoEnabled && autoState === "preparing" && status.auto_update?.target_version) {
-      autoLabel = `Preparing ${status.auto_update.target_version}`;
+      autoLabel = `Preparing ${formatHumanVersion(status.auto_update.target_version)}`;
     } else if (autoEnabled && autoState === "downloaded" && status.auto_update?.target_version) {
-      autoLabel = `${status.auto_update.target_version} downloaded`;
+      autoLabel = `${formatHumanVersion(status.auto_update.target_version)} ready`;
     } else if (autoState === "failed") {
       autoLabel = "Automatic update needs attention";
     }
@@ -13932,7 +15352,7 @@ function renderUpdateStatus(status) {
   let heroState = "ready";
   let heroIcon = "OK";
   let heroHeadline = "Your server is up to date";
-  let heroSubline = status.current?.version ? `Despatch ${status.current.version} is currently installed.` : "This server is already on the latest available release.";
+  let heroSubline = status.current?.version ? `${currentVersionLabel} is currently installed.` : "This server is already on the latest available release.";
 
   if (status.legacy_backend) {
     heroState = "attention";
@@ -13956,20 +15376,20 @@ function renderUpdateStatus(status) {
     heroState = "scheduled";
     heroIcon = "OK";
     heroHeadline = "Update scheduled";
-    heroSubline = `${status.auto_update.target_version} is downloaded and will install at ${formatDate(status.auto_update?.scheduled_for) || "02:00 server time"}.`;
+    heroSubline = `${formatHumanVersion(status.auto_update.target_version)} is downloaded and will install at ${formatDate(status.auto_update?.scheduled_for) || "02:00 server time"}.`;
     setUpdateNote("The next verified release is ready and scheduled for the nightly maintenance window.", "ok");
   } else if (autoState === "preparing" && status.auto_update?.target_version) {
     heroState = "busy";
     heroIcon = "…";
     heroHeadline = "Preparing update";
-    heroSubline = `${status.auto_update.target_version} is being downloaded, verified, and staged for automatic install.`;
+    heroSubline = `${formatHumanVersion(status.auto_update.target_version)} is being downloaded, verified, and staged for automatic install.`;
     setUpdateNote("Despatch is downloading and verifying the latest release.", "info");
   } else if (applyState === "queued" || applyState === "in_progress" || autoState === "applying") {
     heroState = "busy";
     heroIcon = "…";
     heroHeadline = "Installing update";
     heroSubline = status.apply?.target_version
-      ? `${status.apply.target_version} is being applied on this server now.`
+      ? `${formatHumanVersion(status.apply.target_version)} is being applied on this server now.`
       : "The updater is currently installing the staged release.";
     setUpdateNote("The updater is actively applying the release.", "info");
   } else if ((applyState === "failed" || applyState === "rolled_back") && applyError) {
@@ -14002,8 +15422,8 @@ function renderUpdateStatus(status) {
     heroState = "ready";
     heroIcon = "↑";
     heroHeadline = "Update available";
-    heroSubline = `${status.latest.tag_name} is available to install now${status.auto_update?.enabled === false ? "." : " or let Despatch stage it for tonight."}`;
-    setUpdateNote(`New release available: ${status.latest.tag_name}`, "ok");
+    heroSubline = `${latestVersionLabel} is available to install now${status.auto_update?.enabled === false ? "." : " or let Despatch stage it for tonight."}`;
+    setUpdateNote(`New release available: ${latestVersionLabel}`, "ok");
   } else {
     setUpdateNote("No update currently available.", "info");
   }
@@ -14054,11 +15474,6 @@ function startUpdatePolling() {
       renderUpdateStatus(status);
       if (!isUpdateStateBusy(status)) {
         stopUpdatePolling();
-        if (status.apply?.state === "completed") {
-          setStatus(`UPDATE COMPLETED: ${status.apply?.to_version || "new version active"}`, "ok");
-        } else if (status.apply?.state === "rolled_back" || status.apply?.state === "failed") {
-          setStatus(`UPDATE FAILED: ${status.apply?.error || "rolled back"}`, "error");
-        }
       }
     } catch (err) {
       if (err.status === 404) {
@@ -15434,6 +16849,35 @@ function bindUI() {
     };
   }
 
+  if (el.btnNotificationCenter) {
+    el.btnNotificationCenter.onclick = (event) => {
+      event.preventDefault();
+      setNotificationCenterOpen(!state.notifications.centerOpen);
+    };
+  }
+  if (el.btnNotificationMarkRead) {
+    el.btnNotificationMarkRead.onclick = () => {
+      markAllNotificationsRead();
+    };
+  }
+  if (el.btnNotificationClear) {
+    el.btnNotificationClear.onclick = () => {
+      clearNotifications();
+    };
+  }
+  document.addEventListener("click", (event) => {
+    if (!state.notifications.centerOpen) return;
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+    if (el.btnNotificationCenter && el.btnNotificationCenter.contains(target)) return;
+    if (el.notificationCenterPanel && el.notificationCenterPanel.contains(target)) return;
+    setNotificationCenterOpen(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || !state.notifications.centerOpen) return;
+    setNotificationCenterOpen(false);
+  });
+
   const loadCurrentSettingsSection = async () => {
     if (el.viewSettings.classList.contains("hidden")) return;
     try {
@@ -15702,6 +17146,7 @@ function bindUI() {
   window.addEventListener("resize", () => {
     setActiveMailPane(state.ui.activeMailPane, { focus: false });
     renderThreadContext();
+    scheduleReaderHTMLFrameHeight();
   });
   document.addEventListener("keydown", (event) => {
     void handleMailKeyboard(event);
@@ -16385,7 +17830,18 @@ function bindUI() {
           method: "POST",
           json: targetVersion ? { target_version: targetVersion } : {},
         });
-        setStatus(`UPDATE QUEUED${targetVersion ? ` (${targetVersion})` : ""}`, "info");
+        setStatus(
+          targetVersion
+            ? `${formatHumanVersion(targetVersion)} is queued for installation.`
+            : "The selected release is queued for installation.",
+          "info",
+          {
+            kind: "update",
+            title: "Update Queued",
+            target: updaterNotificationTarget,
+            dedupeKey: targetVersion ? `updater:queued:${targetVersion}` : "updater:queued",
+          }
+        );
         await loadUpdateStatus(false);
         startUpdatePolling();
       } catch (err) {
@@ -16580,6 +18036,31 @@ function bindUI() {
     });
   }
 
+  if (el.composeHTMLInput) {
+    el.composeHTMLInput.addEventListener("input", () => {
+      renderComposeHTMLSourceDecorations(el.composeHTMLInput.value);
+      scheduleComposeHTMLPreviewRefresh();
+    });
+    el.composeHTMLInput.addEventListener("scroll", () => {
+      syncComposeHTMLSourceScroll();
+    });
+    el.composeHTMLInput.addEventListener("blur", () => {
+      void flushComposeDraft({ immediate: true });
+    });
+  }
+
+  if (el.btnComposeModeRich) {
+    el.btnComposeModeRich.addEventListener("click", () => {
+      setComposeBodyMode("rich", { focus: true });
+    });
+  }
+
+  if (el.btnComposeModeHTML) {
+    el.btnComposeModeHTML.addEventListener("click", () => {
+      setComposeBodyMode("html", { focus: true });
+    });
+  }
+
   if (el.composeToggleCc) {
     el.composeToggleCc.addEventListener("click", () => {
       setComposeCcVisible(!state.compose.ccVisible);
@@ -16632,29 +18113,24 @@ function bindUI() {
   }
 
   if (el.composeSendMode) {
-    el.composeSendMode.addEventListener("change", () => {
-      state.compose.sendMode = String(el.composeSendMode.value || "send_now") === "scheduled" ? "scheduled" : "send_now";
-      if (state.compose.sendMode !== "scheduled") {
-        state.compose.scheduledFor = "";
+    const handleComposeSendModeChange = () => {
+      const changed = applyComposeSendModeSelection(el.composeSendMode.value);
+      if (changed) {
+        queueComposeDraftSave();
       }
-      syncComposeDraftFields();
-      queueComposeDraftSave();
-      updateComposeSubmitState();
-    });
+    };
+    el.composeSendMode.addEventListener("input", handleComposeSendModeChange);
+    el.composeSendMode.addEventListener("change", handleComposeSendModeChange);
   }
 
   if (el.composeScheduledForInput) {
     el.composeScheduledForInput.addEventListener("input", () => {
-      state.compose.scheduledFor = String(el.composeScheduledForInput.value || "").trim();
-      syncComposeDraftFields();
+      applyComposeScheduledForSelection(el.composeScheduledForInput.value);
       queueComposeDraftSave();
-      updateComposeSubmitState();
     });
     el.composeScheduledForInput.addEventListener("blur", () => {
-      state.compose.scheduledFor = String(el.composeScheduledForInput.value || "").trim();
-      syncComposeDraftFields();
+      applyComposeScheduledForSelection(el.composeScheduledForInput.value);
       void flushComposeDraft({ immediate: true });
-      updateComposeSubmitState();
     });
   }
 
@@ -16982,6 +18458,9 @@ function bindUI() {
     state.auth.legacyMFAOfferShownForSession = false;
     state.auth.mfaFlowPromise = null;
     state.user = null;
+    state.update.lastStatus = null;
+    state.update.notificationsPrimed = false;
+    setNotificationCenterOpen(false);
     state.mail.accountHealth = { summary: null, items: [] };
     state.mail.healthAutoQuotaRequested = {};
     clearReaderSelection();
@@ -17456,6 +18935,7 @@ function bindUI() {
 
 async function bootstrap() {
   ThemeController.initTheme();
+  loadStoredNotifications();
   bindUI();
   window.addEventListener("beforeunload", () => {
     if (!state.ui.composeOpen || !el.composeForm) return;
