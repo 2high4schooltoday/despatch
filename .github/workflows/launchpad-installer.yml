@@ -35,6 +35,7 @@ jobs:
             --set baseDomain=mail.example.com \
             --set proxyServerName=mail.example.com \
             --set deployMode=direct \
+            --set proxyTls=false \
             --set runDiagnose=false
 
       - name: Build standalone installers
