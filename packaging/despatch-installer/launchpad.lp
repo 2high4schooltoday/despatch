@@ -1,5 +1,21 @@
 app is "Despatch Installer".
 
+installer uses theme launchpadDark.
+installer uses glyph profile launchpad.
+installer uses layout guidedInstaller.
+installer uses density comfortable.
+installer uses visual intent guided.
+
+installer:
+  brand:
+    assistantTitle is "Despatch Setup Assistant".
+    cacheDirName is "despatch-installer".
+    licensePath is "LICENSE.md".
+    licenseSummary is "Read the Despatch license before Launchpad changes this host.".
+    licenseTitle is "Despatch License".
+    welcomeSummary is "Despatch installs as a Launchpad-managed system application with native status, diagnose, and uninstall operations. The installer auto-detects Dovecot auth mode, local mail ports, reverse-proxy presence, and LetsEncrypt TLS paths before writing anything.".
+    welcomeTitle is "Install, diagnose, or remove Despatch".
+
 app metadata runtime.command_policy is "native-only".
 app metadata package.summary is "Launchpad-managed installer for Despatch".
 app metadata package.homepage is "https://github.com/2high4schooltoday/despatch".
@@ -18,6 +34,30 @@ type DovecotAuthMode is one of:
   "sql" as "SQL database".
   "pam" as "PAM / system accounts".
 
+fact detectedMailname:
+  when "/etc/mailname" exists: trimmed (read config from "/etc/mailname" as plainText)
+  otherwise: "".
+
+fact defaultBaseDomain:
+  when trimmed detectedMailname != "" and detectedMailname is not "localhost": detectedMailname
+  when host.name != "localhost": host.name
+  otherwise: "example.com".
+
+fact detectedNginxInstall:
+  when "/etc/nginx/nginx.conf" exists: true
+  when system unit "nginx.service" exists: true
+  otherwise: false.
+
+fact detectedApacheInstall:
+  when "/etc/apache2/apache2.conf" exists: true
+  when system unit "apache2.service" exists: true
+  otherwise: false.
+
+fact detectedProxyServer:
+  when detectedNginxInstall is true: "nginx"
+  when detectedApacheInstall is true: "apache2"
+  otherwise: "".
+
 field release is a text:
   label is "Release".
   help is "Use `latest` for the newest GitHub release or pin a specific tag such as `v1.2.3`.".
@@ -26,7 +66,7 @@ field release is a text:
 field baseDomain is a text:
   label is "Primary domain".
   help is "Used for Despatch setup defaults, reset links, and reverse-proxy hostnames.".
-  default is host.name.
+  default is defaultBaseDomain.
 
 field listenAddr is a text:
   label is "Listen address".
@@ -39,15 +79,21 @@ field installService is a boolean:
   help is "Enable and start systemd units for Despatch, updater, mailsec, and the PAM helper socket.".
   default is true.
 
+fact defaultDeployMode:
+  when installService is true and detectedProxyServer != "": "proxy"
+  otherwise: "direct".
+
 field deployMode is a DeployMode:
   label is "Deployment mode".
   help is "Choose direct HTTP exposure or place Despatch behind Nginx/Apache.".
-  default is "proxy".
+  default is defaultDeployMode.
 
 field proxyServer is a ProxyServer:
   label is "Proxy server".
   help is "Which reverse proxy Launchpad should configure when proxy mode is selected.".
-  default is "nginx".
+  default is:
+    when detectedProxyServer is "apache2": "apache2"
+    otherwise: "nginx".
   it is advanced.
 
 field proxyServerName is a text:
@@ -55,22 +101,40 @@ field proxyServerName is a text:
   help is "Public hostname served by the reverse proxy.".
   default is baseDomain.
 
+fact proxyServerNameParentCandidate:
+  when proxyServerName starts with "mail.": replace prefix "mail." with "" in proxyServerName
+  otherwise: "".
+
+fact detectedProxyCertPath:
+  when letsencrypt certificate path for proxyServerName exists: letsencrypt certificate path for proxyServerName
+  when trimmed proxyServerNameParentCandidate != "" and letsencrypt certificate path for proxyServerNameParentCandidate exists: letsencrypt certificate path for proxyServerNameParentCandidate
+  otherwise: "".
+
+fact detectedProxyKeyPath:
+  when letsencrypt key path for proxyServerName exists: letsencrypt key path for proxyServerName
+  when trimmed proxyServerNameParentCandidate != "" and letsencrypt key path for proxyServerNameParentCandidate exists: letsencrypt key path for proxyServerNameParentCandidate
+  otherwise: "".
+
+fact detectedProxyTlsDefault:
+  when trimmed detectedProxyCertPath != "" and trimmed detectedProxyKeyPath != "": true
+  otherwise: false.
+
 field proxyTls is a boolean:
   label is "Enable proxy TLS".
   help is "Use the selected certificate and key in the generated proxy configuration.".
-  default is false.
+  default is detectedProxyTlsDefault.
   it is advanced.
 
 field proxyCert is a text:
   label is "TLS certificate path".
   help is "Defaults to the LetsEncrypt fullchain path for the selected proxy hostname.".
-  default is letsencrypt certificate path for proxyServerName.
+  default is detectedProxyCertPath.
   it is advanced.
 
 field proxyKey is a text:
   label is "TLS private key path".
   help is "Defaults to the LetsEncrypt key path for the selected proxy hostname.".
-  default is letsencrypt key path for proxyServerName.
+  default is detectedProxyKeyPath.
   it is advanced.
 
 fact dovecotConfigPath:
@@ -92,23 +156,59 @@ fact detectedDovecotSqlSettings:
 
 fact detectedDovecotAuthMode is when value for key "auth_mode" in detectedDovecotAuthSettings is "pam": "pam" otherwise: "sql".
 
-fact detectedDovecotSqlDsn is value for key "sql_dsn" in detectedDovecotAuthSettings.
-fact detectedDovecotSqlDriver is value for key "sql_driver" in detectedDovecotSqlSettings.
+fact detectedDovecotSqlDsn is (value for key "sql_dsn" in detectedDovecotSqlSettings) or else (value for key "sql_dsn" in detectedDovecotAuthSettings) or else "".
+fact detectedDovecotSqlDriver is (value for key "sql_driver" in detectedDovecotSqlSettings) or else (value for key "sql_driver" in detectedDovecotAuthSettings) or else "".
 
 field dovecotAuthMode is a DovecotAuthMode:
   label is "Dovecot auth mode".
   help is "Use `sql` for database-backed accounts or `pam` for system-account verification.".
-  default is "sql".
+  default is detectedDovecotAuthMode.
 
 field dovecotAuthDbDriver is a text:
   label is "Dovecot SQL driver".
   help is "Only used when SQL auth is selected and auto-detection does not find a working driver.".
-  default is "mysql".
+  default is:
+    when detectedDovecotSqlDriver is "pgsql": "pgx"
+    when detectedDovecotSqlDriver is "postgres": "pgx"
+    when detectedDovecotSqlDriver is "postgresql": "pgx"
+    when detectedDovecotSqlDriver is "mariadb": "mysql"
+    when detectedDovecotSqlDriver is "mysql": "mysql"
+    otherwise: "mysql".
   it is advanced.
 
 field dovecotAuthDbDsn is a text:
   label is "Dovecot SQL DSN".
   help is "Leave blank so Launchpad can derive the DSN from the Dovecot SQL config.".
+  default is "".
+  it is advanced.
+
+field dovecotAuthTable is a text:
+  label is "Dovecot auth table".
+  help is "Override the writable mailbox table name when SQL auth is selected.".
+  default is "users".
+  it is advanced.
+
+field dovecotAuthEmailCol is a text:
+  label is "Email/login column".
+  help is "Override the SQL column used to match mailbox logins.".
+  default is "email".
+  it is advanced.
+
+field dovecotAuthPassCol is a text:
+  label is "Password hash column".
+  help is "Override the SQL column that stores mailbox password hashes.".
+  default is "password_hash".
+  it is advanced.
+
+field dovecotAuthActiveCol is a text:
+  label is "Active/enabled column".
+  help is "Leave blank when the mailbox table does not use a dedicated active flag.".
+  default is "".
+  it is advanced.
+
+field dovecotAuthMaildirCol is a text:
+  label is "Maildir column".
+  help is "Leave blank when maildir paths are derived outside the mailbox table.".
   default is "".
   it is advanced.
 
@@ -243,6 +343,11 @@ fact proxyKeyMissing is trimmed proxyKey is "".
 fact capSiteKeyMissing is trimmed capSiteKey is "".
 fact capUpstreamMissing is trimmed capUpstream is "".
 fact trimmedDovecotAuthDbDsn is trimmed dovecotAuthDbDsn.
+fact trimmedDovecotAuthTable is trimmed dovecotAuthTable.
+fact trimmedDovecotAuthEmailCol is trimmed dovecotAuthEmailCol.
+fact trimmedDovecotAuthPassCol is trimmed dovecotAuthPassCol.
+fact trimmedDovecotAuthActiveCol is trimmed dovecotAuthActiveCol.
+fact trimmedDovecotAuthMaildirCol is trimmed dovecotAuthMaildirCol.
 
 path downloadDir is home / ".cache/despatch-installer".
 path archivePath is downloadDir / archiveName.
@@ -324,9 +429,31 @@ fact resolvedDovecotDsn:
 
 fact resolvedDovecotSqlDriver:
   when detectedDovecotSqlDriver is "pgsql": "pgx"
+  when detectedDovecotSqlDriver is "postgres": "pgx"
+  when detectedDovecotSqlDriver is "postgresql": "pgx"
   when detectedDovecotSqlDriver is "mysql": "mysql"
   when detectedDovecotSqlDriver is "mariadb": "mysql"
   otherwise: dovecotAuthDbDriver.
+
+fact resolvedDovecotAuthTable:
+  when trimmedDovecotAuthTable != "": trimmedDovecotAuthTable
+  otherwise: "users".
+
+fact resolvedDovecotAuthEmailCol:
+  when trimmedDovecotAuthEmailCol != "": trimmedDovecotAuthEmailCol
+  otherwise: "email".
+
+fact resolvedDovecotAuthPassCol:
+  when trimmedDovecotAuthPassCol != "": trimmedDovecotAuthPassCol
+  otherwise: "password_hash".
+
+fact resolvedDovecotAuthActiveCol:
+  when trimmedDovecotAuthActiveCol != "": trimmedDovecotAuthActiveCol
+  otherwise: "".
+
+fact resolvedDovecotAuthMaildirCol:
+  when trimmedDovecotAuthMaildirCol != "": trimmedDovecotAuthMaildirCol
+  otherwise: "".
 
 fact resolvedDovecotDsnText is resolvedDovecotDsn or else "".
 fact resolvedDovecotDsnMissing is trimmed resolvedDovecotDsnText is "".
@@ -343,15 +470,47 @@ fact trustProxyEnabled:
   when proxyModeSelected: true
   otherwise: false.
 
-fact imapPort is "993".
-fact imapTls is true.
-fact imapStarttls is false.
-fact imapSkipVerify is true.
+fact imapTlsPortDiagnostics is listening port diagnostics for { port: 993, role: "app", failure_category: "app_down" }.
+fact imapStarttlsPortDiagnostics is listening port diagnostics for { port: 143, role: "app", failure_category: "app_down" }.
 
-fact smtpPort is "25".
-fact smtpTls is false.
-fact smtpStarttls is false.
-fact smtpSkipVerify is false.
+fact imapPort:
+  when value for key "ok" in imapTlsPortDiagnostics is true: "993"
+  when value for key "ok" in imapStarttlsPortDiagnostics is true: "143"
+  otherwise: "993".
+
+fact imapTls:
+  when imapPort is "143": false
+  otherwise: true.
+
+fact imapStarttls:
+  when imapPort is "143": true
+  otherwise: false.
+
+fact imapSkipVerify:
+  when imapTls is true or imapStarttls is true: true
+  otherwise: false.
+
+fact smtpPort25Diagnostics is listening port diagnostics for { port: 25, role: "app", failure_category: "app_down" }.
+fact smtpPort587Diagnostics is listening port diagnostics for { port: 587, role: "app", failure_category: "app_down" }.
+fact smtpPort465Diagnostics is listening port diagnostics for { port: 465, role: "app", failure_category: "app_down" }.
+
+fact smtpPort:
+  when value for key "ok" in smtpPort25Diagnostics is true: "25"
+  when value for key "ok" in smtpPort587Diagnostics is true: "587"
+  when value for key "ok" in smtpPort465Diagnostics is true: "465"
+  otherwise: "25".
+
+fact smtpTls:
+  when smtpPort is "465": true
+  otherwise: false.
+
+fact smtpStarttls:
+  when smtpPort is "587": true
+  otherwise: false.
+
+fact smtpSkipVerify:
+  when smtpTls is true or smtpStarttls is true: true
+  otherwise: false.
 
 fact passwordResetFromDomain:
   when baseDomain starts with "mail.": replace prefix "mail." with "" in baseDomain
@@ -360,8 +519,8 @@ fact passwordResetFromDomain:
 fact passwordResetFromAddr is text joined from ["no-reply@", passwordResetFromDomain].
 
 fact passwordResetBaseUrl:
-  when proxyModeSelected and proxyTlsEnabled: text joined from ["https://", proxyServerName]
-  when proxyModeSelected: text joined from ["http://", proxyServerName]
+  when proxyModeSelected and proxyTlsEnabled: text joined from ["https://", resolvedProxyServerName]
+  when proxyModeSelected: text joined from ["http://", resolvedProxyServerName]
   otherwise: text joined from ["http://", baseDomain, ":8080"].
 
 fact passwordResetExternalSenderReady:
@@ -397,7 +556,7 @@ fact resolvedCaptchaSecret:
   otherwise: "".
 
 fact resolvedWebauthnRpId:
-  when proxyModeSelected: proxyServerName
+  when proxyModeSelected: resolvedProxyServerName
   otherwise: baseDomain.
 
 fact proxyUpstreamUrl is text joined from ["http://", resolvedListenAddr].
@@ -410,11 +569,11 @@ fact capProxyRoutes:
   otherwise: [].
 
 fact apacheProxyModules:
-  when proxyTls: ["proxy", "proxy_http", "headers", "rewrite", "ssl"]
+  when resolvedProxyTls is true: ["proxy", "proxy_http", "headers", "rewrite", "ssl"]
   otherwise: ["proxy", "proxy_http", "headers", "rewrite"].
 
 fact nginxExtraConfig:
-  when proxyTls: """
+  when resolvedProxyTls is true: """
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
     add_header X-Frame-Options "DENY" always;
     add_header X-Content-Type-Options "nosniff" always;
@@ -425,7 +584,7 @@ fact nginxExtraConfig:
     """.
 
 fact apacheExtraConfig:
-  when proxyTls: """
+  when resolvedProxyTls is true: """
     Header always set X-Frame-Options "DENY"
     Header always set X-Content-Type-Options "nosniff"
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
@@ -438,7 +597,7 @@ fact apacheExtraConfig:
 fact directListenAddrSegments is split resolvedListenAddr by ":".
 fact directListenPort is last item in directListenAddrSegments.
 
-fact stagedEnvValues is { "LISTEN_ADDR": resolvedListenAddr, "BASE_DOMAIN": baseDomain, "APP_DB_PATH": "/var/lib/despatch/app.db", "SESSION_COOKIE_NAME": "despatch_session", "MFA_TRUSTED_COOKIE_NAME": "despatch_mfa_trusted", "SESSION_IDLE_MINUTES": "30", "SESSION_ABSOLUTE_HOURS": "24", "SESSION_ENCRYPT_KEY": generatedSessionSecret, "CSRF_COOKIE_NAME": "despatch_csrf", "COOKIE_SECURE_MODE": cookieSecureMode, "COOKIE_SECURE": cookieSecureLegacy, "TRUST_PROXY": trustProxyEnabled, "CORS_ALLOWED_ORIGINS": "", "CAPTCHA_ENABLED": capEnabled, "CAPTCHA_PROVIDER": resolvedCaptchaProvider, "CAPTCHA_SITE_KEY": resolvedCaptchaSiteKey, "CAPTCHA_WIDGET_API_URL": capWidgetApiUrl, "CAPTCHA_VERIFY_URL": capVerifyUrl, "CAPTCHA_SECRET": resolvedCaptchaSecret, "PASSWORD_MIN_LENGTH": "12", "PASSWORD_MAX_LENGTH": "128", "IMAP_HOST": "127.0.0.1", "IMAP_PORT": imapPort, "IMAP_TLS": imapTls, "IMAP_STARTTLS": imapStarttls, "IMAP_INSECURE_SKIP_VERIFY": imapSkipVerify, "MAIL_ALLOW_INSECURE_SKIP_VERIFY_NON_LOOPBACK": false, "SMTP_HOST": "127.0.0.1", "SMTP_PORT": smtpPort, "SMTP_TLS": smtpTls, "SMTP_STARTTLS": smtpStarttls, "SMTP_INSECURE_SKIP_VERIFY": smtpSkipVerify, "DOVECOT_AUTH_DB_DRIVER": resolvedDovecotSqlDriver, "DOVECOT_AUTH_DB_DSN": resolvedDovecotDsnText, "DOVECOT_AUTH_MODE": resolvedDovecotAuthMode, "DOVECOT_AUTH_TABLE": "users", "DOVECOT_AUTH_EMAIL_COL": "email", "DOVECOT_AUTH_PASS_COL": "password_hash", "DOVECOT_AUTH_ACTIVE_COL": "active", "DOVECOT_AUTH_MAILDIR_COL": "maildir", "DOVECOT_MAILDIR_BASE": "/var/mail/vhosts", "HTTP_READ_TIMEOUT_SEC": "10", "HTTP_READ_HEADER_TIMEOUT_SEC": "5", "HTTP_WRITE_TIMEOUT_SEC": "30", "HTTP_IDLE_TIMEOUT_SEC": "60", "PASSWORD_RESET_SENDER": "smtp", "PASSWORD_RESET_FROM": passwordResetFromAddr, "PASSWORD_RESET_BASE_URL": passwordResetBaseUrl, "PASSWORD_RESET_SMTP_USER": "", "PASSWORD_RESET_SMTP_PASS": "", "PASSWORD_RESET_TOKEN_TTL_MINUTES": "30", "PASSWORD_RESET_PUBLIC_ENABLED": true, "PASSWORD_RESET_EXTERNAL_SENDER_READY": passwordResetExternalSenderReady, "PASSWORD_RESET_REQUIRE_MAPPED_LOGIN": true, "PAM_RESET_HELPER_ENABLED": pamResetHelperEnabled, "PAM_RESET_HELPER_SOCKET": "/run/despatch/pam-reset-helper.sock", "PAM_RESET_HELPER_TIMEOUT_SEC": "5", "PAM_RESET_ALLOWED_UID": "-1", "PAM_RESET_ALLOWED_GID": "-1", "UPDATE_ENABLED": true, "UPDATE_REPO_OWNER": "2high4schooltoday", "UPDATE_REPO_NAME": "despatch", "UPDATE_CHECK_INTERVAL_MIN": "60", "UPDATE_HTTP_TIMEOUT_SEC": "10", "UPDATE_GITHUB_TOKEN": "", "UPDATE_BACKUP_KEEP": "3", "UPDATE_BASE_DIR": dataRoot / "update", "UPDATE_INSTALL_DIR": installRoot, "UPDATE_SERVICE_NAME": "despatch", "UPDATE_SYSTEMD_UNIT_DIR": "/etc/systemd/system", "UPDATE_REQUIRE_SIGNATURE": true, "UPDATE_SIGNATURE_ASSET": "checksums.txt.sig", "UPDATE_SIGNING_PUBLIC_KEYS": "NgWFCGvluSgGiR4KpQhrNGqK4UVDRcEb76RNBEproBw=", "MAILSEC_ENABLED": true, "MAILSEC_SOCKET": "/run/despatch/mailsec.sock", "MAILSEC_TIMEOUT_MS": "5000", "WEBAUTHN_RP_ID": resolvedWebauthnRpId, "WEBAUTHN_ALLOWED_ORIGINS": passwordResetBaseUrl, "PASSKEY_PASSWORDLESS_ENABLED": true, "PROXY_SERVER": resolvedProxyServer, "PROXY_SERVER_NAME": resolvedProxyServerName, "PROXY_TLS": resolvedProxyTls, "BOOTSTRAP_ADMIN_EMAIL": "", "BOOTSTRAP_ADMIN_PASSWORD": "" }.
+fact stagedEnvValues is { "LISTEN_ADDR": resolvedListenAddr, "BASE_DOMAIN": baseDomain, "APP_DB_PATH": "/var/lib/despatch/app.db", "SESSION_COOKIE_NAME": "despatch_session", "MFA_TRUSTED_COOKIE_NAME": "despatch_mfa_trusted", "SESSION_IDLE_MINUTES": "30", "SESSION_ABSOLUTE_HOURS": "24", "SESSION_ENCRYPT_KEY": generatedSessionSecret, "CSRF_COOKIE_NAME": "despatch_csrf", "COOKIE_SECURE_MODE": cookieSecureMode, "COOKIE_SECURE": cookieSecureLegacy, "TRUST_PROXY": trustProxyEnabled, "CORS_ALLOWED_ORIGINS": "", "CAPTCHA_ENABLED": capEnabled, "CAPTCHA_PROVIDER": resolvedCaptchaProvider, "CAPTCHA_SITE_KEY": resolvedCaptchaSiteKey, "CAPTCHA_WIDGET_API_URL": capWidgetApiUrl, "CAPTCHA_VERIFY_URL": capVerifyUrl, "CAPTCHA_SECRET": resolvedCaptchaSecret, "PASSWORD_MIN_LENGTH": "12", "PASSWORD_MAX_LENGTH": "128", "IMAP_HOST": "127.0.0.1", "IMAP_PORT": imapPort, "IMAP_TLS": imapTls, "IMAP_STARTTLS": imapStarttls, "IMAP_INSECURE_SKIP_VERIFY": imapSkipVerify, "MAIL_ALLOW_INSECURE_SKIP_VERIFY_NON_LOOPBACK": false, "SMTP_HOST": "127.0.0.1", "SMTP_PORT": smtpPort, "SMTP_TLS": smtpTls, "SMTP_STARTTLS": smtpStarttls, "SMTP_INSECURE_SKIP_VERIFY": smtpSkipVerify, "DOVECOT_AUTH_DB_DRIVER": resolvedDovecotSqlDriver, "DOVECOT_AUTH_DB_DSN": resolvedDovecotDsnText, "DOVECOT_AUTH_MODE": resolvedDovecotAuthMode, "DOVECOT_AUTH_TABLE": resolvedDovecotAuthTable, "DOVECOT_AUTH_EMAIL_COL": resolvedDovecotAuthEmailCol, "DOVECOT_AUTH_PASS_COL": resolvedDovecotAuthPassCol, "DOVECOT_AUTH_ACTIVE_COL": resolvedDovecotAuthActiveCol, "DOVECOT_AUTH_MAILDIR_COL": resolvedDovecotAuthMaildirCol, "DOVECOT_MAILDIR_BASE": "/var/mail/vhosts", "HTTP_READ_TIMEOUT_SEC": "10", "HTTP_READ_HEADER_TIMEOUT_SEC": "5", "HTTP_WRITE_TIMEOUT_SEC": "30", "HTTP_IDLE_TIMEOUT_SEC": "60", "PASSWORD_RESET_SENDER": "smtp", "PASSWORD_RESET_FROM": passwordResetFromAddr, "PASSWORD_RESET_BASE_URL": passwordResetBaseUrl, "PASSWORD_RESET_SMTP_USER": "", "PASSWORD_RESET_SMTP_PASS": "", "PASSWORD_RESET_TOKEN_TTL_MINUTES": "30", "PASSWORD_RESET_PUBLIC_ENABLED": true, "PASSWORD_RESET_EXTERNAL_SENDER_READY": passwordResetExternalSenderReady, "PASSWORD_RESET_REQUIRE_MAPPED_LOGIN": true, "PAM_RESET_HELPER_ENABLED": pamResetHelperEnabled, "PAM_RESET_HELPER_SOCKET": "/run/despatch/pam-reset-helper.sock", "PAM_RESET_HELPER_TIMEOUT_SEC": "5", "PAM_RESET_ALLOWED_UID": "-1", "PAM_RESET_ALLOWED_GID": "-1", "UPDATE_ENABLED": true, "UPDATE_REPO_OWNER": "2high4schooltoday", "UPDATE_REPO_NAME": "despatch", "UPDATE_CHECK_INTERVAL_MIN": "60", "UPDATE_HTTP_TIMEOUT_SEC": "10", "UPDATE_GITHUB_TOKEN": "", "UPDATE_BACKUP_KEEP": "3", "UPDATE_BASE_DIR": dataRoot / "update", "UPDATE_INSTALL_DIR": installRoot, "UPDATE_SERVICE_NAME": "despatch", "UPDATE_SYSTEMD_UNIT_DIR": "/etc/systemd/system", "UPDATE_REQUIRE_SIGNATURE": true, "UPDATE_SIGNATURE_ASSET": "checksums.txt.sig", "UPDATE_SIGNING_PUBLIC_KEYS": "NgWFCGvluSgGiR4KpQhrNGqK4UVDRcEb76RNBEproBw=", "MAILSEC_ENABLED": true, "MAILSEC_SOCKET": "/run/despatch/mailsec.sock", "MAILSEC_TIMEOUT_MS": "5000", "WEBAUTHN_RP_ID": resolvedWebauthnRpId, "WEBAUTHN_ALLOWED_ORIGINS": passwordResetBaseUrl, "PASSKEY_PASSWORDLESS_ENABLED": true, "PROXY_SERVER": resolvedProxyServer, "PROXY_SERVER_NAME": resolvedProxyServerName, "PROXY_TLS": resolvedProxyTls, "BOOTSTRAP_ADMIN_EMAIL": "", "BOOTSTRAP_ADMIN_PASSWORD": "" }.
 
 config runtimeEnv:
   path is envPath.
@@ -457,7 +616,7 @@ package systemdPackage:
   generic name is "systemd".
 
 package reverseProxyPackage:
-  generic name is when proxyServer is "apache2": "apache2" otherwise: "nginx".
+  generic name is when resolvedProxyServer is "apache2": "apache2" otherwise: "nginx".
 
 package ufwPackage:
   generic name is "ufw".
@@ -551,7 +710,7 @@ nginx site despatchNginx:
   site name is "despatch".
   available path is nginxSitePath.
   enabled path is nginxEnabledSitePath.
-  server names are [proxyServerName].
+  server names are [resolvedProxyServerName].
   proxy to is proxyUpstreamUrl.
   proxy headers are { "Host": "$host", "X-Forwarded-For": "$proxy_add_x_forwarded_for", "X-Forwarded-Proto": "$scheme" }.
   request body limit is "30m".
@@ -567,7 +726,7 @@ nginx site despatchNginx:
 apache site despatchApache:
   site name is "despatch.conf".
   path is apacheSitePath.
-  server names are [proxyServerName].
+  server names are [resolvedProxyServerName].
   proxy to is proxyUpstreamUrl.
   modules are apacheProxyModules.
   request body limit is "31457280".
@@ -768,13 +927,9 @@ management:
     dataRoot
 
 requirement group installRequirements:
-  release, baseDomain, listenAddr, archiveName, releaseUrl,
-  downloadDir, archivePath, installRoot, dataRoot, installService,
-  deployMode, proxyServer, proxyServerName, proxyTls,
-  dovecotAuthMode, dovecotAuthDbDriver, dovecotAuthDbDsn,
-  autoInstallDeps, ufwEnable, ufwOpenProxyPorts, ufwOpenDirectPort,
-  enableCapCaptcha, capSiteKey, capUpstream, capAutoProvision,
-  capImage, capWidgetVersion, capWasmVersion, runDiagnose.
+  release, baseDomain, archiveName, releaseUrl,
+  downloadDir, archivePath, stagingRoot, extractDir,
+  installRoot, dataRoot, envPath, installMetadataPath.
 
 operation install:
   presents as:
@@ -793,12 +948,20 @@ operation install:
     message is "Proxy hostname is required when reverse proxy mode is selected.".
 
   validation proxyCertRequired:
-    when deployMode is "proxy" and proxyTls != false and proxyCertMissing != false.
+    when deployMode is "proxy" and resolvedProxyTls is true and proxyCertMissing != false.
     message is "TLS certificate path is required when proxy TLS is enabled.".
 
   validation proxyKeyRequired:
-    when deployMode is "proxy" and proxyTls != false and proxyKeyMissing != false.
+    when deployMode is "proxy" and resolvedProxyTls is true and proxyKeyMissing != false.
     message is "TLS private key path is required when proxy TLS is enabled.".
+
+  validation nginxPresentOrInstallable:
+    when deployMode is "proxy" and proxyServer is "nginx" and autoInstallDeps is false and detectedNginxInstall is false.
+    message is "Nginx is not currently installed on this host. Enable dependency installation or switch to direct mode/apache2.".
+
+  validation apachePresentOrInstallable:
+    when deployMode is "proxy" and proxyServer is "apache2" and autoInstallDeps is false and detectedApacheInstall is false.
+    message is "Apache is not currently installed on this host. Enable dependency installation or switch to direct mode/nginx.".
 
   validation capNeedsProxy:
     when enableCapCaptcha != false and deployMode != "proxy".
@@ -830,15 +993,19 @@ operation install:
 
   step home is an intro:
     title is "Launchpad Despatch Installer".
-    summary is "This migrates Despatch to a fully Launchpad-native install so Applications Centre can own install, status, diagnose, and uninstall.".
+    summary is "This installs Despatch as a Launchpad-managed system application with host autodetection for proxy, TLS, Dovecot auth mode, and local mail ports.".
     hero:
       icon is "package".
       title is "Install Despatch".
-      summary is "Launchpad downloads the selected release archive, wires native system resources, and registers the app for later management.".
+      summary is "Launchpad downloads the selected release archive, wires native system resources, shows the bundled license, and registers the app for later management.".
+
+  step license is a document:
+    title is "Despatch License".
+    summary is "Read the bundled Despatch license before continuing to installation options.".
 
   step setup is a form:
     title is "Installation Options".
-    summary is "Choose the release, domain, runtime mode, and optional host automation.".
+    summary is "Review the auto-detected defaults, then adjust release, domain, auth, proxy, and optional host automation if needed.".
     basic fields are:
       release
       baseDomain
@@ -854,6 +1021,11 @@ operation install:
       proxyKey
       dovecotAuthDbDriver
       dovecotAuthDbDsn
+      dovecotAuthTable
+      dovecotAuthEmailCol
+      dovecotAuthPassCol
+      dovecotAuthActiveCol
+      dovecotAuthMaildirCol
       autoInstallDeps
       ufwEnable
       ufwOpenProxyPorts
@@ -868,7 +1040,11 @@ operation install:
       capWidgetVersion
       capWasmVersion
       runDiagnose
-    tip "Most production installs should keep system services enabled and use reverse proxy mode.".
+    tip "Despatch now pre-fills this form from the current host: detected proxy server, LetsEncrypt TLS paths, Dovecot auth mode, and local IMAP/SMTP ports.".
+    note "No reverse proxy was detected, so Despatch defaulted to direct mode on :8080." when deployMode is "direct" and detectedProxyServer is "".
+    note "Detected reverse proxy: nginx." when detectedNginxInstall is true and detectedApacheInstall is false.
+    note "Detected reverse proxy: apache2." when detectedApacheInstall is true and detectedNginxInstall is false.
+    note "Detected Dovecot auth mode: `{{detectedDovecotAuthMode}}`.".
     warning "Direct mode exposes Despatch on the selected listen address without a Launchpad-managed reverse proxy." when deployMode is "direct".
     warning "CAP captcha auto-provisioning installs and manages a Docker-backed container service." when enableCapCaptcha and capAutoProvision.
 
@@ -884,12 +1060,15 @@ operation install:
         shows "Domain" as baseDomain
         shows "Listen address" as resolvedListenAddr
         shows "Mode" as deployMode
-        shows "Proxy server" as proxyServer
-        shows "Proxy hostname" as proxyServerName
-        shows "Proxy TLS" as proxyTls
+        shows "Proxy server" as resolvedProxyServer
+        shows "Proxy hostname" as resolvedProxyServerName
+        shows "Proxy TLS" as resolvedProxyTls
       group "Auth And Ops":
         shows "Dovecot auth mode" as resolvedDovecotAuthMode
+        shows "Dovecot SQL driver" as resolvedDovecotSqlDriver
         shows "Derived Dovecot SQL DSN" as resolvedDovecotDsnText
+        shows "IMAP port" as imapPort
+        shows "SMTP port" as smtpPort
         shows "Install system services" as installService
         shows "Install dependencies" as autoInstallDeps
         shows "Run final diagnostics" as runDiagnose
@@ -985,7 +1164,7 @@ operation install:
     set owner envPath to "root".
     set group envPath to "despatch".
     set permissions of envPath to "640".
-    write config { release: release, base_domain: baseDomain, listen_addr: resolvedListenAddr, deploy_mode: deployMode, proxy_server: proxyServer, proxy_server_name: proxyServerName, proxy_tls: proxyTls, dovecot_auth_mode: resolvedDovecotAuthMode, cap_enabled: capEnabled, cap_auto_provision: capAutoProvision, ufw_enable: ufwEnable, ufw_open_proxy_ports: ufwOpenProxyPorts, ufw_open_direct_port: ufwOpenDirectPort } to installMetadataPath.
+    write config { release: release, base_domain: baseDomain, listen_addr: resolvedListenAddr, deploy_mode: deployMode, proxy_server: resolvedProxyServer, proxy_server_name: resolvedProxyServerName, proxy_tls: resolvedProxyTls, dovecot_auth_mode: resolvedDovecotAuthMode, cap_enabled: capEnabled, cap_auto_provision: capAutoProvision, ufw_enable: ufwEnable, ufw_open_proxy_ports: ufwOpenProxyPorts, ufw_open_direct_port: ufwOpenDirectPort } to installMetadataPath.
     set owner installMetadataPath to "root".
     set group installMetadataPath to "root".
     set permissions of installMetadataPath to "644".
@@ -1043,10 +1222,10 @@ operation install:
       ensure service despatchPamResetHelperSocket is stopped.
 
   stage "Wire Proxy":
-    when deployMode is "proxy" and proxyServer is "nginx":
+    when deployMode is "proxy" and resolvedProxyServer is "nginx":
       install nginx site despatchNginx.
       remove apache site despatchApache.
-    when deployMode is "proxy" and proxyServer is "apache2":
+    when deployMode is "proxy" and resolvedProxyServer is "apache2":
       install apache site despatchApache.
       remove nginx site despatchNginx.
     when deployMode is "direct":
