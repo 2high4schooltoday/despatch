@@ -1,50 +1,344 @@
 name: Launchpad Installer
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      project_path:
+        description: "Launchpad project to package."
+        required: false
+        type: string
+        default: "packaging/despatch-installer"
+      output_dir:
+        description: "Directory where installer outputs are written."
+        required: false
+        type: string
+        default: "dist/installers"
+      artifact_name:
+        description: "Uploaded artifact name for finished installers."
+        required: false
+        type: string
+        default: "despatch-launchpad-installers"
+      provenance_provider:
+        description: "Official provenance backend to embed and verify."
+        required: false
+        type: string
+        default: "github"
+      release_tag:
+        description: "Release tag baked into installer provenance."
+        required: true
+        type: string
+      release_id:
+        description: "Optional GitHub release id to embed in installer provenance."
+        required: false
+        type: string
+        default: ""
+      release_url:
+        description: "Optional GitHub release URL to embed in installer provenance."
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
+    inputs:
+      project_path:
+        description: "Launchpad project to package."
+        required: false
+        type: string
+        default: "packaging/despatch-installer"
+      output_dir:
+        description: "Directory where installer outputs are written."
+        required: false
+        type: string
+        default: "dist/installers"
+      artifact_name:
+        description: "Uploaded artifact name for finished installers."
+        required: false
+        type: string
+        default: "despatch-launchpad-installers"
+      provenance_provider:
+        description: "Official provenance backend to embed and verify."
+        required: false
+        type: string
+        default: "github"
+      release_tag:
+        description: "Release tag to package, for example v1.1.2-alpha.1_03."
+        required: true
+        type: string
+      release_id:
+        description: "Optional GitHub release id to embed in installer provenance."
+        required: false
+        type: string
+        default: ""
+      release_url:
+        description: "Optional GitHub release URL to embed in installer provenance."
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+  attestations: write
+  id-token: write
 
 jobs:
   package-installers:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    runs-on: ubuntu-22.04
+    env:
+      LAUNCHPAD_VERSION: "1.1.1"
+      PROJECT_PATH: ${{ inputs.project_path }}
+      OUTPUT_DIR: ${{ inputs.output_dir }}
+      ARTIFACT_NAME: ${{ inputs.artifact_name }}
+      PROVENANCE_PROVIDER: ${{ inputs.provenance_provider }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
     steps:
-      - name: Checkout
+      - name: Checkout Despatch
         uses: actions/checkout@v4
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
 
-      - name: Install Launchpad CLI
+      - name: Install build prerequisites
         run: |
           set -euo pipefail
-          cargo install --locked --git https://github.com/2high4schooltoday/Launchpad --tag v1.1.1 launchpad-cli
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Checkout Launchpad build tooling
+        uses: actions/checkout@v4
+        with:
+          repository: 2high4schooltoday/Launchpad
+          ref: v1.1.1
+          path: .launchpad-src
+
+      - name: Build Launchpad CLI and universal stage1 loaders
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+        run: |
+          set -euo pipefail
+          cargo build --manifest-path .launchpad-src/Cargo.toml --locked --release -p launchpad-cli -p launchpad-stage1
+          cargo build --manifest-path .launchpad-src/Cargo.toml --locked --release --target aarch64-unknown-linux-gnu -p launchpad-stage1
+          mkdir -p dist/stage1/stage1-x86_64 dist/stage1/stage1-arm64
+          cp .launchpad-src/target/release/launchpad-stage1 dist/stage1/stage1-x86_64/launchpad-stage1
+          cp .launchpad-src/target/aarch64-unknown-linux-gnu/release/launchpad-stage1 dist/stage1/stage1-arm64/launchpad-stage1
+
+      - name: Download Launchpad runtime launchers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/runtime/x86_64 dist/runtime/arm64
+          gh release download "v${LAUNCHPAD_VERSION}" \
+            -R 2high4schooltoday/Launchpad \
+            -p "launchpad-${LAUNCHPAD_VERSION}-linux-x86_64.tar.gz" \
+            -p "launchpad-${LAUNCHPAD_VERSION}-linux-arm64.tar.gz" \
+            -D dist/runtime
+          tar -xzf "dist/runtime/launchpad-${LAUNCHPAD_VERSION}-linux-x86_64.tar.gz" -C dist/runtime/x86_64
+          tar -xzf "dist/runtime/launchpad-${LAUNCHPAD_VERSION}-linux-arm64.tar.gz" -C dist/runtime/arm64
 
       - name: Validate Launchpad project
+        env:
+          LAUNCHPAD_BIN: ${{ github.workspace }}/.launchpad-src/target/release/launchpad
         run: |
           set -euo pipefail
-          launchpad check ./packaging/despatch-installer
-          launchpad run ./packaging/despatch-installer \
-            --operation status \
-            --dry-run
+          "${LAUNCHPAD_BIN}" check "${PROJECT_PATH}"
+          "${LAUNCHPAD_BIN}" run "${PROJECT_PATH}" --operation status --dry-run
 
-      - name: Build standalone installers
+      - name: Build provenance-ready installer binaries
+        id: build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LAUNCHPAD_BIN: ${{ github.workspace }}/.launchpad-src/target/release/launchpad
+          BUILDER_LOGIN: ${{ github.actor }}
+          BUILDER_ID: ${{ github.actor_id }}
+          REPO_FULL_NAME: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          COMMIT_SHA: ${{ github.sha }}
+          WORKFLOW_REF: ${{ github.ref }}
+          WORKFLOW_RUN_ID: ${{ github.run_id }}
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          RELEASE_URL: ${{ inputs.release_url }}
         run: |
           set -euo pipefail
-          mkdir -p dist/installers
-          launchpad build-installer ./packaging/despatch-installer ./dist/installers
+          mkdir -p "${OUTPUT_DIR}"
+
+          if [ "${PROVENANCE_PROVIDER}" != "github" ]; then
+            echo "Official installer packaging currently supports only the GitHub provenance provider; received ${PROVENANCE_PROVIDER}" >&2
+            exit 1
+          fi
+
+          if [ -z "${RELEASE_URL}" ]; then
+            RELEASE_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}"
+          fi
+
+          if [ -z "${RELEASE_ID}" ]; then
+            RELEASE_JSON="$(
+              gh api "repos/${GITHUB_REPOSITORY}/releases" \
+                --jq 'map(select(.tag_name == env.RELEASE_TAG)) | sort_by((if .draft then 0 else 1 end), .created_at) | .[0]'
+            )"
+            if [ -z "${RELEASE_JSON}" ] || [ "${RELEASE_JSON}" = "null" ]; then
+              echo "Unable to resolve GitHub release metadata for ${RELEASE_TAG}" >&2
+              exit 1
+            fi
+            RELEASE_ID="$(jq -r '.id // empty' <<<"${RELEASE_JSON}")"
+          fi
+
+          if [ -z "${RELEASE_ID}" ] || [ -z "${RELEASE_URL}" ]; then
+            echo "GitHub installer provenance requires release metadata for ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+
+          BUILT_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          cat > dist/installer-provenance.json <<EOF
+          {
+            "provenance_mode": "official",
+            "provenance_provider": "${PROVENANCE_PROVIDER}",
+            "builder_login": "${BUILDER_LOGIN}",
+            "builder_id": "${BUILDER_ID}",
+            "repo_full_name": "${REPO_FULL_NAME}",
+            "repository_id": "${REPOSITORY_ID}",
+            "commit_sha": "${COMMIT_SHA}",
+            "ref": "${WORKFLOW_REF}",
+            "workflow_path": ".github/workflows/launchpad-installer.yml",
+            "workflow_run_id": "${WORKFLOW_RUN_ID}",
+            "workflow_run_url": "${WORKFLOW_RUN_URL}",
+            "release_tag": "${RELEASE_TAG}",
+            "release_id": "${RELEASE_ID}",
+            "release_url": "${RELEASE_URL}",
+            "asset_name": "",
+            "built_at": "${BUILT_AT}"
+          }
+          EOF
+
+          "${LAUNCHPAD_BIN}" build-installer "${PROJECT_PATH}" "${OUTPUT_DIR}" \
+            --provenance-file dist/installer-provenance.json \
+            --launcher-x86_64 dist/runtime/x86_64/launchpad \
+            --launcher-arm64 dist/runtime/arm64/launchpad \
+            --universal \
+            --stage1-x86_64 dist/stage1/stage1-x86_64/launchpad-stage1 \
+            --stage1-arm64 dist/stage1/stage1-arm64/launchpad-stage1
+
+          echo "x86_installer=$(find "${OUTPUT_DIR}" -maxdepth 1 -name '*-installer-linux-x86_64' | head -n 1)" >> "$GITHUB_OUTPUT"
+          echo "arm_installer=$(find "${OUTPUT_DIR}" -maxdepth 1 -name '*-installer-linux-arm64' | head -n 1)" >> "$GITHUB_OUTPUT"
+          echo "universal_installer=$(find "${OUTPUT_DIR}" -maxdepth 1 -name '*-installer-linux-universal' | head -n 1)" >> "$GITHUB_OUTPUT"
+          echo "manifest_path=$(find "${OUTPUT_DIR}" -maxdepth 1 -name '*-installer-manifest.json' | head -n 1)" >> "$GITHUB_OUTPUT"
+          echo "checksum_path=$(find "${OUTPUT_DIR}" -maxdepth 1 -name '*-installer-sha256sums.txt' | head -n 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Extract universal installer image for attestation
+        id: universal_image
+        env:
+          LAUNCHPAD_BIN: ${{ github.workspace }}/.launchpad-src/target/release/launchpad
+        run: |
+          set -euo pipefail
+          mkdir -p dist/proof
+          "${LAUNCHPAD_BIN}" installer extract-image \
+            "${{ steps.build.outputs.universal_installer }}" \
+            dist/proof/universal-image.lpi
+          echo "image=dist/proof/universal-image.lpi" >> "$GITHUB_OUTPUT"
+
+      - name: Attest x86_64 installer provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ steps.build.outputs.x86_installer }}
+
+      - name: Attest arm64 installer provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ steps.build.outputs.arm_installer }}
+
+      - name: Attest universal installer image provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: ${{ steps.universal_image.outputs.image }}
+
+      - name: Attach detached proof trailers and verify installers
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LAUNCHPAD_BIN: ${{ github.workspace }}/.launchpad-src/target/release/launchpad
+          UNIVERSAL_INSTALLER: ${{ steps.build.outputs.universal_installer }}
+          UNIVERSAL_IMAGE: ${{ steps.universal_image.outputs.image }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/proof
+          gh attestation trusted-root > dist/proof/trusted-root.jsonl
+
+          for INSTALLER in "${OUTPUT_DIR}"/*-installer-linux-x86_64 "${OUTPUT_DIR}"/*-installer-linux-arm64; do
+            DIGEST="$(sha256sum "${INSTALLER}" | awk '{print $1}')"
+            ARCH="${INSTALLER##*-installer-linux-}"
+            gh attestation download "${INSTALLER}" -R "${GITHUB_REPOSITORY}"
+            mv "sha256:${DIGEST}.jsonl" "dist/proof/${ARCH}-bundle.jsonl"
+
+            "${LAUNCHPAD_BIN}" installer attach-proof "${INSTALLER}" \
+              --bundle "dist/proof/${ARCH}-bundle.jsonl" \
+              --trusted-root dist/proof/trusted-root.jsonl
+            "${LAUNCHPAD_BIN}" installer verify "${INSTALLER}"
+          done
+
+          DIGEST="$(sha256sum "${UNIVERSAL_IMAGE}" | awk '{print $1}')"
+          gh attestation download "${UNIVERSAL_IMAGE}" -R "${GITHUB_REPOSITORY}"
+          mv "sha256:${DIGEST}.jsonl" "dist/proof/universal-image-bundle.jsonl"
+
+          "${LAUNCHPAD_BIN}" installer attach-proof "${UNIVERSAL_INSTALLER}" \
+            --bundle dist/proof/universal-image-bundle.jsonl \
+            --trusted-root dist/proof/trusted-root.jsonl
+          "${LAUNCHPAD_BIN}" installer verify "${UNIVERSAL_INSTALLER}"
+
+          X86_INSTALLER="${{ steps.build.outputs.x86_installer }}"
+          ARM_INSTALLER="${{ steps.build.outputs.arm_installer }}"
+          MANIFEST_PATH="${{ steps.build.outputs.manifest_path }}"
+          CHECKSUM_PATH="${{ steps.build.outputs.checksum_path }}"
+          X86_SHA="$(sha256sum "${X86_INSTALLER}" | awk '{print $1}')"
+          ARM_SHA="$(sha256sum "${ARM_INSTALLER}" | awk '{print $1}')"
+          UNIVERSAL_SHA="$(sha256sum "${UNIVERSAL_INSTALLER}" | awk '{print $1}')"
+          X86_SIZE="$(stat -c%s "${X86_INSTALLER}")"
+          ARM_SIZE="$(stat -c%s "${ARM_INSTALLER}")"
+          UNIVERSAL_SIZE="$(stat -c%s "${UNIVERSAL_INSTALLER}")"
+
+          jq \
+            --arg x86_sha "${X86_SHA}" \
+            --arg arm_sha "${ARM_SHA}" \
+            --arg universal_sha "${UNIVERSAL_SHA}" \
+            --argjson x86_size "${X86_SIZE}" \
+            --argjson arm_size "${ARM_SIZE}" \
+            --argjson universal_size "${UNIVERSAL_SIZE}" \
+            '
+              .assets |= map(
+                if .target == "x86_64" then
+                  .sha256 = $x86_sha | .size_bytes = $x86_size
+                elif .target == "arm64" then
+                  .sha256 = $arm_sha | .size_bytes = $arm_size
+                elif .target == "universal" then
+                  .sha256 = $universal_sha | .size_bytes = $universal_size
+                else
+                  .
+                end
+              )
+            ' \
+            "${MANIFEST_PATH}" \
+            > "${MANIFEST_PATH}.tmp"
+          mv "${MANIFEST_PATH}.tmp" "${MANIFEST_PATH}"
+
+          {
+            for ARTIFACT in "${UNIVERSAL_INSTALLER}" "${X86_INSTALLER}" "${ARM_INSTALLER}" "${MANIFEST_PATH}"; do
+              SHA="$(sha256sum "${ARTIFACT}" | awk '{print $1}')"
+              printf '%s  %s\n' "${SHA}" "$(basename "${ARTIFACT}")"
+            done
+          } > "${CHECKSUM_PATH}"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: despatch-launchpad-installers
-          path: dist/installers/*
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.OUTPUT_DIR }}/*
 
       - name: Attach release assets
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/installers/*
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            ${{ steps.build.outputs.universal_installer }}
+            ${{ steps.build.outputs.x86_installer }}
+            ${{ steps.build.outputs.arm_installer }}
+            ${{ steps.build.outputs.manifest_path }}
+            ${{ steps.build.outputs.checksum_path }}

@@ -1,6 +1,115 @@
-# Despatch (Go + Rust privileged helpers)
+<p align="center"><strong>Despatch</strong><br>Launchpad-native webmail and admin for the Postfix + Dovecot stack you already trust.</p>
 
-Lightweight self-hosted webmail and admin system for existing Postfix + Dovecot + Maildir infrastructure.
+<p align="center">
+  <a href="https://github.com/2high4schooltoday/despatch/actions/workflows/release.yml"><img src="https://github.com/2high4schooltoday/despatch/actions/workflows/release.yml/badge.svg" alt="Release"></a>
+  <a href="https://github.com/2high4schooltoday/despatch/actions/workflows/launchpad-installer.yml"><img src="https://github.com/2high4schooltoday/despatch/actions/workflows/launchpad-installer.yml/badge.svg" alt="Launchpad Installer"></a>
+  <a href="https://github.com/2high4schooltoday/despatch/releases"><img src="https://img.shields.io/github/v/release/2high4schooltoday/despatch?display_name=tag" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/2high4schooltoday/despatch" alt="License"></a>
+</p>
+
+Despatch is an open source control plane for existing Postfix + Dovecot + Maildir installations.
+
+Sounds like another mail panel. Let's try again.
+
+**Despatch will not replace your mail stack, but it will make running it feel a lot less medieval.**
+
+Install one verified Launchpad binary, answer a guided setup flow, and get:
+- webmail backed by real IMAP and SMTP
+- approvals, registration, audit logs, and password resets
+- diagnostics for app health, reverse proxying, firewall state, and DNS drift
+- native Launchpad install, diagnose, status, and uninstall operations
+
+<details>
+<summary>Table of Contents</summary>
+
+- [Getting Started](#getting-started)
+- [Implemented](#implemented)
+- [ARM optimization defaults](#arm-optimization-defaults)
+- [UI release gates](#ui-release-gates)
+- [Web UI model](#web-ui-model)
+- [Installer details](#installer-details)
+- [Uninstall](#uninstall-safe-interactive)
+- [Internet access diagnostics](#internet-access-diagnostics)
+- [Web panel software updates](#web-panel-software-updates-ubuntu)
+- [CAPTCHA with CAP standalone](#captcha-with-cap-standalone-ubuntu)
+- [SMTP sender diagnostics](#smtp-sender-diagnostics-ubuntu)
+- [Dovecot provisioning notes](#dovecot-provisioning-notes)
+- [API](#api)
+- [Test](#test)
+- [Security behavior updates](#security-behavior-updates)
+- [Mail Security Service](#mail-security-service)
+
+</details>
+
+## Getting Started
+Validated for Ubuntu Server on:
+- ARM64 (`aarch64` / `arm64`)
+- x86-64 (`x86_64` / `amd64`)
+
+### What you need
+- an existing Postfix + Dovecot + Maildir host
+- `sudo` access on the target Linux machine
+- outbound access to GitHub Releases for the first install
+
+### Basic installation
+The universal installer is the primary installation source right now. Start there unless you explicitly want the smaller architecture-specific binaries.
+
+With `curl`:
+
+```sh
+curl -fL -o despatch-installer \
+  https://github.com/2high4schooltoday/despatch/releases/latest/download/despatch-installer-installer-linux-universal
+chmod +x despatch-installer
+./despatch-installer
+```
+
+With `wget`:
+
+```sh
+wget -O despatch-installer \
+  https://github.com/2high4schooltoday/despatch/releases/latest/download/despatch-installer-installer-linux-universal
+chmod +x despatch-installer
+./despatch-installer
+```
+
+After the installer finishes:
+1. Open the reported URL.
+2. Use `https://<your-domain>` in proxy mode or `http://<server-ip>:8080` in direct mode.
+3. Complete the web OOBE.
+4. Choose region, set domain, and create the first admin account.
+
+Architecture-specific installers remain available if you know the target ahead of time:
+- `despatch-installer-installer-linux-x86_64`
+- `despatch-installer-installer-linux-arm64`
+
+### Manual inspection and provenance
+Despatch publishes verified Launchpad installers plus signed application archives for every release.
+
+If you already have Launchpad locally, verify the downloaded installer before running it:
+
+```sh
+launchpad installer verify ./despatch-installer
+```
+
+Each release also publishes:
+- `despatch-installer-installer-manifest.json`
+- `despatch-installer-installer-sha256sums.txt`
+- `checksums.txt`
+- `checksums.txt.sig`
+
+The installer assets carry GitHub attestation-backed Launchpad proof, and the application archives consumed by the installer are additionally signed through `checksums.txt.sig`.
+
+### From a local checkout
+Local entrypoints still work and now route into the native Launchpad project:
+- `./despatch`
+- `./scripts/tui.sh`
+- `./scripts/tui_plain.sh`
+
+Compatibility wrappers remain available:
+- `./scripts/auto_install.sh`
+- `./scripts/uninstall.sh`
+- `./scripts/diagnose_access.sh`
+- `wget -O despatch.py https://raw.githubusercontent.com/2high4schooltoday/despatch/main/scripts/despatch.py && chmod +x despatch.py && ./despatch.py`
 
 ## Implemented
 - Single-binary Go server with REST API + web UI.
@@ -41,17 +150,6 @@ Run these before packaging a release:
 - `./scripts/check_ui_selector_contract.sh`
 - `./scripts/check_surface_depth.sh`
 
-## Quick start
-1. Run interactive installer:
-   - `./despatch`
-2. Open:
-   - `proxy mode`: `http(s)://<your-domain>`
-   - `direct mode`: `http://<server-ip>:8080`
-3. Complete web OOBE:
-   - Choose region
-   - Set domain
-   - Create admin account (default suggestion: `webmaster@{domain}`)
-
 ## Web UI model
 - Navigation state is context-aware:
   - Pre-auth: `Auth` only.
@@ -86,37 +184,25 @@ Run these before packaging a release:
   - compose falls back to manual sender confirmation when account identities are unavailable
   - compose draft is persisted locally until successful send
 
-## Auto installer (recommended)
-Interactive, prompt-driven installer (no CLI arguments). Validated for Ubuntu Server on:
-- ARM64 (`aarch64` / `arm64`)
-- x86-64 (`x86_64` / `amd64`)
-
-Run:
-- `./despatch`
-
-Terminal installer assistant (guided wizard):
+## Installer details
+Interactive, prompt-driven install flows are available from:
+- the verified universal standalone installer
 - `./despatch`
 - `./scripts/tui.sh`
-- keyboard: `Tab` cycle controls, arrows move within cards/fields/actions, `Enter` activate, `Esc` go back, `L` toggle logs during progress/completion, `Ctrl+X` cancel active run
-- these entrypoints now run the native Launchpad installer project in `packaging/despatch-installer`
-- if `launchpad` is not installed locally, use a packaged standalone installer from `packaging/despatch-installer` or install the Launchpad CLI first
+
+Keyboard controls for the TUI:
+- `Tab` cycles controls
+- arrow keys move within cards, fields, and actions
+- `Enter` activates the current control
+- `Esc` goes back
+- `L` toggles logs during progress or completion
+- `Ctrl+X` cancels the active run
 
 Plain console-only menu:
 - `./scripts/tui_plain.sh`
 - this is only a shell menu wrapper around the same native Launchpad operations
 
-Standalone dashboard via `wget`:
-- `wget -O despatch.py https://raw.githubusercontent.com/2high4schooltoday/despatch/main/scripts/despatch.py && chmod +x despatch.py && ./despatch.py`
-
-Standalone mode (run from any Linux server path):
-- use a packaged Launchpad standalone installer artifact built from `packaging/despatch-installer`
-- from a local checkout you can also run:
-  - `./scripts/auto_install.sh`
-  - `./scripts/uninstall.sh`
-  - `./scripts/diagnose_access.sh`
-- these entrypoints are compatibility shims that invoke the native Launchpad operations directly
-
-What it auto-detects:
+What the installer auto-detects:
 - Dovecot SQL config (`dovecot-sql.conf.ext`)
 - Dovecot auth mode hints (`pam` vs `sql`)
 - SQL driver / connect hints / auth table + columns

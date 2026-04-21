@@ -4,13 +4,38 @@ on:
   push:
     tags:
       - "v*"
-  workflow_dispatch:
 
 jobs:
-  build-and-publish:
+  prepare-release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      release_id: ${{ steps.release.outputs.release_id }}
+      release_url: ${{ steps.release.outputs.release_url }}
+    steps:
+      - name: Ensure release exists
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "${GITHUB_REF_NAME}" --json id,url >/dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" \
+              --draft \
+              --title "${GITHUB_REF_NAME}" \
+              --verify-tag
+          fi
+          echo "release_id=$(gh release view "${GITHUB_REF_NAME}" --json id --jq '.id')" >> "$GITHUB_OUTPUT"
+          echo "release_url=$(gh release view "${GITHUB_REF_NAME}" --json url --jq '.url')" >> "$GITHUB_OUTPUT"
+
+  build-and-publish:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -105,12 +130,42 @@ jobs:
             rm -f update-signing-key.pem update-signing-key.pub.pem
           )
 
+      - name: Attest amd64 release archive provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/despatch-linux-amd64.tar.gz
+
+      - name: Attest arm64 release archive provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/despatch-linux-arm64.tar.gz
+
       - name: Publish GitHub release assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: |
             dist/despatch-linux-amd64.tar.gz
             dist/despatch-linux-arm64.tar.gz
             dist/checksums.txt
             dist/checksums.txt.sig
           generate_release_notes: true
+
+  package-installers:
+    needs:
+      - prepare-release
+      - build-and-publish
+    permissions:
+      contents: write
+      attestations: write
+      id-token: write
+    uses: ./.github/workflows/launchpad-installer.yml
+    with:
+      project_path: packaging/despatch-installer
+      output_dir: dist/installers
+      artifact_name: despatch-launchpad-installers
+      provenance_provider: github
+      release_tag: ${{ github.ref_name }}
+      release_id: ${{ needs.prepare-release.outputs.release_id }}
+      release_url: ${{ needs.prepare-release.outputs.release_url }}
+    secrets: inherit
