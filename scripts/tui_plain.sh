@@ -1,11 +1,8 @@
-#!/usr/bin/env bash
-set -euo pipefail
-IFS=$'\n\t'
+#!/bin/sh
+set -eu
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INSTALL_SCRIPT="$ROOT_DIR/scripts/auto_install.sh"
-UNINSTALL_SCRIPT="$ROOT_DIR/scripts/uninstall.sh"
-DIAG_SCRIPT="$ROOT_DIR/scripts/diagnose_access.sh"
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+BRIDGE_SCRIPT="$ROOT_DIR/scripts/launchpad_bridge.sh"
 
 have_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -19,7 +16,7 @@ show_header() {
   cat <<'EOF'
 +--------------------------------------------------------------+
 |                       DESPATCH CONSOLE                       |
-|               Plain Bash (no extra dependencies)             |
+|              Plain Shell (no extra dependencies)             |
 +--------------------------------------------------------------+
 EOF
 }
@@ -34,14 +31,10 @@ service_state() {
 
 show_status() {
   show_header
-  echo "Service state: $(service_state)"
-  echo
-  if have_cmd systemctl; then
-    systemctl status despatch --no-pager || true
-    echo
-    journalctl -u despatch -n 40 --no-pager || true
+  if [ -x "$BRIDGE_SCRIPT" ]; then
+    sh "$BRIDGE_SCRIPT" --operation status || true
   else
-    echo "systemctl is not available on this host."
+    echo "Launchpad bridge not found: $BRIDGE_SCRIPT"
   fi
   pause
 }
@@ -62,37 +55,36 @@ show_ports() {
 
 run_install() {
   show_header
-  if [[ -x "$INSTALL_SCRIPT" ]]; then
-    bash "$INSTALL_SCRIPT"
+  if [ -x "$BRIDGE_SCRIPT" ]; then
+    sh "$BRIDGE_SCRIPT" --operation install
   else
-    echo "Installer script not found: $INSTALL_SCRIPT"
-    echo "Download and run standalone installer instead."
+    echo "Launchpad bridge not found: $BRIDGE_SCRIPT"
   fi
   pause
 }
 
 run_uninstall() {
   show_header
-  if [[ -x "$UNINSTALL_SCRIPT" ]]; then
-    bash "$UNINSTALL_SCRIPT"
+  if [ -x "$BRIDGE_SCRIPT" ]; then
+    sh "$BRIDGE_SCRIPT" --operation uninstall
   else
-    echo "Uninstaller script not found: $UNINSTALL_SCRIPT"
+    echo "Launchpad bridge not found: $BRIDGE_SCRIPT"
   fi
   pause
 }
 
 run_diagnose() {
   show_header
-  if [[ -x "$DIAG_SCRIPT" ]]; then
-    bash "$DIAG_SCRIPT" || true
+  if [ -x "$BRIDGE_SCRIPT" ]; then
+    sh "$BRIDGE_SCRIPT" --operation diagnose || true
   else
-    echo "Diagnostics script not found: $DIAG_SCRIPT"
+    echo "Launchpad bridge not found: $BRIDGE_SCRIPT"
   fi
   pause
 }
 
 main_menu() {
-  while true; do
+  while :; do
     show_header
     echo "Service state: $(service_state)"
     echo

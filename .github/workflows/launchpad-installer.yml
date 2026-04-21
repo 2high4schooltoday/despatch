@@ -1,0 +1,56 @@
+name: Launchpad Installer
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  package-installers:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Launchpad CLI
+        run: |
+          set -euo pipefail
+          cargo install --locked --git https://github.com/2high4schooltoday/Launchpad --tag v1.1.1 launchpad-cli
+
+      - name: Validate Launchpad project
+        run: |
+          set -euo pipefail
+          launchpad check ./packaging/despatch-installer
+          launchpad run ./packaging/despatch-installer \
+            --operation install \
+            --yes \
+            --dry-run \
+            --set release=latest \
+            --set baseDomain=mail.example.com \
+            --set proxyServerName=mail.example.com \
+            --set deployMode=direct \
+            --set runDiagnose=false
+
+      - name: Build standalone installers
+        run: |
+          set -euo pipefail
+          mkdir -p dist/installers
+          launchpad build-installer ./packaging/despatch-installer ./dist/installers
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: despatch-launchpad-installers
+          path: dist/installers/*
+
+      - name: Attach release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/installers/*

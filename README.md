@@ -43,7 +43,7 @@ Run these before packaging a release:
 
 ## Quick start
 1. Run interactive installer:
-   - `./scripts/auto_install.sh`
+   - `./despatch`
 2. Open:
    - `proxy mode`: `http(s)://<your-domain>`
    - `direct mode`: `http://<server-ip>:8080`
@@ -92,26 +92,29 @@ Interactive, prompt-driven installer (no CLI arguments). Validated for Ubuntu Se
 - x86-64 (`x86_64` / `amd64`)
 
 Run:
-- `./scripts/auto_install.sh`
+- `./despatch`
 
 Terminal installer assistant (guided wizard):
+- `./despatch`
 - `./scripts/tui.sh`
 - keyboard: `Tab` cycle controls, arrows move within cards/fields/actions, `Enter` activate, `Esc` go back, `L` toggle logs during progress/completion, `Ctrl+X` cancel active run
-- if `python3` is missing, `./scripts/tui.sh` auto-falls back to a plain Bash console menu (no extra deps)
+- these entrypoints now run the native Launchpad installer project in `packaging/despatch-installer`
+- if `launchpad` is not installed locally, use a packaged standalone installer from `packaging/despatch-installer` or install the Launchpad CLI first
 
-Plain console-only menu (Bash, dependency-free):
+Plain console-only menu:
 - `./scripts/tui_plain.sh`
+- this is only a shell menu wrapper around the same native Launchpad operations
 
 Standalone dashboard via `wget`:
 - `wget -O despatch.py https://raw.githubusercontent.com/2high4schooltoday/despatch/main/scripts/despatch.py && chmod +x despatch.py && ./despatch.py`
 
 Standalone mode (run from any Linux server path):
-- download `scripts/auto_install.sh` and run it
-- if app sources are not present next to the script, it will:
-  - prompt for GitHub repo/ref
-  - clone/pull the repository automatically
-  - install missing dependencies on Ubuntu/Debian with `apt` (interactive confirmation)
-  - continue normal interactive install flow
+- use a packaged Launchpad standalone installer artifact built from `packaging/despatch-installer`
+- from a local checkout you can also run:
+  - `./scripts/auto_install.sh`
+  - `./scripts/uninstall.sh`
+  - `./scripts/diagnose_access.sh`
+- these entrypoints are compatibility shims that invoke the native Launchpad operations directly
 
 What it auto-detects:
 - Dovecot SQL config (`dovecot-sql.conf.ext`)
@@ -161,8 +164,7 @@ Password reset sender identity:
 - Password reset SMTP delivery follows `SMTP_TLS` / `SMTP_STARTTLS` / `SMTP_INSECURE_SKIP_VERIFY` runtime settings.
 
 Installer troubleshooting:
-- Installer now prints exact failing line/command on errors.
-- For full trace, run: `bash -x ./scripts/auto_install.sh`
+- Installer now reports native Launchpad preflight/action failures directly.
 - If UFW rule application fails, installer continues and prints manual commands instead of aborting.
 - If UFW is installed but inactive, installer warns and can optionally enable it; if that fails, install still continues.
 
@@ -173,7 +175,7 @@ From local checkout:
 - `./scripts/uninstall.sh`
 
 Standalone from server console (`wget`):
-- `wget -O uninstall.sh https://raw.githubusercontent.com/2high4schooltoday/despatch/main/scripts/uninstall.sh && chmod +x uninstall.sh && ./uninstall.sh`
+- use the packaged standalone Launchpad installer artifact and choose the `uninstall` operation
 
 ## Internet access diagnostics
 Run connectivity doctor at any time:
@@ -294,7 +296,7 @@ Recommended Ubuntu self-host setup:
    - `WASM_VERSION=<pinned-version>` (avoid `latest` in production)
    - `CACHE_HOST` optional (set only if outbound fetch is restricted)
 
-`scripts/auto_install.sh` can now auto-provision CAP runtime:
+The native Launchpad install operation can auto-provision CAP runtime:
 - optional Docker deployment to `/opt/cap/docker-compose.yml`
 - canonical volume `cap-data` (with migration from legacy `cap_cap-data` when safe)
 - forced `ENABLE_ASSETS_SERVER=true`

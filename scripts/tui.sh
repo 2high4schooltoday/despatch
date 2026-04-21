@@ -1,11 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
-IFS=$'\n\t'
+#!/bin/sh
+set -eu
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-
-if command -v python3 >/dev/null 2>&1; then
-  exec python3 "$ROOT_DIR/scripts/despatch.py"
-fi
-
-exec bash "$ROOT_DIR/scripts/tui_plain.sh"
+ROOT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+exec "$ROOT_DIR/despatch" "$@"
