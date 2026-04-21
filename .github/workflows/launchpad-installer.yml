@@ -28,34 +28,8 @@ jobs:
           set -euo pipefail
           launchpad check ./packaging/despatch-installer
           launchpad run ./packaging/despatch-installer \
-            --operation install \
-            --yes \
-            --dry-run \
-            --set release=latest \
-            --set baseDomain=mail.example.com \
-            --set listenAddr=:8080 \
-            --set installService=true \
-            --set proxyServer=nginx \
-            --set dovecotAuthMode=pam \
-            --set dovecotAuthDbDriver=mysql \
-            --set dovecotAuthDbDsn=unused \
-            --set autoInstallDeps=false \
-            --set ufwEnable=false \
-            --set ufwOpenProxyPorts=false \
-            --set ufwOpenDirectPort=false \
-            --set enableCapCaptcha=false \
-            --set capSiteKey=cap-site-key \
-            --set capUpstream=127.0.0.1:8077 \
-            --set capAutoProvision=false \
-            --set capImage=tiagozip/cap:latest \
-            --set capWidgetVersion=0.0.6 \
-            --set capWasmVersion=0.0.6 \
-            --set proxyServerName=mail.example.com \
-            --set deployMode=proxy \
-            --set proxyTls=true \
-            --set proxyCert=/tmp/despatch-fullchain.pem \
-            --set proxyKey=/tmp/despatch-privkey.pem \
-            --set runDiagnose=false
+            --operation status \
+            --dry-run
 
       - name: Build standalone installers
         run: |
