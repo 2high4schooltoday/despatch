@@ -34,8 +34,10 @@ jobs:
             --set release=latest \
             --set baseDomain=mail.example.com \
             --set proxyServerName=mail.example.com \
-            --set deployMode=direct \
-            --set proxyTls=false \
+            --set deployMode=proxy \
+            --set proxyTls=true \
+            --set proxyCert=/tmp/despatch-fullchain.pem \
+            --set proxyKey=/tmp/despatch-privkey.pem \
             --set runDiagnose=false
 
       - name: Build standalone installers
