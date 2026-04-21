@@ -33,6 +33,7 @@ jobs:
             --dry-run \
             --set release=latest \
             --set baseDomain=mail.example.com \
+            --set dovecotAuthMode=pam \
             --set proxyServerName=mail.example.com \
             --set deployMode=proxy \
             --set proxyTls=true \
