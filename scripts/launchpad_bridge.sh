@@ -17,6 +17,6 @@ if [ -n "${HOME:-}" ] && [ -x "$HOME/.cargo/bin/launchpad" ]; then
 fi
 
 printf 'Despatch now runs through Launchpad, but no Launchpad CLI was found.\n' >&2
-printf 'Download the verified universal installer from:\n' >&2
-printf 'https://github.com/2high4schooltoday/despatch/releases/latest/download/despatch-installer-installer-linux-universal\n' >&2
+printf 'Download the verified universal installer from the latest release page:\n' >&2
+printf 'https://github.com/2high4schooltoday/despatch/releases\n' >&2
 exit 1

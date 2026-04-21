@@ -57,8 +57,10 @@ The universal installer is the primary installation source right now. Start ther
 With `curl`:
 
 ```sh
-curl -fL -o despatch-installer \
-  https://github.com/2high4schooltoday/despatch/releases/latest/download/despatch-installer-installer-linux-universal
+INSTALLER_URL="$(curl -fsSL https://api.github.com/repos/2high4schooltoday/despatch/releases \
+  | sed -n 's/.*"browser_download_url": "\(https:\/\/github.com\/2high4schooltoday\/despatch\/releases\/download\/[^\"]*\/despatch-installer-installer-linux-universal\)".*/\1/p' \
+  | head -n 1)"
+curl -fL -o despatch-installer "$INSTALLER_URL"
 chmod +x despatch-installer
 ./despatch-installer
 ```
@@ -66,11 +68,15 @@ chmod +x despatch-installer
 With `wget`:
 
 ```sh
-wget -O despatch-installer \
-  https://github.com/2high4schooltoday/despatch/releases/latest/download/despatch-installer-installer-linux-universal
+INSTALLER_URL="$(wget -qO- https://api.github.com/repos/2high4schooltoday/despatch/releases \
+  | sed -n 's/.*"browser_download_url": "\(https:\/\/github.com\/2high4schooltoday\/despatch\/releases\/download\/[^\"]*\/despatch-installer-installer-linux-universal\)".*/\1/p' \
+  | head -n 1)"
+wget -O despatch-installer "$INSTALLER_URL"
 chmod +x despatch-installer
 ./despatch-installer
 ```
+
+This uses the GitHub Releases API because `releases/latest` does not reliably point at alpha installer assets.
 
 After the installer finishes:
 1. Open the reported URL.
