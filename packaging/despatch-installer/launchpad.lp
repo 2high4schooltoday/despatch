@@ -154,10 +154,20 @@ fact detectedDovecotSqlSettings:
   when trimmed dovecotConfigPath != "": extract "dovecot.sql" from dovecotConfig
   otherwise: {}.
 
+fact detectedDovecotSqlSemanticSettings:
+  when trimmed dovecotConfigPath != "": extract "dovecot.sql.semantic" from dovecotConfig
+  otherwise: {}.
+
 fact detectedDovecotAuthMode is when value for key "auth_mode" in detectedDovecotAuthSettings is "pam": "pam" otherwise: "sql".
 
 fact detectedDovecotSqlDsn is (value for key "sql_dsn" in detectedDovecotSqlSettings) or else (value for key "sql_dsn" in detectedDovecotAuthSettings) or else "".
 fact detectedDovecotSqlDriver is (value for key "sql_driver" in detectedDovecotSqlSettings) or else (value for key "sql_driver" in detectedDovecotAuthSettings) or else "".
+fact detectedDovecotSqlQuerySemantics is (value for key "query_semantics" in detectedDovecotSqlSemanticSettings) or else {}.
+fact detectedDovecotSqlPrimaryTable is (value for key "primary_table" in detectedDovecotSqlSemanticSettings) or else (value for key "primary_table" in detectedDovecotSqlQuerySemantics) or else "".
+fact detectedDovecotSqlLoginColumn is (value for key "login_column" in detectedDovecotSqlSemanticSettings) or else (value for key "identity_column" in detectedDovecotSqlQuerySemantics) or else "".
+fact detectedDovecotSqlPasswordHashColumn is (value for key "password_hash_column" in detectedDovecotSqlSemanticSettings) or else (value for key "secret_column" in detectedDovecotSqlQuerySemantics) or else "".
+fact detectedDovecotSqlActiveColumn is (value for key "active_column" in detectedDovecotSqlSemanticSettings) or else (value for key "status_column" in detectedDovecotSqlQuerySemantics) or else "".
+fact detectedDovecotSqlMailLocationColumn is (value for key "mail_location_column" in detectedDovecotSqlSemanticSettings) or else (value for key "location_column" in detectedDovecotSqlQuerySemantics) or else "".
 
 field dovecotAuthMode is a DovecotAuthMode:
   label is "Dovecot auth mode".
@@ -185,31 +195,37 @@ field dovecotAuthDbDsn is a text:
 field dovecotAuthTable is a text:
   label is "Dovecot auth table".
   help is "Override the writable mailbox table name when SQL auth is selected.".
-  default is "users".
+  default is:
+    when trimmed detectedDovecotSqlPrimaryTable != "": detectedDovecotSqlPrimaryTable
+    otherwise: "users".
   it is advanced.
 
 field dovecotAuthEmailCol is a text:
   label is "Email/login column".
   help is "Override the SQL column used to match mailbox logins.".
-  default is "email".
+  default is:
+    when trimmed detectedDovecotSqlLoginColumn != "": detectedDovecotSqlLoginColumn
+    otherwise: "email".
   it is advanced.
 
 field dovecotAuthPassCol is a text:
   label is "Password hash column".
   help is "Override the SQL column that stores mailbox password hashes.".
-  default is "password_hash".
+  default is:
+    when trimmed detectedDovecotSqlPasswordHashColumn != "": detectedDovecotSqlPasswordHashColumn
+    otherwise: "password_hash".
   it is advanced.
 
 field dovecotAuthActiveCol is a text:
   label is "Active/enabled column".
   help is "Leave blank when the mailbox table does not use a dedicated active flag.".
-  default is "".
+  default is detectedDovecotSqlActiveColumn or else "".
   it is advanced.
 
 field dovecotAuthMaildirCol is a text:
   label is "Maildir column".
   help is "Leave blank when maildir paths are derived outside the mailbox table.".
-  default is "".
+  default is detectedDovecotSqlMailLocationColumn or else "".
   it is advanced.
 
 field autoInstallDeps is a boolean:
@@ -427,32 +443,40 @@ fact resolvedDovecotDsn:
   when resolvedDovecotAuthMode is "sql": detectedDovecotSqlDsn or else ""
   otherwise: "".
 
+fact normalizedDovecotAuthDbDriver is dovecotAuthDbDriver lowercased.
+
 fact resolvedDovecotSqlDriver:
-  when detectedDovecotSqlDriver is "pgsql": "pgx"
-  when detectedDovecotSqlDriver is "postgres": "pgx"
-  when detectedDovecotSqlDriver is "postgresql": "pgx"
-  when detectedDovecotSqlDriver is "mysql": "mysql"
-  when detectedDovecotSqlDriver is "mariadb": "mysql"
-  otherwise: dovecotAuthDbDriver.
+  when normalizedDovecotAuthDbDriver is "pgsql": "pgx"
+  when normalizedDovecotAuthDbDriver is "postgres": "pgx"
+  when normalizedDovecotAuthDbDriver is "postgresql": "pgx"
+  when normalizedDovecotAuthDbDriver is "pgx": "pgx"
+  when normalizedDovecotAuthDbDriver is "mysql": "mysql"
+  when normalizedDovecotAuthDbDriver is "mariadb": "mysql"
+  otherwise: "mysql".
 
 fact resolvedDovecotAuthTable:
   when trimmedDovecotAuthTable != "": trimmedDovecotAuthTable
+  when trimmed detectedDovecotSqlPrimaryTable != "": detectedDovecotSqlPrimaryTable
   otherwise: "users".
 
 fact resolvedDovecotAuthEmailCol:
   when trimmedDovecotAuthEmailCol != "": trimmedDovecotAuthEmailCol
+  when trimmed detectedDovecotSqlLoginColumn != "": detectedDovecotSqlLoginColumn
   otherwise: "email".
 
 fact resolvedDovecotAuthPassCol:
   when trimmedDovecotAuthPassCol != "": trimmedDovecotAuthPassCol
+  when trimmed detectedDovecotSqlPasswordHashColumn != "": detectedDovecotSqlPasswordHashColumn
   otherwise: "password_hash".
 
 fact resolvedDovecotAuthActiveCol:
   when trimmedDovecotAuthActiveCol != "": trimmedDovecotAuthActiveCol
+  when trimmed detectedDovecotSqlActiveColumn != "": detectedDovecotSqlActiveColumn
   otherwise: "".
 
 fact resolvedDovecotAuthMaildirCol:
   when trimmedDovecotAuthMaildirCol != "": trimmedDovecotAuthMaildirCol
+  when trimmed detectedDovecotSqlMailLocationColumn != "": detectedDovecotSqlMailLocationColumn
   otherwise: "".
 
 fact resolvedDovecotDsnText is resolvedDovecotDsn or else "".
@@ -1045,6 +1069,7 @@ operation install:
     note "Detected reverse proxy: nginx." when detectedNginxInstall is true and detectedApacheInstall is false.
     note "Detected reverse proxy: apache2." when detectedApacheInstall is true and detectedNginxInstall is false.
     note "Detected Dovecot auth mode: `{{detectedDovecotAuthMode}}`.".
+    note "Detected Dovecot SQL mailbox mapping: table `{{detectedDovecotSqlPrimaryTable}}`, login `{{detectedDovecotSqlLoginColumn}}`, password `{{detectedDovecotSqlPasswordHashColumn}}`." when detectedDovecotAuthMode is "sql" and trimmed detectedDovecotSqlPrimaryTable != "".
     warning "Direct mode exposes Despatch on the selected listen address without a Launchpad-managed reverse proxy." when deployMode is "direct".
     warning "CAP captcha auto-provisioning installs and manages a Docker-backed container service." when enableCapCaptcha and capAutoProvision.
 
