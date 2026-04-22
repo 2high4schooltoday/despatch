@@ -83,7 +83,6 @@ jobs:
   package-installers:
     runs-on: ubuntu-22.04
     env:
-      LAUNCHPAD_VERSION: "1.2.2"
       PROJECT_PATH: ${{ inputs.project_path }}
       OUTPUT_DIR: ${{ inputs.output_dir }}
       ARTIFACT_NAME: ${{ inputs.artifact_name }}
@@ -111,30 +110,23 @@ jobs:
           ref: v1.2.2
           path: .launchpad-src
 
-      - name: Build Launchpad CLI and universal stage1 loaders
+      - name: Apply Despatch Launchpad runtime patchset
+        run: |
+          set -euo pipefail
+          git -C .launchpad-src apply --whitespace=nowarn "${GITHUB_WORKSPACE}/.github/launchpad-patches/v1.2.2-empty-json-hardening.patch"
+
+      - name: Build Launchpad runtime and universal stage1 loaders
         env:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
         run: |
           set -euo pipefail
           cargo build --manifest-path .launchpad-src/Cargo.toml --locked --release -p launchpad-cli -p launchpad-stage1
-          cargo build --manifest-path .launchpad-src/Cargo.toml --locked --release --target aarch64-unknown-linux-gnu -p launchpad-stage1
-          mkdir -p dist/stage1/stage1-x86_64 dist/stage1/stage1-arm64
+          cargo build --manifest-path .launchpad-src/Cargo.toml --locked --release --target aarch64-unknown-linux-gnu -p launchpad-cli -p launchpad-stage1
+          mkdir -p dist/runtime/x86_64 dist/runtime/arm64 dist/stage1/stage1-x86_64 dist/stage1/stage1-arm64
+          cp .launchpad-src/target/release/launchpad dist/runtime/x86_64/launchpad
+          cp .launchpad-src/target/aarch64-unknown-linux-gnu/release/launchpad dist/runtime/arm64/launchpad
           cp .launchpad-src/target/release/launchpad-stage1 dist/stage1/stage1-x86_64/launchpad-stage1
           cp .launchpad-src/target/aarch64-unknown-linux-gnu/release/launchpad-stage1 dist/stage1/stage1-arm64/launchpad-stage1
-
-      - name: Download Launchpad runtime launchers
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist/runtime/x86_64 dist/runtime/arm64
-          gh release download "v${LAUNCHPAD_VERSION}" \
-            -R 2high4schooltoday/Launchpad \
-            -p "launchpad-${LAUNCHPAD_VERSION}-linux-x86_64.tar.gz" \
-            -p "launchpad-${LAUNCHPAD_VERSION}-linux-arm64.tar.gz" \
-            -D dist/runtime
-          tar -xzf "dist/runtime/launchpad-${LAUNCHPAD_VERSION}-linux-x86_64.tar.gz" -C dist/runtime/x86_64
-          tar -xzf "dist/runtime/launchpad-${LAUNCHPAD_VERSION}-linux-arm64.tar.gz" -C dist/runtime/arm64
 
       - name: Validate Launchpad project
         env:
