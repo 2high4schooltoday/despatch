@@ -1,4 +1,4 @@
-<p align="center"><strong>Despatch</strong><br>Launchpad-native webmail and admin for the Postfix + Dovecot stack you already trust.</p>
+<p align="center"><strong>Despatch</strong></p>
 
 <p align="center">
   <a href="https://github.com/2high4schooltoday/despatch/actions/workflows/release.yml"><img src="https://github.com/2high4schooltoday/despatch/actions/workflows/release.yml/badge.svg" alt="Release"></a>
