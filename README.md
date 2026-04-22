@@ -4,7 +4,6 @@
   <a href="https://github.com/2high4schooltoday/despatch/actions/workflows/release.yml"><img src="https://github.com/2high4schooltoday/despatch/actions/workflows/release.yml/badge.svg" alt="Release"></a>
   <a href="https://github.com/2high4schooltoday/despatch/actions/workflows/launchpad-installer.yml"><img src="https://github.com/2high4schooltoday/despatch/actions/workflows/launchpad-installer.yml/badge.svg" alt="Launchpad Installer"></a>
   <a href="https://github.com/2high4schooltoday/despatch/releases"><img src="https://img.shields.io/github/v/release/2high4schooltoday/despatch?display_name=tag" alt="Latest release"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/2high4schooltoday/despatch" alt="License"></a>
 </p>
 
 Despatch is an open source control plane for existing Postfix + Dovecot + Maildir installations.
