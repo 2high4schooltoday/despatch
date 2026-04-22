@@ -654,6 +654,7 @@ service despatchService:
   file is installRoot / "deploy" / "despatch.service".
   present is true.
   enabled is installService.
+  state is when installServiceEnabled: "started" otherwise: "stopped".
   remove override directory is true.
 
 service despatchUpdaterService:
@@ -669,6 +670,7 @@ service despatchUpdaterPath:
   file is installRoot / "deploy" / "despatch-updater.path".
   present is true.
   enabled is installService.
+  state is when installServiceEnabled: "started" otherwise: "stopped".
   remove override directory is true.
 
 service despatchPamResetHelperService:
@@ -684,6 +686,7 @@ service despatchPamResetHelperSocket:
   file is installRoot / "deploy" / "despatch-pam-reset-helper.socket".
   present is pamResetHelperEnabled.
   enabled is pamResetHelperEnabled.
+  state is when pamResetHelperEnabled: "started" otherwise: "stopped".
   remove override directory is true.
 
 service despatchMailsecService:
@@ -692,6 +695,7 @@ service despatchMailsecService:
   file is installRoot / "deploy" / "despatch-mailsec.service".
   present is true.
   enabled is installService.
+  state is when installServiceEnabled: "started" otherwise: "stopped".
   remove override directory is true.
 
 service legacyMailclientService:
@@ -819,18 +823,40 @@ fact detectedConfigState:
   when envPath exists: "present"
   otherwise: "missing".
 
-fact installedMetadata is read config from installMetadataPath as json.
+config installedMetadataConfig:
+  path is installMetadataPath.
+  format is json.
 
-fact metadataListenAddr is value for key "listen_addr" in installedMetadata.
-fact metadataDeployMode is value for key "deploy_mode" in installedMetadata.
-fact metadataBaseDomain is value for key "base_domain" in installedMetadata.
-fact metadataProxyServer is value for key "proxy_server" in installedMetadata.
-fact metadataProxyServerName is value for key "proxy_server_name" in installedMetadata.
-fact metadataProxyTls is value for key "proxy_tls" in installedMetadata.
-fact metadataCapEnabled is value for key "cap_enabled" in installedMetadata.
-fact metadataUfwEnable is value for key "ufw_enable" in installedMetadata.
-fact metadataUfwOpenProxyPorts is value for key "ufw_open_proxy_ports" in installedMetadata.
-fact metadataUfwOpenDirectPort is value for key "ufw_open_direct_port" in installedMetadata.
+fact metadataListenAddr:
+  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "listen_addr" in installedMetadataConfig
+  otherwise: null.
+fact metadataDeployMode:
+  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "deploy_mode" in installedMetadataConfig
+  otherwise: null.
+fact metadataBaseDomain:
+  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "base_domain" in installedMetadataConfig
+  otherwise: null.
+fact metadataProxyServer:
+  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "proxy_server" in installedMetadataConfig
+  otherwise: null.
+fact metadataProxyServerName:
+  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "proxy_server_name" in installedMetadataConfig
+  otherwise: null.
+fact metadataProxyTls:
+  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "proxy_tls" in installedMetadataConfig
+  otherwise: null.
+fact metadataCapEnabled:
+  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "cap_enabled" in installedMetadataConfig
+  otherwise: null.
+fact metadataUfwEnable:
+  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "ufw_enable" in installedMetadataConfig
+  otherwise: null.
+fact metadataUfwOpenProxyPorts:
+  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "ufw_open_proxy_ports" in installedMetadataConfig
+  otherwise: null.
+fact metadataUfwOpenDirectPort:
+  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "ufw_open_direct_port" in installedMetadataConfig
+  otherwise: null.
 
 fact installedListenAddr is (metadataListenAddr or else ":8080") as text.
 fact installedDeployMode is (metadataDeployMode or else "direct") as text.
@@ -1112,13 +1138,6 @@ operation install:
 
   stage "Extract":
     extract archivePath to extractDir.
-    check that extractDir / "despatch" exists.
-    check that extractDir / "despatch-pam-reset-helper" exists.
-    check that extractDir / "despatch-update-worker" exists.
-    check that extractDir / "despatch-mailsec-service" exists.
-    check that extractDir / "web" exists.
-    check that extractDir / "migrations" exists.
-    check that extractDir / "deploy" exists.
 
   stage "Dependencies" when autoInstallDeps:
     refresh package metadata.
@@ -1225,26 +1244,6 @@ operation install:
     remove service unit legacyMailclientMailsecService.
     remove service unit legacyMailclientPamResetHelperService.
     remove service unit legacyMailclientPamResetHelperSocket.
-    when installService:
-      enable service despatchUpdaterPath.
-      start service despatchUpdaterPath.
-      enable service despatchService.
-      start service despatchService.
-      enable service despatchMailsecService.
-      start service despatchMailsecService.
-    when installServiceEnabled and pamResetHelperEnabled:
-      enable service despatchPamResetHelperSocket.
-      start service despatchPamResetHelperSocket.
-    when installServiceEnabled is false:
-      disable service despatchUpdaterPath.
-      ensure service despatchUpdaterPath is stopped.
-      disable service despatchService.
-      ensure service despatchService is stopped.
-      disable service despatchMailsecService.
-      ensure service despatchMailsecService is stopped.
-    when installServiceEnabled is false or pamResetHelperEnabled is false:
-      disable service despatchPamResetHelperSocket.
-      ensure service despatchPamResetHelperSocket is stopped.
 
   stage "Wire Proxy":
     when deployMode is "proxy" and resolvedProxyServer is "nginx":
