@@ -60,7 +60,7 @@ fact detectedProxyServer:
 
 field release is a text:
   label is "Release".
-  help is "Use `latest` for the newest GitHub release or pin a specific tag such as `v1.2.3`.".
+  help is "Use `latest` for the newest GitHub release or pin a specific tag such as `v1.2.4`.".
   default is "latest".
 
 field baseDomain is a text:
@@ -856,7 +856,6 @@ fact localHealthUrl is health url for listen address installedHealthListenAddr.
 fact readinessReport:
   when commandPath exists: service readiness report for "despatch" at localHealthUrl within 45 seconds
   otherwise: { ready: false, state: "not installed" }.
-fact readinessOk is value for key "ready" in readinessReport.
 
 fact detectedProxyState:
   when installedDeployMode is "direct": "direct"
@@ -879,7 +878,6 @@ fact installedListenPort is last item in installedListenAddrSegments.
 fact localHttpDiagnostics:
   when commandPath exists: http diagnostics for { url: localHealthUrl, expected_status: 200, timeout: 5, retries: 2 }
   otherwise: { ok: false, findings: [] }.
-fact localHttpOk is value for key "ok" in localHttpDiagnostics.
 
 fact installedProxyConnectTarget:
   when installedProxyTlsEnabled: "127.0.0.1:443"
@@ -893,49 +891,40 @@ fact installedProxyHealthUrl:
 fact proxyHttpDiagnostics:
   when commandPath exists and installedDeployMode is "proxy": http diagnostics for { url: installedProxyHealthUrl, expected_status: 200, timeout: 5, retries: 2, host_header: installedProxyServerName, connect_target: installedProxyConnectTarget }
   otherwise: { ok: true, findings: [] }.
-fact proxyHttpOk is value for key "ok" in proxyHttpDiagnostics.
 
 fact proxyRoutingDiagnostics:
   when commandPath exists and installedDeployMode is "proxy": proxy routing diagnostics for { hostname: installedProxyServerName, path: "/health/live" }
   otherwise: { ok: true, findings: [] }.
-fact proxyRoutingOk is value for key "ok" in proxyRoutingDiagnostics.
 
 fact tlsEndpointDiagnostics:
   when commandPath exists and installedDeployMode is "proxy" and installedProxyTlsEnabled: tls diagnostics for { hostname: installedProxyServerName, validate_redirect: true }
   otherwise: { ok: true, findings: [] }.
-fact tlsEndpointOk is value for key "ok" in tlsEndpointDiagnostics.
 
 fact proxyConfigDiagnostics:
   when commandPath exists and installedDeployMode is "proxy" and installedProxyServer is "nginx": proxy configuration diagnostics for { kind: "nginx", hostname: installedProxyServerName }
   when commandPath exists and installedDeployMode is "proxy" and installedProxyServer is "apache2": proxy configuration diagnostics for { kind: "apache", hostname: installedProxyServerName }
   otherwise: { ok: true, findings: [] }.
-fact proxyConfigOk is value for key "ok" in proxyConfigDiagnostics.
 
 fact appListenDiagnostics:
   when commandPath exists: listening port diagnostics for { port: installedListenPort, role: "app" }
   otherwise: { ok: false, findings: [] }.
-fact appListenOk is value for key "ok" in appListenDiagnostics.
 
 fact proxyListenDiagnostics:
   when commandPath exists and installedDeployMode is "proxy" and installedProxyTlsEnabled: listening port diagnostics for { port: 443, role: "proxy" }
   when commandPath exists and installedDeployMode is "proxy": listening port diagnostics for { port: 80, role: "proxy" }
   otherwise: { ok: true, findings: [] }.
-fact proxyListenOk is value for key "ok" in proxyListenDiagnostics.
 
 fact proxyHttpsFirewallDiagnostics:
   when commandPath exists and installedUfwEnabledFlag and installedDeployMode is "proxy" and installedUfwOpenProxyPortsFlag: firewall diagnostics for { port: "443", protocol: "tcp", action: "allow" }
   otherwise: { ok: true, findings: [] }.
-fact proxyHttpsFirewallOk is value for key "ok" in proxyHttpsFirewallDiagnostics.
 
 fact proxyHttpFirewallDiagnostics:
   when commandPath exists and installedUfwEnabledFlag and installedDeployMode is "proxy" and installedUfwOpenProxyPortsFlag: firewall diagnostics for { port: "80", protocol: "tcp", action: "allow" }
   otherwise: { ok: true, findings: [] }.
-fact proxyHttpFirewallOk is value for key "ok" in proxyHttpFirewallDiagnostics.
 
 fact directFirewallDiagnostics:
   when commandPath exists and installedUfwEnabledFlag and installedDeployMode is "direct" and installedUfwOpenDirectPortFlag: firewall diagnostics for { port: installedListenPort, protocol: "tcp", action: "allow" }
   otherwise: { ok: true, findings: [] }.
-fact directFirewallOk is value for key "ok" in directFirewallDiagnostics.
 
 fact dnsHostName:
   when installedDeployMode is "proxy": installedProxyServerName
@@ -944,12 +933,10 @@ fact dnsHostName:
 fact dnsDiagnostics:
   when commandPath exists and trimmed dnsHostName != "": dns diagnostics for { hostname: dnsHostName, compare_to_public_ip: true }
   otherwise: { ok: true, findings: [] }.
-fact dnsOk is value for key "ok" in dnsDiagnostics.
 
 fact combinedHealthDiagnostics:
   when commandPath exists: combined diagnostics for [localHttpDiagnostics, proxyHttpDiagnostics, proxyRoutingDiagnostics, tlsEndpointDiagnostics, proxyConfigDiagnostics, appListenDiagnostics, proxyListenDiagnostics, proxyHttpFirewallDiagnostics, proxyHttpsFirewallDiagnostics, directFirewallDiagnostics, dnsDiagnostics]
   otherwise: { ok: false, findings: [] }.
-fact combinedHealthOk is value for key "ok" in combinedHealthDiagnostics.
 
 management:
   kind is application.
@@ -1255,13 +1242,13 @@ operation install:
       wait until service despatchService is ready within 45 seconds.
       wait until service despatchUpdaterPath is ready within 20 seconds.
       wait until service despatchMailsecService is ready within 20 seconds.
-      check that readinessOk is true.
+      check that value for key "ready" in readinessReport is true.
     when installService and resolvedDovecotAuthMode is "pam":
       wait until service despatchPamResetHelperSocket is ready within 20 seconds.
     when installService and capEnabled and capAutoProvision:
       wait until service despatchCapService is ready within 45 seconds.
     when runDiagnose:
-      check that combinedHealthOk is true.
+      check that value for key "ok" in combinedHealthDiagnostics is true.
     add next action "launchpad apps status despatch".
 
   stage "Finish":
@@ -1310,23 +1297,23 @@ operation diagnose:
       check that state of system service "apache2" is "active".
     when installedCapEnabledFlag:
       wait until service despatchCapService is ready within 10 seconds.
-    check that readinessOk is true.
-    check that localHttpOk is true.
-    check that appListenOk is true.
+    check that value for key "ready" in readinessReport is true.
+    check that value for key "ok" in localHttpDiagnostics is true.
+    check that value for key "ok" in appListenDiagnostics is true.
     when installedDeployMode is "proxy":
-      check that proxyHttpOk is true.
-      check that proxyRoutingOk is true.
-      check that proxyConfigOk is true.
-      check that proxyListenOk is true.
+      check that value for key "ok" in proxyHttpDiagnostics is true.
+      check that value for key "ok" in proxyRoutingDiagnostics is true.
+      check that value for key "ok" in proxyConfigDiagnostics is true.
+      check that value for key "ok" in proxyListenDiagnostics is true.
     when installedDeployMode is "proxy" and installedProxyTlsEnabled:
-      check that tlsEndpointOk is true.
+      check that value for key "ok" in tlsEndpointDiagnostics is true.
     when installedUfwEnabledFlag and installedDeployMode is "proxy" and installedUfwOpenProxyPortsFlag:
-      check that proxyHttpFirewallOk is true.
-      check that proxyHttpsFirewallOk is true.
+      check that value for key "ok" in proxyHttpFirewallDiagnostics is true.
+      check that value for key "ok" in proxyHttpsFirewallDiagnostics is true.
     when installedUfwEnabledFlag and installedDeployMode is "direct" and installedUfwOpenDirectPortFlag:
-      check that directFirewallOk is true.
+      check that value for key "ok" in directFirewallDiagnostics is true.
     when trimmed dnsHostName != "":
-      check that dnsOk is true.
+      check that value for key "ok" in dnsDiagnostics is true.
     show panel "Health" with "Local health endpoint: `{{localHealthUrl}}`\nReadiness state: `{{value for key \"state\" in readinessReport}}`.\nCombined diagnostics ok: `{{value for key \"ok\" in combinedHealthDiagnostics}}`.".
     show panel "Next Step" with "If diagnostics fail, check `{{installMetadataPath}}`, reverse-proxy configuration, and systemd service status for the affected unit.".
 
