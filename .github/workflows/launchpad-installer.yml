@@ -336,12 +336,29 @@ jobs:
           path: ${{ env.OUTPUT_DIR }}/*
 
       - name: Attach release assets
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          files: |
-            ${{ steps.build.outputs.universal_installer }}
-            ${{ steps.build.outputs.x86_installer }}
-            ${{ steps.build.outputs.arm_installer }}
-            ${{ steps.build.outputs.manifest_path }}
-            ${{ steps.build.outputs.checksum_path }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+
+          upload_with_retry() {
+            local asset="$1"
+            local attempt
+            for attempt in 1 2 3; do
+              if gh release upload "${RELEASE_TAG}" "${asset}" --repo "${GITHUB_REPOSITORY}" --clobber; then
+                return 0
+              fi
+              if [ "${attempt}" -lt 3 ]; then
+                sleep $((attempt * 5))
+              fi
+            done
+            echo "Failed to upload $(basename "${asset}") after 3 attempts" >&2
+            return 1
+          }
+
+          upload_with_retry "${{ steps.build.outputs.universal_installer }}"
+          upload_with_retry "${{ steps.build.outputs.x86_installer }}"
+          upload_with_retry "${{ steps.build.outputs.arm_installer }}"
+          upload_with_retry "${{ steps.build.outputs.manifest_path }}"
+          upload_with_retry "${{ steps.build.outputs.checksum_path }}"
