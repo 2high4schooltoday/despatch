@@ -1239,14 +1239,14 @@ operation install:
   stage "Verify":
     verify artifacts.
     when installService:
-      check that detectedServiceState is "active".
-      check that detectedUpdaterState is "active".
-      check that detectedMailsecState is "active".
+      wait until service despatchService is ready within 45 seconds.
+      wait until service despatchUpdaterPath is ready within 20 seconds.
+      wait until service despatchMailsecService is ready within 20 seconds.
       check that value for key "ready" in readinessReport is true.
     when installService and resolvedDovecotAuthMode is "pam":
-      check that detectedPamSocketState is "active".
+      wait until service despatchPamResetHelperSocket is ready within 20 seconds.
     when installService and capEnabled and capAutoProvision:
-      check that detectedCapServiceState is "active".
+      wait until service despatchCapService is ready within 45 seconds.
     when runDiagnose:
       check that value for key "ok" in combinedHealthDiagnostics is true.
     add next action "launchpad apps status despatch".
@@ -1288,15 +1288,15 @@ operation diagnose:
   stage "Inspect":
     check that commandPath exists.
     show panel "Deployment" with "Mode: `{{installedDeployMode}}`\nListen: `{{installedListenAddr}}`\nDomain: `{{dnsHostName}}`.".
-    check that detectedServiceState is "active".
-    check that detectedUpdaterState is "active".
-    check that detectedMailsecState is "active".
+    wait until service despatchService is ready within 10 seconds.
+    wait until service despatchUpdaterPath is ready within 10 seconds.
+    wait until service despatchMailsecService is ready within 10 seconds.
     when installedDeployMode is "proxy" and installedProxyServer is "nginx":
       check that state of system service "nginx" is "active".
     when installedDeployMode is "proxy" and installedProxyServer is "apache2":
       check that state of system service "apache2" is "active".
     when installedCapEnabledFlag:
-      check that detectedCapServiceState is "active".
+      wait until service despatchCapService is ready within 10 seconds.
     check that value for key "ready" in readinessReport is true.
     check that value for key "ok" in localHttpDiagnostics is true.
     check that value for key "ok" in appListenDiagnostics is true.
