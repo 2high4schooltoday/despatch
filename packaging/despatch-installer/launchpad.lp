@@ -621,7 +621,7 @@ fact apacheExtraConfig:
 fact directListenAddrSegments is split resolvedListenAddr by ":".
 fact directListenPort is last item in directListenAddrSegments.
 
-fact stagedEnvValues is { "LISTEN_ADDR": resolvedListenAddr, "BASE_DOMAIN": baseDomain, "APP_DB_PATH": "/var/lib/despatch/app.db", "SESSION_COOKIE_NAME": "despatch_session", "MFA_TRUSTED_COOKIE_NAME": "despatch_mfa_trusted", "SESSION_IDLE_MINUTES": "30", "SESSION_ABSOLUTE_HOURS": "24", "SESSION_ENCRYPT_KEY": generatedSessionSecret, "CSRF_COOKIE_NAME": "despatch_csrf", "COOKIE_SECURE_MODE": cookieSecureMode, "COOKIE_SECURE": cookieSecureLegacy, "TRUST_PROXY": trustProxyEnabled, "CORS_ALLOWED_ORIGINS": "", "CAPTCHA_ENABLED": capEnabled, "CAPTCHA_PROVIDER": resolvedCaptchaProvider, "CAPTCHA_SITE_KEY": resolvedCaptchaSiteKey, "CAPTCHA_WIDGET_API_URL": capWidgetApiUrl, "CAPTCHA_VERIFY_URL": capVerifyUrl, "CAPTCHA_SECRET": resolvedCaptchaSecret, "PASSWORD_MIN_LENGTH": "12", "PASSWORD_MAX_LENGTH": "128", "IMAP_HOST": "127.0.0.1", "IMAP_PORT": imapPort, "IMAP_TLS": imapTls, "IMAP_STARTTLS": imapStarttls, "IMAP_INSECURE_SKIP_VERIFY": imapSkipVerify, "MAIL_ALLOW_INSECURE_SKIP_VERIFY_NON_LOOPBACK": false, "SMTP_HOST": "127.0.0.1", "SMTP_PORT": smtpPort, "SMTP_TLS": smtpTls, "SMTP_STARTTLS": smtpStarttls, "SMTP_INSECURE_SKIP_VERIFY": smtpSkipVerify, "DOVECOT_AUTH_DB_DRIVER": resolvedDovecotSqlDriver, "DOVECOT_AUTH_DB_DSN": resolvedDovecotDsnText, "DOVECOT_AUTH_MODE": resolvedDovecotAuthMode, "DOVECOT_AUTH_TABLE": resolvedDovecotAuthTable, "DOVECOT_AUTH_EMAIL_COL": resolvedDovecotAuthEmailCol, "DOVECOT_AUTH_PASS_COL": resolvedDovecotAuthPassCol, "DOVECOT_AUTH_ACTIVE_COL": resolvedDovecotAuthActiveCol, "DOVECOT_AUTH_MAILDIR_COL": resolvedDovecotAuthMaildirCol, "DOVECOT_MAILDIR_BASE": "/var/mail/vhosts", "HTTP_READ_TIMEOUT_SEC": "10", "HTTP_READ_HEADER_TIMEOUT_SEC": "5", "HTTP_WRITE_TIMEOUT_SEC": "30", "HTTP_IDLE_TIMEOUT_SEC": "60", "PASSWORD_RESET_SENDER": "smtp", "PASSWORD_RESET_FROM": passwordResetFromAddr, "PASSWORD_RESET_BASE_URL": passwordResetBaseUrl, "PASSWORD_RESET_SMTP_USER": "", "PASSWORD_RESET_SMTP_PASS": "", "PASSWORD_RESET_TOKEN_TTL_MINUTES": "30", "PASSWORD_RESET_PUBLIC_ENABLED": true, "PASSWORD_RESET_EXTERNAL_SENDER_READY": passwordResetExternalSenderReady, "PASSWORD_RESET_REQUIRE_MAPPED_LOGIN": true, "PAM_RESET_HELPER_ENABLED": pamResetHelperEnabled, "PAM_RESET_HELPER_SOCKET": "/run/despatch/pam-reset-helper.sock", "PAM_RESET_HELPER_TIMEOUT_SEC": "5", "PAM_RESET_ALLOWED_UID": "-1", "PAM_RESET_ALLOWED_GID": "-1", "UPDATE_ENABLED": true, "UPDATE_REPO_OWNER": "2high4schooltoday", "UPDATE_REPO_NAME": "despatch", "UPDATE_CHECK_INTERVAL_MIN": "60", "UPDATE_HTTP_TIMEOUT_SEC": "10", "UPDATE_GITHUB_TOKEN": "", "UPDATE_BACKUP_KEEP": "3", "UPDATE_BASE_DIR": dataRoot / "update", "UPDATE_INSTALL_DIR": installRoot, "UPDATE_SERVICE_NAME": "despatch", "UPDATE_SYSTEMD_UNIT_DIR": "/etc/systemd/system", "UPDATE_REQUIRE_SIGNATURE": true, "UPDATE_SIGNATURE_ASSET": "checksums.txt.sig", "UPDATE_SIGNING_PUBLIC_KEYS": "NgWFCGvluSgGiR4KpQhrNGqK4UVDRcEb76RNBEproBw=", "MAILSEC_ENABLED": true, "MAILSEC_SOCKET": "/run/despatch/mailsec.sock", "MAILSEC_TIMEOUT_MS": "5000", "WEBAUTHN_RP_ID": resolvedWebauthnRpId, "WEBAUTHN_ALLOWED_ORIGINS": passwordResetBaseUrl, "PASSKEY_PASSWORDLESS_ENABLED": true, "PROXY_SERVER": resolvedProxyServer, "PROXY_SERVER_NAME": resolvedProxyServerName, "PROXY_TLS": resolvedProxyTls, "BOOTSTRAP_ADMIN_EMAIL": "", "BOOTSTRAP_ADMIN_PASSWORD": "" }.
+fact stagedEnvValues is { "LISTEN_ADDR": resolvedListenAddr, "BASE_DOMAIN": baseDomain, "INSTALL_DEPLOY_MODE": deployMode, "INSTALL_UFW_ENABLE": ufwEnable, "INSTALL_UFW_OPEN_PROXY_PORTS": ufwOpenProxyPorts, "INSTALL_UFW_OPEN_DIRECT_PORT": ufwOpenDirectPort, "APP_DB_PATH": "/var/lib/despatch/app.db", "SESSION_COOKIE_NAME": "despatch_session", "MFA_TRUSTED_COOKIE_NAME": "despatch_mfa_trusted", "SESSION_IDLE_MINUTES": "30", "SESSION_ABSOLUTE_HOURS": "24", "SESSION_ENCRYPT_KEY": generatedSessionSecret, "CSRF_COOKIE_NAME": "despatch_csrf", "COOKIE_SECURE_MODE": cookieSecureMode, "COOKIE_SECURE": cookieSecureLegacy, "TRUST_PROXY": trustProxyEnabled, "CORS_ALLOWED_ORIGINS": "", "CAPTCHA_ENABLED": capEnabled, "CAPTCHA_PROVIDER": resolvedCaptchaProvider, "CAPTCHA_SITE_KEY": resolvedCaptchaSiteKey, "CAPTCHA_WIDGET_API_URL": capWidgetApiUrl, "CAPTCHA_VERIFY_URL": capVerifyUrl, "CAPTCHA_SECRET": resolvedCaptchaSecret, "PASSWORD_MIN_LENGTH": "12", "PASSWORD_MAX_LENGTH": "128", "IMAP_HOST": "127.0.0.1", "IMAP_PORT": imapPort, "IMAP_TLS": imapTls, "IMAP_STARTTLS": imapStarttls, "IMAP_INSECURE_SKIP_VERIFY": imapSkipVerify, "MAIL_ALLOW_INSECURE_SKIP_VERIFY_NON_LOOPBACK": false, "SMTP_HOST": "127.0.0.1", "SMTP_PORT": smtpPort, "SMTP_TLS": smtpTls, "SMTP_STARTTLS": smtpStarttls, "SMTP_INSECURE_SKIP_VERIFY": smtpSkipVerify, "DOVECOT_AUTH_DB_DRIVER": resolvedDovecotSqlDriver, "DOVECOT_AUTH_DB_DSN": resolvedDovecotDsnText, "DOVECOT_AUTH_MODE": resolvedDovecotAuthMode, "DOVECOT_AUTH_TABLE": resolvedDovecotAuthTable, "DOVECOT_AUTH_EMAIL_COL": resolvedDovecotAuthEmailCol, "DOVECOT_AUTH_PASS_COL": resolvedDovecotAuthPassCol, "DOVECOT_AUTH_ACTIVE_COL": resolvedDovecotAuthActiveCol, "DOVECOT_AUTH_MAILDIR_COL": resolvedDovecotAuthMaildirCol, "DOVECOT_MAILDIR_BASE": "/var/mail/vhosts", "HTTP_READ_TIMEOUT_SEC": "10", "HTTP_READ_HEADER_TIMEOUT_SEC": "5", "HTTP_WRITE_TIMEOUT_SEC": "30", "HTTP_IDLE_TIMEOUT_SEC": "60", "PASSWORD_RESET_SENDER": "smtp", "PASSWORD_RESET_FROM": passwordResetFromAddr, "PASSWORD_RESET_BASE_URL": passwordResetBaseUrl, "PASSWORD_RESET_SMTP_USER": "", "PASSWORD_RESET_SMTP_PASS": "", "PASSWORD_RESET_TOKEN_TTL_MINUTES": "30", "PASSWORD_RESET_PUBLIC_ENABLED": true, "PASSWORD_RESET_EXTERNAL_SENDER_READY": passwordResetExternalSenderReady, "PASSWORD_RESET_REQUIRE_MAPPED_LOGIN": true, "PAM_RESET_HELPER_ENABLED": pamResetHelperEnabled, "PAM_RESET_HELPER_SOCKET": "/run/despatch/pam-reset-helper.sock", "PAM_RESET_HELPER_TIMEOUT_SEC": "5", "PAM_RESET_ALLOWED_UID": "-1", "PAM_RESET_ALLOWED_GID": "-1", "UPDATE_ENABLED": true, "UPDATE_REPO_OWNER": "2high4schooltoday", "UPDATE_REPO_NAME": "despatch", "UPDATE_CHECK_INTERVAL_MIN": "60", "UPDATE_HTTP_TIMEOUT_SEC": "10", "UPDATE_GITHUB_TOKEN": "", "UPDATE_BACKUP_KEEP": "3", "UPDATE_BASE_DIR": dataRoot / "update", "UPDATE_INSTALL_DIR": installRoot, "UPDATE_SERVICE_NAME": "despatch", "UPDATE_SYSTEMD_UNIT_DIR": "/etc/systemd/system", "UPDATE_REQUIRE_SIGNATURE": true, "UPDATE_SIGNATURE_ASSET": "checksums.txt.sig", "UPDATE_SIGNING_PUBLIC_KEYS": "NgWFCGvluSgGiR4KpQhrNGqK4UVDRcEb76RNBEproBw=", "MAILSEC_ENABLED": true, "MAILSEC_SOCKET": "/run/despatch/mailsec.sock", "MAILSEC_TIMEOUT_MS": "5000", "WEBAUTHN_RP_ID": resolvedWebauthnRpId, "WEBAUTHN_ALLOWED_ORIGINS": passwordResetBaseUrl, "PASSKEY_PASSWORDLESS_ENABLED": true, "PROXY_SERVER": resolvedProxyServer, "PROXY_SERVER_NAME": resolvedProxyServerName, "PROXY_TLS": resolvedProxyTls, "BOOTSTRAP_ADMIN_EMAIL": "", "BOOTSTRAP_ADMIN_PASSWORD": "" }.
 
 config runtimeEnv:
   path is envPath.
@@ -823,51 +823,25 @@ fact detectedConfigState:
   when envPath exists: "present"
   otherwise: "missing".
 
-config installedMetadataConfig:
-  path is installMetadataPath.
-  format is json.
+config installedEnvConfig:
+  path is envPath.
+  format is env.
 
-fact metadataListenAddr:
-  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "listen_addr" in installedMetadataConfig
-  otherwise: null.
-fact metadataDeployMode:
-  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "deploy_mode" in installedMetadataConfig
-  otherwise: null.
-fact metadataBaseDomain:
-  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "base_domain" in installedMetadataConfig
-  otherwise: null.
-fact metadataProxyServer:
-  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "proxy_server" in installedMetadataConfig
-  otherwise: null.
-fact metadataProxyServerName:
-  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "proxy_server_name" in installedMetadataConfig
-  otherwise: null.
-fact metadataProxyTls:
-  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "proxy_tls" in installedMetadataConfig
-  otherwise: null.
-fact metadataCapEnabled:
-  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "cap_enabled" in installedMetadataConfig
-  otherwise: null.
-fact metadataUfwEnable:
-  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "ufw_enable" in installedMetadataConfig
-  otherwise: null.
-fact metadataUfwOpenProxyPorts:
-  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "ufw_open_proxy_ports" in installedMetadataConfig
-  otherwise: null.
-fact metadataUfwOpenDirectPort:
-  when installMetadataPath exists and trimmed (read config from installMetadataPath as plainText) != "": value of json key "ufw_open_direct_port" in installedMetadataConfig
-  otherwise: null.
-
-fact installedListenAddr is (metadataListenAddr or else ":8080") as text.
-fact installedDeployMode is (metadataDeployMode or else "direct") as text.
-fact installedBaseDomain is (metadataBaseDomain or else "") as text.
-fact installedProxyServer is (metadataProxyServer or else "not configured") as text.
-fact installedProxyServerName is (metadataProxyServerName or else "") as text.
-fact installedProxyTls is metadataProxyTls or else false.
-fact installedCapEnabled is metadataCapEnabled or else false.
-fact installedUfwEnable is metadataUfwEnable or else false.
-fact installedUfwOpenProxyPorts is metadataUfwOpenProxyPorts or else false.
-fact installedUfwOpenDirectPort is metadataUfwOpenDirectPort or else false.
+fact installedListenAddr is ((value for key "LISTEN_ADDR" in installedEnvConfig) or else ":8080") as text.
+fact installedDeployMode is ((value for key "INSTALL_DEPLOY_MODE" in installedEnvConfig) or else "direct") as text.
+fact installedBaseDomain is ((value for key "BASE_DOMAIN" in installedEnvConfig) or else "") as text.
+fact installedProxyServer is ((value for key "PROXY_SERVER" in installedEnvConfig) or else "not configured") as text.
+fact installedProxyServerName is ((value for key "PROXY_SERVER_NAME" in installedEnvConfig) or else "") as text.
+fact installedProxyTlsText is (((value for key "PROXY_TLS" in installedEnvConfig) or else "false") as text) lowercased.
+fact installedCapEnabledText is (((value for key "CAPTCHA_ENABLED" in installedEnvConfig) or else "false") as text) lowercased.
+fact installedUfwEnableText is (((value for key "INSTALL_UFW_ENABLE" in installedEnvConfig) or else "false") as text) lowercased.
+fact installedUfwOpenProxyPortsText is (((value for key "INSTALL_UFW_OPEN_PROXY_PORTS" in installedEnvConfig) or else "false") as text) lowercased.
+fact installedUfwOpenDirectPortText is (((value for key "INSTALL_UFW_OPEN_DIRECT_PORT" in installedEnvConfig) or else "false") as text) lowercased.
+fact installedProxyTls is installedProxyTlsText is "true".
+fact installedCapEnabled is installedCapEnabledText is "true".
+fact installedUfwEnable is installedUfwEnableText is "true".
+fact installedUfwOpenProxyPorts is installedUfwOpenProxyPortsText is "true".
+fact installedUfwOpenDirectPort is installedUfwOpenDirectPortText is "true".
 fact installedProxyTlsEnabled is installedProxyTls is true.
 fact installedCapEnabledFlag is installedCapEnabled is true.
 fact installedUfwEnabledFlag is installedUfwEnable is true.

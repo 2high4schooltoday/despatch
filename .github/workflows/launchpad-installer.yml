@@ -143,6 +143,10 @@ jobs:
           set -euo pipefail
           "${LAUNCHPAD_BIN}" check "${PROJECT_PATH}"
           "${LAUNCHPAD_BIN}" run "${PROJECT_PATH}" --operation status --dry-run
+          sudo mkdir -p /var/lib/despatch
+          printf 'x' | sudo tee /var/lib/despatch/launchpad-install.json >/dev/null
+          "${LAUNCHPAD_BIN}" run "${PROJECT_PATH}" --operation status --dry-run
+          sudo rm -f /var/lib/despatch/launchpad-install.json
 
       - name: Build provenance-ready installer binaries
         id: build
