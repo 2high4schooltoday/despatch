@@ -140,6 +140,71 @@ func TestAuthCapabilitiesAlwaysReportUsernamelessForCompatibility(t *testing.T) 
 	}
 }
 
+func TestAuthCapabilitiesExposeOriginDiagnosticsOnMismatch(t *testing.T) {
+	router, _ := newV2RouterWithConfigAndStore(t, func(cfg *config.Config) {
+		cfg.PasskeyPasswordlessEnabled = true
+		cfg.MailSecEnabled = true
+		cfg.WebAuthnRPID = "example.com"
+		cfg.WebAuthnAllowedOrigins = []string{"https://mail.example.com"}
+	})
+
+	capsReq := httptest.NewRequest(http.MethodGet, "https://app.example.com/api/v1/public/auth/capabilities", nil)
+	capsRec := httptest.NewRecorder()
+	router.ServeHTTP(capsRec, capsReq)
+	if capsRec.Code != http.StatusOK {
+		t.Fatalf("expected caps 200, got %d body=%s", capsRec.Code, capsRec.Body.String())
+	}
+	var caps map[string]any
+	if err := json.Unmarshal(capsRec.Body.Bytes(), &caps); err != nil {
+		t.Fatalf("decode caps: %v body=%s", err, capsRec.Body.String())
+	}
+	if reason, _ := caps["reason"].(string); reason != "origin_mismatch" {
+		t.Fatalf("expected reason=origin_mismatch, got %q payload=%v", reason, caps)
+	}
+	if requestOrigin, _ := caps["request_origin"].(string); requestOrigin != "https://app.example.com" {
+		t.Fatalf("expected request_origin=https://app.example.com, got %q payload=%v", requestOrigin, caps)
+	}
+	if rpID, _ := caps["rp_id"].(string); rpID != "example.com" {
+		t.Fatalf("expected rp_id=example.com, got %q payload=%v", rpID, caps)
+	}
+	allowed, ok := caps["allowed_origins"].([]any)
+	if !ok || len(allowed) != 1 || allowed[0] != "https://mail.example.com" {
+		t.Fatalf("expected allowed_origins=[https://mail.example.com], payload=%v", caps)
+	}
+}
+
+func TestAuthCapabilitiesHonorForwardedHostWhenTrustProxyEnabled(t *testing.T) {
+	router, _ := newV2RouterWithConfigAndStore(t, func(cfg *config.Config) {
+		cfg.PasskeyPasswordlessEnabled = true
+		cfg.MailSecEnabled = true
+		cfg.TrustProxy = true
+		cfg.WebAuthnRPID = "example.com"
+		cfg.WebAuthnAllowedOrigins = []string{"https://mail.example.com"}
+	})
+
+	capsReq := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/v1/public/auth/capabilities", nil)
+	capsReq.Header.Set("X-Forwarded-Proto", "https")
+	capsReq.Header.Set("X-Forwarded-Host", "mail.example.com")
+	capsRec := httptest.NewRecorder()
+	router.ServeHTTP(capsRec, capsReq)
+	if capsRec.Code != http.StatusOK {
+		t.Fatalf("expected caps 200, got %d body=%s", capsRec.Code, capsRec.Body.String())
+	}
+	var caps map[string]any
+	if err := json.Unmarshal(capsRec.Body.Bytes(), &caps); err != nil {
+		t.Fatalf("decode caps: %v body=%s", err, capsRec.Body.String())
+	}
+	if available, _ := caps["passkey_mfa_available"].(bool); !available {
+		t.Fatalf("expected passkey_mfa_available=true, payload=%v", caps)
+	}
+	if reason, _ := caps["reason"].(string); reason != "" {
+		t.Fatalf("expected empty reason, got %q payload=%v", reason, caps)
+	}
+	if requestOrigin, _ := caps["request_origin"].(string); requestOrigin != "https://mail.example.com" {
+		t.Fatalf("expected request_origin=https://mail.example.com, got %q payload=%v", requestOrigin, caps)
+	}
+}
+
 func TestAdminFeatureFlagPasskeySignInAffectsLoginFlow(t *testing.T) {
 	router, _ := newV2RouterWithConfigAndStore(t, func(cfg *config.Config) {
 		cfg.PasskeyPasswordlessEnabled = true

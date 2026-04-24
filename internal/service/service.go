@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -27,26 +29,38 @@ import (
 )
 
 var (
-	ErrInvalidCredentials         = errors.New("invalid credentials")
-	ErrPendingApproval            = errors.New("pending approval")
-	ErrSuspended                  = errors.New("account suspended")
-	ErrForbidden                  = errors.New("forbidden")
-	ErrMailHealthUnavailable      = errors.New("mail health unavailable")
-	ErrMailHealthActionInProgress = errors.New("mail health action already in progress")
-	ErrPAMVerifierDown            = errors.New("cannot reach Dovecot IMAP for PAM verification")
-	ErrPasswordResetUnavailable   = errors.New("password reset is currently unavailable")
-	ErrPasswordResetDelivery      = errors.New("password_reset_delivery_failed")
-	ErrPasswordResetLoginUnmapped = errors.New("password_reset_login_unmapped")
-	ErrPasswordResetHelperDown    = errors.New("password_reset_helper_unavailable")
-	ErrPasswordResetHelperFailed  = errors.New("password_reset_helper_failed")
-	ErrInvalidRecoveryEmail       = errors.New("invalid recovery email")
-	ErrRecoveryEmailRequired      = errors.New("recovery email is required")
-	ErrRecoveryEmailMatchesLogin  = errors.New("recovery email must differ from login email")
+	ErrInvalidCredentials          = errors.New("invalid credentials")
+	ErrPendingApproval             = errors.New("pending approval")
+	ErrSuspended                   = errors.New("account suspended")
+	ErrForbidden                   = errors.New("forbidden")
+	ErrMailHealthUnavailable       = errors.New("mail health unavailable")
+	ErrMailHealthActionInProgress  = errors.New("mail health action already in progress")
+	ErrPAMVerifierDown             = errors.New("cannot reach Dovecot IMAP for PAM verification")
+	ErrPasswordResetUnavailable    = errors.New("password reset is currently unavailable")
+	ErrPasswordResetDelivery       = errors.New("password_reset_delivery_failed")
+	ErrPasswordResetLoginUnmapped  = errors.New("password_reset_login_unmapped")
+	ErrPasswordResetHelperDown     = errors.New("password_reset_helper_unavailable")
+	ErrPasswordResetHelperFailed   = errors.New("password_reset_helper_failed")
+	ErrInvalidRecoveryEmail        = errors.New("invalid recovery email")
+	ErrRecoveryEmailRequired       = errors.New("recovery email is required")
+	ErrRecoveryEmailMatchesLogin   = errors.New("recovery email must differ from login email")
+	ErrRecoveryEmailMFAUnavailable = errors.New("recovery email verification is currently unavailable")
+	ErrRecoveryEmailMFADelivery    = errors.New("recovery_email_mfa_delivery_failed")
 )
 
 var domainRx = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
 
 const (
+	InstanceModeLocalStack       = "local_stack"
+	InstanceModeExternalAccounts = "external_accounts"
+	InstanceModeHybrid           = "hybrid"
+
+	instanceModeSettingKey            = "instance.mode"
+	instanceLocalMailCapabilityKey    = "instance.cap.local_mail"
+	instanceExternalMailCapabilityKey = "instance.cap.external_mail"
+	instanceServerAdminCapabilityKey  = "instance.cap.server_admin"
+	primaryAdminIdentifierSettingKey  = "primary_admin_identifier"
+
 	passwordResetSenderSettingAddress = "password_reset_sender.address"
 	passwordResetSenderSettingStatus  = "password_reset_sender.status"
 	passwordResetSenderSettingReason  = "password_reset_sender.reason"
@@ -67,15 +81,23 @@ const (
 )
 
 type SetupStatus struct {
-	Required                    bool   `json:"required"`
-	BaseDomain                  string `json:"base_domain"`
-	DefaultAdminEmail           string `json:"default_admin_email"`
-	AuthMode                    string `json:"auth_mode"`
-	PasswordMinLength           int    `json:"password_min_length"`
-	PasswordMaxLength           int    `json:"password_max_length"`
-	PasswordClassMin            int    `json:"password_class_min"`
-	PasskeyPrimarySignInEnabled bool   `json:"passkey_primary_sign_in_enabled"`
-	AutomaticUpdatesEnabled     bool   `json:"automatic_updates_enabled"`
+	Required                    bool     `json:"required"`
+	BaseDomain                  string   `json:"base_domain"`
+	DefaultAdminEmail           string   `json:"default_admin_email"`
+	DefaultAdminIdentifier      string   `json:"default_admin_identifier"`
+	AuthMode                    string   `json:"auth_mode"`
+	InstanceMode                string   `json:"instance_mode"`
+	AvailableInstanceModes      []string `json:"available_instance_modes"`
+	BaseDomainRequired          bool     `json:"base_domain_required"`
+	AdminIdentifierKind         string   `json:"admin_identifier_kind"`
+	AdminIdentifierLabel        string   `json:"admin_identifier_label"`
+	LoginIdentifierLabel        string   `json:"login_identifier_label"`
+	RegistrationAllowed         bool     `json:"registration_allowed"`
+	PasswordMinLength           int      `json:"password_min_length"`
+	PasswordMaxLength           int      `json:"password_max_length"`
+	PasswordClassMin            int      `json:"password_class_min"`
+	PasskeyPrimarySignInEnabled bool     `json:"passkey_primary_sign_in_enabled"`
+	AutomaticUpdatesEnabled     bool     `json:"automatic_updates_enabled"`
 }
 
 type SetupCompleteRequest struct {
@@ -85,7 +107,15 @@ type SetupCompleteRequest struct {
 	AdminMailboxLogin           string
 	AdminPassword               string
 	Region                      string
+	InstanceMode                string
 	PasskeyPrimarySignInEnabled *bool
+}
+
+type AdminCreateUserRequest struct {
+	Email         string
+	RecoveryEmail string
+	MailboxLogin  string
+	Password      string
 }
 
 type PAMCredentialsInvalidError struct {
@@ -126,6 +156,10 @@ type passwordResetSenderTransportProber interface {
 	ProbePasswordReset(ctx context.Context) error
 }
 
+type recoveryEmailCodeSender interface {
+	SendRecoveryEmailCode(ctx context.Context, toEmail, code string) error
+}
+
 type PasswordResetCapabilities struct {
 	AuthMode            string `json:"auth_mode"`
 	SelfServiceEnabled  bool   `json:"self_service_enabled"`
@@ -145,6 +179,82 @@ type passwordResetSenderState struct {
 	Ready   bool
 }
 
+func NormalizeInstanceMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case InstanceModeExternalAccounts:
+		return InstanceModeExternalAccounts
+	case InstanceModeHybrid:
+		return InstanceModeHybrid
+	default:
+		return InstanceModeLocalStack
+	}
+}
+
+func InstanceModeUsesLocalMail(mode string) bool {
+	switch NormalizeInstanceMode(mode) {
+	case InstanceModeLocalStack, InstanceModeHybrid:
+		return true
+	default:
+		return false
+	}
+}
+
+func InstanceModeUsesExternalMail(mode string) bool {
+	switch NormalizeInstanceMode(mode) {
+	case InstanceModeExternalAccounts, InstanceModeHybrid:
+		return true
+	default:
+		return false
+	}
+}
+
+func instanceModeAdminIdentifierKind(mode string) string {
+	if NormalizeInstanceMode(mode) == InstanceModeExternalAccounts {
+		return "username"
+	}
+	return "email"
+}
+
+func instanceModeAdminIdentifierLabel(mode string) string {
+	if NormalizeInstanceMode(mode) == InstanceModeExternalAccounts {
+		return "Admin username"
+	}
+	return "Admin email"
+}
+
+func instanceModeLoginIdentifierLabel(mode string) string {
+	if NormalizeInstanceMode(mode) == InstanceModeExternalAccounts {
+		return "Username"
+	}
+	return "Email"
+}
+
+func defaultAdminIdentifier(mode, domain string) string {
+	if NormalizeInstanceMode(mode) == InstanceModeExternalAccounts {
+		return "admin"
+	}
+	return defaultAdminEmail(domain)
+}
+
+func normalizeExternalAdminIdentifier(raw string) (string, error) {
+	identifier := strings.ToLower(strings.TrimSpace(raw))
+	if identifier == "" {
+		identifier = "admin"
+	}
+	if utf8.RuneCountInString(identifier) < 3 {
+		return "", errors.New("admin username must be at least 3 characters")
+	}
+	if utf8.RuneCountInString(identifier) > 64 {
+		return "", errors.New("admin username must be at most 64 characters")
+	}
+	for _, r := range identifier {
+		if unicode.IsControl(r) || unicode.IsSpace(r) {
+			return "", errors.New("admin username cannot contain spaces")
+		}
+	}
+	return identifier, nil
+}
+
 func New(cfg config.Config, st *store.Store, m mail.Client, p mail.AuthProvisioner, sender notify.Sender) *Service {
 	if sender == nil {
 		sender = notify.LogSender{}
@@ -157,6 +267,13 @@ func New(cfg config.Config, st *store.Store, m mail.Client, p mail.AuthProvision
 		sender:     sender,
 		encryptKey: util.Derive32ByteKey(cfg.SessionEncryptKey),
 	}
+}
+
+func (s *Service) SetNotificationSender(sender notify.Sender) {
+	if sender == nil {
+		sender = notify.LogSender{}
+	}
+	s.sender = sender
 }
 
 func hashUA(ua string) string {
@@ -522,6 +639,105 @@ func (s *Service) ListUsers(ctx context.Context, query models.UserQuery) ([]mode
 	return s.st.ListUsers(ctx, query)
 }
 
+func (s *Service) AdminCreateUser(ctx context.Context, adminID string, req AdminCreateUserRequest) (models.User, error) {
+	baseDomain, err := s.baseDomain(ctx)
+	if err != nil {
+		return models.User{}, err
+	}
+
+	email := strings.ToLower(strings.TrimSpace(req.Email))
+	if email == "" {
+		return models.User{}, errors.New("email is required")
+	}
+	parsed, err := netmail.ParseAddress(email)
+	if err != nil {
+		return models.User{}, errors.New("invalid email")
+	}
+	email = strings.ToLower(strings.TrimSpace(parsed.Address))
+	if !strings.HasSuffix(email, "@"+baseDomain) {
+		return models.User{}, fmt.Errorf("email must use @%s", baseDomain)
+	}
+	if _, err := s.st.GetUserByEmail(ctx, email); err == nil {
+		return models.User{}, store.ErrConflict
+	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return models.User{}, err
+	}
+
+	password := strings.TrimSpace(req.Password)
+	if password == "" {
+		return models.User{}, errors.New("password is required")
+	}
+	recoveryEmail, err := normalizeDistinctRecoveryEmailOptional(email, req.RecoveryEmail)
+	if err != nil {
+		return models.User{}, err
+	}
+
+	acceptedLogin := ""
+	if s.usesPAMAuth() {
+		acceptedLogin, err = s.verifyMailCredentials(ctx, email, password, req.MailboxLogin, "")
+		if err != nil {
+			if isMailConnectivityError(err) {
+				return models.User{}, fmt.Errorf("%w: %v", ErrPAMVerifierDown, err)
+			}
+			return models.User{}, err
+		}
+	} else {
+		if err := s.ValidatePassword(password); err != nil {
+			return models.User{}, err
+		}
+	}
+
+	passwordHash, err := auth.HashPassword(password)
+	if err != nil {
+		return models.User{}, err
+	}
+	if !s.usesPAMAuth() {
+		if err := s.provision.UpsertActiveUser(ctx, email, passwordHash); err != nil {
+			return models.User{}, err
+		}
+	}
+
+	user, err := s.st.CreateUserWithMFARecovery(ctx, email, passwordHash, "user", models.UserActive, MFAPreferenceNone, recoveryEmail)
+	if err != nil {
+		return models.User{}, err
+	}
+	if err := s.st.UpdateUserStatus(ctx, user.ID, models.UserActive, &adminID); err != nil {
+		return models.User{}, err
+	}
+	if err := s.st.UpdateProvisionState(ctx, user.ID, "ok", nil); err != nil {
+		return models.User{}, err
+	}
+	if login := strings.TrimSpace(acceptedLogin); login != "" {
+		if err := s.st.UpdateUserMailLogin(ctx, user.ID, login); err != nil {
+			return models.User{}, err
+		}
+		user.MailLogin = &login
+	}
+	if mailSecret, encErr := util.EncryptString(s.encryptKey, password); encErr == nil {
+		_ = s.st.UpsertUserMailSecret(ctx, user.ID, mailSecret)
+	} else {
+		log.Printf("admin_create_user_mail_secret_failed user=%s: %v", user.ID, encErr)
+	}
+	if s.usesPAMAuth() {
+		if err := s.EnsureAuthenticatedMailAccount(ctx, user); err != nil {
+			log.Printf("admin_create_user_mail_account_bootstrap_failed user=%s: %v", user.ID, err)
+		}
+	}
+
+	created, err := s.st.GetUserByID(ctx, user.ID)
+	if err != nil {
+		return models.User{}, err
+	}
+	meta, _ := json.Marshal(map[string]string{
+		"user_id":    created.ID,
+		"email":      created.Email,
+		"auth_mode":  strings.ToLower(strings.TrimSpace(s.cfg.DovecotAuthMode)),
+		"mail_login": strings.TrimSpace(acceptedLogin),
+	})
+	s.insertAuditBestEffort(ctx, adminID, "user.create", created.ID, string(meta))
+	return created, nil
+}
+
 func (s *Service) ListAudit(ctx context.Context, query models.AuditQuery) ([]models.AuditEntry, int, error) {
 	items, total, err := s.st.ListAudit(ctx, query)
 	if err != nil {
@@ -825,6 +1041,8 @@ func buildAuditSummary(entry models.AuditEntry) (string, string, string, string)
 		return "user.suspended", fmt.Sprintf("User suspended: %s.", targetLabel), "warning", targetLabel
 	case "user.unsuspend":
 		return "user.unsuspended", fmt.Sprintf("User unsuspended: %s.", targetLabel), "ok", targetLabel
+	case "user.create":
+		return "user.created", fmt.Sprintf("User created: %s.", targetLabel), "ok", targetLabel
 	case "user.reset_password":
 		return "user.password_reset", fmt.Sprintf("Password reset by admin for %s.", targetLabel), "info", targetLabel
 	case "user.retry_provision":
@@ -1051,6 +1269,32 @@ func (s *Service) issuePasswordResetToken(ctx context.Context, u models.User, de
 	return nil
 }
 
+func (s *Service) SendRecoveryEmailMFACode(ctx context.Context, u models.User, code string) (string, error) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return "", ErrInvalidCredentials
+	}
+	if RecoveryEmailNeedsSetup(u.Email, u.RecoveryEmail) {
+		return "", ErrRecoveryEmailRequired
+	}
+	switch s.sender.(type) {
+	case notify.LogSender, *notify.LogSender:
+		return "", ErrRecoveryEmailMFAUnavailable
+	}
+	sender, ok := s.sender.(recoveryEmailCodeSender)
+	if !ok {
+		return "", ErrRecoveryEmailMFAUnavailable
+	}
+	deliveryEmail := strings.ToLower(strings.TrimSpace(*u.RecoveryEmail))
+	if deliveryEmail == "" {
+		return "", ErrInvalidRecoveryEmail
+	}
+	if err := sender.SendRecoveryEmailCode(ctx, deliveryEmail, code); err != nil {
+		return "", fmt.Errorf("%w: %v", ErrRecoveryEmailMFADelivery, err)
+	}
+	return deliveryEmail, nil
+}
+
 func (s *Service) UpdateRecoveryEmail(ctx context.Context, userID, recoveryEmail string) (string, error) {
 	u, err := s.st.GetUserByID(ctx, userID)
 	if err != nil {
@@ -1126,6 +1370,10 @@ func (s *Service) SetMailHealthCoordinator(c MailHealthCoordinator) { s.mailHeal
 func (s *Service) MailHealthCoordinator() MailHealthCoordinator     { return s.mailHealth }
 
 func (s *Service) SetupStatus(ctx context.Context) (SetupStatus, error) {
+	mode, err := s.InstanceMode(ctx)
+	if err != nil {
+		return SetupStatus{}, err
+	}
 	baseDomain, err := s.baseDomain(ctx)
 	if err != nil {
 		return SetupStatus{}, err
@@ -1138,11 +1386,20 @@ func (s *Service) SetupStatus(ctx context.Context) (SetupStatus, error) {
 	if enabled, flagErr := s.PasskeySignInEnabled(ctx); flagErr == nil {
 		passkeyPrimaryEnabled = enabled
 	}
+	defaultIdentifier := defaultAdminIdentifier(mode, baseDomain)
 	return SetupStatus{
 		Required:                    adminCount == 0,
 		BaseDomain:                  baseDomain,
-		DefaultAdminEmail:           defaultAdminEmail(baseDomain),
+		DefaultAdminEmail:           defaultIdentifier,
+		DefaultAdminIdentifier:      defaultIdentifier,
 		AuthMode:                    s.cfg.DovecotAuthMode,
+		InstanceMode:                mode,
+		AvailableInstanceModes:      []string{InstanceModeLocalStack, InstanceModeExternalAccounts, InstanceModeHybrid},
+		BaseDomainRequired:          InstanceModeUsesLocalMail(mode),
+		AdminIdentifierKind:         instanceModeAdminIdentifierKind(mode),
+		AdminIdentifierLabel:        instanceModeAdminIdentifierLabel(mode),
+		LoginIdentifierLabel:        instanceModeLoginIdentifierLabel(mode),
+		RegistrationAllowed:         NormalizeInstanceMode(mode) != InstanceModeExternalAccounts,
 		PasswordMinLength:           s.cfg.PasswordMinLength,
 		PasswordMaxLength:           s.cfg.PasswordMaxLength,
 		PasswordClassMin:            3,
@@ -1159,37 +1416,48 @@ func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, i
 		return "", models.User{}, errors.New("setup already completed")
 	}
 
+	mode := NormalizeInstanceMode(req.InstanceMode)
 	baseDomain := normalizeDomain(req.BaseDomain)
 	if baseDomain == "" {
 		baseDomain = normalizeDomain(s.cfg.BaseDomain)
 	}
-	if !domainRx.MatchString(baseDomain) {
-		return "", models.User{}, errors.New("invalid domain name")
+	if InstanceModeUsesLocalMail(mode) {
+		if !domainRx.MatchString(baseDomain) {
+			return "", models.User{}, errors.New("invalid domain name")
+		}
 	}
 
-	adminEmail := strings.ToLower(strings.TrimSpace(req.AdminEmail))
-	if adminEmail == "" {
-		adminEmail = defaultAdminEmail(baseDomain)
+	adminIdentifier := strings.TrimSpace(req.AdminEmail)
+	if InstanceModeUsesLocalMail(mode) {
+		if adminIdentifier == "" {
+			adminIdentifier = defaultAdminEmail(baseDomain)
+		}
+		parsed, err := netmail.ParseAddress(adminIdentifier)
+		if err != nil {
+			return "", models.User{}, errors.New("invalid admin email")
+		}
+		adminIdentifier = strings.ToLower(strings.TrimSpace(parsed.Address))
+		if !strings.HasSuffix(adminIdentifier, "@"+baseDomain) {
+			return "", models.User{}, fmt.Errorf("admin email must use @%s", baseDomain)
+		}
+	} else {
+		var err error
+		adminIdentifier, err = normalizeExternalAdminIdentifier(adminIdentifier)
+		if err != nil {
+			return "", models.User{}, err
+		}
 	}
-	parsed, err := netmail.ParseAddress(adminEmail)
-	if err != nil {
-		return "", models.User{}, errors.New("invalid admin email")
-	}
-	adminEmail = strings.ToLower(strings.TrimSpace(parsed.Address))
-	if !strings.HasSuffix(adminEmail, "@"+baseDomain) {
-		return "", models.User{}, fmt.Errorf("admin email must use @%s", baseDomain)
-	}
-	recoveryEmail, err := normalizeDistinctRecoveryEmail(adminEmail, req.AdminRecoveryEmail)
+	recoveryEmail, err := normalizeDistinctRecoveryEmail(adminIdentifier, req.AdminRecoveryEmail)
 	if err != nil {
 		return "", models.User{}, err
 	}
 
 	pamAcceptedLogin := ""
-	if s.usesPAMAuth() {
+	if s.usesPAMAuth() && InstanceModeUsesLocalMail(mode) {
 		if strings.TrimSpace(req.AdminPassword) == "" {
 			return "", models.User{}, errors.New("admin password is required")
 		}
-		acceptedLogin, err := s.verifyMailCredentials(ctx, adminEmail, req.AdminPassword, req.AdminMailboxLogin, "")
+		acceptedLogin, err := s.verifyMailCredentials(ctx, adminIdentifier, req.AdminPassword, req.AdminMailboxLogin, "")
 		if err != nil {
 			if isMailConnectivityError(err) {
 				return "", models.User{}, fmt.Errorf("%w: %v", ErrPAMVerifierDown, err)
@@ -1207,10 +1475,10 @@ func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, i
 	if err != nil {
 		return "", models.User{}, err
 	}
-	if err := s.st.EnsureAdmin(ctx, adminEmail, passwordHash); err != nil {
+	if err := s.st.EnsureAdmin(ctx, adminIdentifier, passwordHash); err != nil {
 		return "", models.User{}, err
 	}
-	adminUser, err := s.st.GetUserByEmail(ctx, adminEmail)
+	adminUser, err := s.st.GetUserByEmail(ctx, adminIdentifier)
 	if err != nil {
 		return "", models.User{}, err
 	}
@@ -1224,10 +1492,25 @@ func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, i
 		acceptedCopy := strings.TrimSpace(pamAcceptedLogin)
 		adminUser.MailLogin = &acceptedCopy
 	}
+	if err := s.st.UpsertSetting(ctx, instanceModeSettingKey, mode); err != nil {
+		return "", models.User{}, err
+	}
+	if err := s.st.UpsertSetting(ctx, instanceLocalMailCapabilityKey, boolToFeatureFlagSetting(InstanceModeUsesLocalMail(mode))); err != nil {
+		return "", models.User{}, err
+	}
+	if err := s.st.UpsertSetting(ctx, instanceExternalMailCapabilityKey, boolToFeatureFlagSetting(InstanceModeUsesExternalMail(mode))); err != nil {
+		return "", models.User{}, err
+	}
+	if err := s.st.UpsertSetting(ctx, instanceServerAdminCapabilityKey, boolToFeatureFlagSetting(InstanceModeUsesLocalMail(mode))); err != nil {
+		return "", models.User{}, err
+	}
 	if err := s.st.UpsertSetting(ctx, "base_domain", baseDomain); err != nil {
 		return "", models.User{}, err
 	}
-	if err := s.st.UpsertSetting(ctx, "primary_admin_email", adminEmail); err != nil {
+	if err := s.st.UpsertSetting(ctx, "primary_admin_email", adminIdentifier); err != nil {
+		return "", models.User{}, err
+	}
+	if err := s.st.UpsertSetting(ctx, primaryAdminIdentifierSettingKey, adminIdentifier); err != nil {
 		return "", models.User{}, err
 	}
 	passkeyPrimaryEnabled := s.cfg.PasskeyPasswordlessEnabled
@@ -1269,14 +1552,27 @@ func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, i
 		}
 	}
 
-	if err := s.provision.UpsertActiveUser(ctx, adminEmail, passwordHash); err != nil {
-		msg := err.Error()
-		_ = s.st.UpdateProvisionState(ctx, adminUser.ID, "error", &msg)
-		return "", models.User{}, err
+	if InstanceModeUsesLocalMail(mode) {
+		if err := s.provision.UpsertActiveUser(ctx, adminIdentifier, passwordHash); err != nil {
+			msg := err.Error()
+			_ = s.st.UpdateProvisionState(ctx, adminUser.ID, "error", &msg)
+			return "", models.User{}, err
+		}
 	}
 	_ = s.st.UpdateProvisionState(ctx, adminUser.ID, "ok", nil)
 
-	return s.Login(ctx, adminEmail, req.AdminPassword, ip, userAgent)
+	return s.Login(ctx, adminIdentifier, req.AdminPassword, ip, userAgent)
+}
+
+func (s *Service) InstanceMode(ctx context.Context) (string, error) {
+	raw, ok, err := s.st.GetSetting(ctx, instanceModeSettingKey)
+	if err != nil {
+		return "", err
+	}
+	if ok {
+		return NormalizeInstanceMode(raw), nil
+	}
+	return InstanceModeLocalStack, nil
 }
 
 func (s *Service) baseDomain(ctx context.Context) (string, error) {
@@ -1314,6 +1610,21 @@ func defaultAdminEmail(domain string) string {
 func normalizeDistinctRecoveryEmail(loginEmail, recoveryEmail string) (string, error) {
 	if strings.TrimSpace(recoveryEmail) == "" {
 		return "", ErrRecoveryEmailRequired
+	}
+	addr, err := normalizeRecoveryEmail(recoveryEmail)
+	if err != nil {
+		return "", err
+	}
+	login := strings.ToLower(strings.TrimSpace(loginEmail))
+	if login != "" && strings.EqualFold(addr, login) {
+		return "", ErrRecoveryEmailMatchesLogin
+	}
+	return addr, nil
+}
+
+func normalizeDistinctRecoveryEmailOptional(loginEmail, recoveryEmail string) (string, error) {
+	if strings.TrimSpace(recoveryEmail) == "" {
+		return "", nil
 	}
 	addr, err := normalizeRecoveryEmail(recoveryEmail)
 	if err != nil {

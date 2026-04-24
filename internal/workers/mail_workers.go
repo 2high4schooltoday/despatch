@@ -49,6 +49,8 @@ var (
 	mailSyncFullScanLimit = 200
 )
 
+const settingThreadSyncRepairDonePrefix = "mail.thread.sync_repair_v1."
+
 type accountSyncSchedule struct {
 	nextRunAt time.Time
 	failures  int
@@ -214,12 +216,21 @@ func (w *MailWorkers) syncAccount(ctx context.Context, account models.MailAccoun
 	}
 	touchedThreadIDs := map[string]struct{}{}
 	fullRebuild := false
+	repairNeeded := false
 	for _, snapshot := range snapshots {
 		name := strings.TrimSpace(snapshot.Mailbox.Name)
 		if name == "" {
 			continue
 		}
-		if err := w.syncMailbox(ctx, cli, account, pass, snapshot, touchedThreadIDs, &fullRebuild); err != nil {
+		if err := w.syncMailbox(ctx, cli, account, pass, snapshot, touchedThreadIDs, &fullRebuild, &repairNeeded); err != nil {
+			return syncAccountResult{}, err
+		}
+	}
+
+	forceRepair := false
+	if !fullRebuild {
+		forceRepair, err = w.needsOneTimeThreadSyncRepair(ctx, account.ID)
+		if err != nil {
 			return syncAccountResult{}, err
 		}
 	}
@@ -231,7 +242,19 @@ func (w *MailWorkers) syncAccount(ctx context.Context, account models.MailAccoun
 		if err := w.st.RebuildThreadIndex(ctx, account.ID); err != nil {
 			return syncAccountResult{}, err
 		}
+		if err := w.markOneTimeThreadSyncRepairDone(ctx, account.ID); err != nil {
+			return syncAccountResult{}, err
+		}
 	} else {
+		if forceRepair || repairNeeded {
+			repairedThreadIDs, err := w.st.RepairIndexedThreadHeadersByAccountWithTouchedThreads(ctx, account.ID)
+			if err != nil {
+				return syncAccountResult{}, err
+			}
+			for _, threadID := range repairedThreadIDs {
+				touchedThreadIDs[threadID] = struct{}{}
+			}
+		}
 		threadIDs := make([]string, 0, len(touchedThreadIDs))
 		for threadID := range touchedThreadIDs {
 			threadIDs = append(threadIDs, threadID)
@@ -239,12 +262,36 @@ func (w *MailWorkers) syncAccount(ctx context.Context, account models.MailAccoun
 		if err := w.st.RefreshThreadIndex(ctx, account.ID, threadIDs); err != nil {
 			return syncAccountResult{}, err
 		}
+		if forceRepair {
+			if err := w.markOneTimeThreadSyncRepairDone(ctx, account.ID); err != nil {
+				return syncAccountResult{}, err
+			}
+		}
 	}
 	threadIDs := make([]string, 0, len(touchedThreadIDs))
 	for threadID := range touchedThreadIDs {
 		threadIDs = append(threadIDs, threadID)
 	}
 	return syncAccountResult{touchedThreadIDs: threadIDs, fullRebuild: fullRebuild}, nil
+}
+
+func threadSyncRepairSettingKey(accountID string) string {
+	return settingThreadSyncRepairDonePrefix + strings.TrimSpace(accountID)
+}
+
+func (w *MailWorkers) needsOneTimeThreadSyncRepair(ctx context.Context, accountID string) (bool, error) {
+	value, ok, err := w.st.GetSetting(ctx, threadSyncRepairSettingKey(accountID))
+	if err != nil {
+		return false, err
+	}
+	if ok && strings.EqualFold(strings.TrimSpace(value), "done") {
+		return false, nil
+	}
+	return true, nil
+}
+
+func (w *MailWorkers) markOneTimeThreadSyncRepairDone(ctx context.Context, accountID string) error {
+	return w.st.UpsertSetting(ctx, threadSyncRepairSettingKey(accountID), "done")
 }
 
 func (w *MailWorkers) runAccountSync(ctx context.Context, account models.MailAccount) error {
@@ -286,7 +333,7 @@ func (w *MailWorkers) reindexAccount(ctx context.Context, account models.MailAcc
 		if name == "" {
 			continue
 		}
-		if err := w.syncMailbox(ctx, cli, account, pass, snapshot, touchedThreadIDs, &fullRebuild); err != nil {
+		if err := w.syncMailbox(ctx, cli, account, pass, snapshot, touchedThreadIDs, &fullRebuild, nil); err != nil {
 			now := w.now().UTC()
 			_ = w.st.UpdateMailAccountSyncStatus(ctx, account.ID, now, err.Error())
 			w.recordAccountSyncFailure(account.ID, now)
@@ -371,7 +418,7 @@ func (w *MailWorkers) writeQuotaCache(ctx context.Context, accountID string, cac
 	return nil
 }
 
-func (w *MailWorkers) syncMailbox(ctx context.Context, cli mailSyncClient, account models.MailAccount, pass string, snapshot mail.MailboxSnapshot, touchedThreadIDs map[string]struct{}, fullRebuild *bool) error {
+func (w *MailWorkers) syncMailbox(ctx context.Context, cli mailSyncClient, account models.MailAccount, pass string, snapshot mail.MailboxSnapshot, touchedThreadIDs map[string]struct{}, fullRebuild *bool, repairNeeded *bool) error {
 	name := strings.TrimSpace(snapshot.Mailbox.Name)
 	now := w.now().UTC()
 	state, err := w.st.GetSyncState(ctx, account.ID, name)
@@ -419,8 +466,12 @@ func (w *MailWorkers) syncMailbox(ctx context.Context, cli mailSyncClient, accou
 	} else {
 		uids = uidRange(state.UIDNext, snapshot.UIDNext)
 	}
-	if err := w.syncMailboxUIDs(ctx, cli, account, pass, name, uids, touchedThreadIDs); err != nil {
+	needsRepair, err := w.syncMailboxUIDs(ctx, cli, account, pass, name, uids, touchedThreadIDs)
+	if err != nil {
 		return err
+	}
+	if needsRepair && repairNeeded != nil {
+		*repairNeeded = true
 	}
 	if fullSync {
 		syncState.LastFullSyncAt = now
@@ -430,9 +481,10 @@ func (w *MailWorkers) syncMailbox(ctx context.Context, cli mailSyncClient, accou
 	return err
 }
 
-func (w *MailWorkers) syncMailboxUIDs(ctx context.Context, cli mailSyncClient, account models.MailAccount, pass, mailbox string, uids []uint32, touchedThreadIDs map[string]struct{}) error {
+func (w *MailWorkers) syncMailboxUIDs(ctx context.Context, cli mailSyncClient, account models.MailAccount, pass, mailbox string, uids []uint32, touchedThreadIDs map[string]struct{}) (bool, error) {
 	orderedUIDs := append([]uint32(nil), uids...)
 	sort.Slice(orderedUIDs, func(i, j int) bool { return orderedUIDs[i] < orderedUIDs[j] })
+	needsRepair := false
 	for start := 0; start < len(orderedUIDs); start += maxInt(mailSyncBatchSize, 1) {
 		end := start + maxInt(mailSyncBatchSize, 1)
 		if end > len(orderedUIDs) {
@@ -440,23 +492,28 @@ func (w *MailWorkers) syncMailboxUIDs(ctx context.Context, cli mailSyncClient, a
 		}
 		items, err := cli.FetchSyncMessagesByUIDs(ctx, account.Login, pass, mailbox, orderedUIDs[start:end])
 		if err != nil {
-			return err
+			return false, err
 		}
 		sort.Slice(items, func(i, j int) bool { return items[i].UID < items[j].UID })
 		for _, item := range items {
-			if err := w.upsertSyncMessage(ctx, account, mailbox, item, touchedThreadIDs); err != nil {
+			itemNeedsRepair, err := w.upsertSyncMessage(ctx, account, mailbox, item, touchedThreadIDs)
+			if err != nil {
 				log.Printf("mail_sync account=%s mailbox=%s uid=%d message_upsert_failed error=%v", account.ID, mailbox, item.UID, err)
+				continue
+			}
+			if itemNeedsRepair {
+				needsRepair = true
 			}
 		}
 	}
-	return nil
+	return needsRepair, nil
 }
 
-func (w *MailWorkers) upsertSyncMessage(ctx context.Context, account models.MailAccount, mailbox string, item mail.SyncMessage, touchedThreadIDs map[string]struct{}) error {
+func (w *MailWorkers) upsertSyncMessage(ctx context.Context, account models.MailAccount, mailbox string, item mail.SyncMessage, touchedThreadIDs map[string]struct{}) (bool, error) {
 	now := w.now().UTC()
 	msg, err := mail.ParseRawMessage(item.Raw, mailbox, item.UID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	messageID := mail.EncodeMessageID(mailbox, item.UID)
 	scopedMessageID := mail.NormalizeIndexedMessageID(account.ID, messageID)
@@ -551,13 +608,18 @@ func (w *MailWorkers) upsertSyncMessage(ctx context.Context, account models.Mail
 		InternalDate:        chooseTime(item.InternalDate, msg.Date, now),
 	}
 	if _, err := w.st.UpsertIndexedMessage(ctx, indexed); err != nil {
-		return err
+		return false, err
 	}
 	if err := w.st.ReplaceIndexedAttachments(ctx, account.ID, scopedMessageID, indexedAttachments); err != nil {
-		return err
+		return false, err
 	}
 	touchedThreadIDs[scopedThreadID] = struct{}{}
-	return nil
+	if referenced, err := w.st.HasIndexedMessagesReferencingThreadParent(ctx, account.ID, indexed.MessageIDHeader, scopedThreadID, scopedMessageID); err == nil && referenced {
+		return true, nil
+	} else if err != nil {
+		return false, err
+	}
+	return false, nil
 }
 
 func (w *MailWorkers) resolveIndexedThreadID(ctx context.Context, accountID string, msg mail.Message, subject, from string) string {

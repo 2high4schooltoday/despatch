@@ -137,6 +137,9 @@ func TestMailWorkersSkipUnchangedMailbox(t *testing.T) {
 func TestMailWorkersDeltaSyncRefreshesOnlyTouchedThreads(t *testing.T) {
 	ctx := context.Background()
 	st, sqdb, account := newMailWorkerTestEnv(t)
+	if err := st.UpsertSetting(ctx, threadSyncRepairSettingKey(account.ID), "done"); err != nil {
+		t.Fatalf("mark thread repair complete: %v", err)
+	}
 	keepThreadID := mail.NormalizeIndexedThreadID(account.ID, deriveThreadID("Keep", "Stable Topic", "keep@example.com"))
 	seedThreadIndexRow(t, sqdb, account.ID, keepThreadID, "Keep", "seed-keep")
 	if _, err := st.UpsertIndexedMessage(ctx, models.IndexedMessage{
@@ -353,6 +356,272 @@ func TestMailWorkersFullSyncRepairsCrossMailboxReplyChains(t *testing.T) {
 	}
 	if total != 1 || len(threads) != 1 || threads[0].MessageCount != 2 {
 		t.Fatalf("expected one repaired cross-mailbox thread, got total=%d threads=%+v", total, threads)
+	}
+}
+
+func TestMailWorkersDeltaSyncRepairsReplyWhenSentParentArrivesLater(t *testing.T) {
+	ctx := context.Background()
+	st, _, account := newMailWorkerTestEnv(t)
+
+	rootThreadID := mail.NormalizeIndexedThreadID(account.ID, mail.DeriveIndexedThreadID("<root@example.com>", "", nil, "Topic", "alice@example.com"))
+	if _, err := st.UpsertIndexedMessage(ctx, models.IndexedMessage{
+		ID:               mail.EncodeMessageID("Archive", 9),
+		AccountID:        account.ID,
+		Mailbox:          "Archive",
+		UID:              9,
+		ThreadID:         rootThreadID,
+		MessageIDHeader:  "root@example.com",
+		FromValue:        "alice@example.com",
+		ToValue:          "user@example.com",
+		Subject:          "Topic",
+		Snippet:          "root",
+		BodyText:         "root body",
+		RawSource:        "Message-ID: <root@example.com>\r\n\r\nroot body",
+		DateHeader:       time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+		InternalDate:     time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+		ReferencesHeader: "",
+	}); err != nil {
+		t.Fatalf("seed root indexed message: %v", err)
+	}
+	if err := st.RefreshThreadIndex(ctx, account.ID, []string{rootThreadID}); err != nil {
+		t.Fatalf("refresh root thread index: %v", err)
+	}
+
+	if _, err := st.UpsertSyncState(ctx, store.SyncState{
+		AccountID:   account.ID,
+		Mailbox:     "INBOX",
+		UIDValidity: 1,
+		UIDNext:     1,
+	}); err != nil {
+		t.Fatalf("seed inbox sync state: %v", err)
+	}
+	if _, err := st.UpsertSyncState(ctx, store.SyncState{
+		AccountID:   account.ID,
+		Mailbox:     "Sent Messages",
+		UIDValidity: 1,
+		UIDNext:     1,
+	}); err != nil {
+		t.Fatalf("seed sent sync state: %v", err)
+	}
+
+	firstSync := &fakeMailSyncClient{
+		snapshots: []mail.MailboxSnapshot{
+			{
+				Mailbox:     mail.Mailbox{Name: "INBOX"},
+				UIDValidity: 1,
+				UIDNext:     2,
+			},
+			{
+				Mailbox:     mail.Mailbox{Name: "Sent Messages", Role: "sent"},
+				UIDValidity: 1,
+				UIDNext:     1,
+			},
+		},
+		messages: map[string]map[uint32]mail.SyncMessage{
+			"INBOX": {
+				1: syncMessageWithMessageID("INBOX", 1, "Re: Topic", "carol@example.com", "Follow-up", "<follow-up@example.com>", "<sent-child@example.com>", nil),
+			},
+		},
+	}
+	worker := newTestMailWorker(st, firstSync, time.Now)
+
+	firstResult, err := worker.syncAccount(ctx, account)
+	if err != nil {
+		t.Fatalf("first syncAccount: %v", err)
+	}
+	if firstResult.fullRebuild {
+		t.Fatalf("expected first sync to stay incremental")
+	}
+
+	child, err := st.GetIndexedMessageByID(ctx, account.ID, mail.EncodeMessageID("INBOX", 1))
+	if err != nil {
+		t.Fatalf("load child after first sync: %v", err)
+	}
+	childThreadBefore := child.ThreadID
+	if childThreadBefore == "" || childThreadBefore == rootThreadID {
+		t.Fatalf("expected initial child thread to dangle from sent parent, got %q", childThreadBefore)
+	}
+
+	secondSync := &fakeMailSyncClient{
+		snapshots: []mail.MailboxSnapshot{
+			{
+				Mailbox:     mail.Mailbox{Name: "INBOX"},
+				UIDValidity: 1,
+				UIDNext:     2,
+			},
+			{
+				Mailbox:     mail.Mailbox{Name: "Sent Messages", Role: "sent"},
+				UIDValidity: 1,
+				UIDNext:     2,
+			},
+		},
+		messages: map[string]map[uint32]mail.SyncMessage{
+			"Sent Messages": {
+				1: syncMessageWithMessageID("Sent Messages", 1, "Re: Topic", "user@example.com", "Sent reply", "<sent-child@example.com>", "<root@example.com>", nil),
+			},
+		},
+	}
+	worker = newTestMailWorker(st, secondSync, time.Now)
+
+	secondResult, err := worker.syncAccount(ctx, account)
+	if err != nil {
+		t.Fatalf("second syncAccount: %v", err)
+	}
+	if secondResult.fullRebuild {
+		t.Fatalf("expected second sync to stay incremental")
+	}
+
+	child, err = st.GetIndexedMessageByID(ctx, account.ID, mail.EncodeMessageID("INBOX", 1))
+	if err != nil {
+		t.Fatalf("reload child after second sync: %v", err)
+	}
+	parent, err := st.GetIndexedMessageByID(ctx, account.ID, mail.EncodeMessageID("Sent Messages", 1))
+	if err != nil {
+		t.Fatalf("load sent parent after second sync: %v", err)
+	}
+	if child.ThreadID == childThreadBefore {
+		t.Fatalf("expected child thread to be repaired after parent arrived, still %q", child.ThreadID)
+	}
+	if child.ThreadID != parent.ThreadID || parent.ThreadID != rootThreadID {
+		t.Fatalf("expected child, parent, and root to share one thread, got child=%q parent=%q root=%q", child.ThreadID, parent.ThreadID, rootThreadID)
+	}
+
+	threads, total, err := st.ListThreads(ctx, account.ID, "", "", 10, 0)
+	if err != nil {
+		t.Fatalf("list threads after second sync: %v", err)
+	}
+	if total != 1 || len(threads) != 1 || threads[0].MessageCount != 3 {
+		t.Fatalf("expected one repaired conversation after delta sync, got total=%d threads=%+v", total, threads)
+	}
+}
+
+func TestMailWorkersIncrementalSyncRepairsHistoricalSplitThreadsOnce(t *testing.T) {
+	ctx := context.Background()
+	st, _, account := newMailWorkerTestEnv(t)
+
+	rootThreadID := mail.NormalizeIndexedThreadID(account.ID, mail.DeriveIndexedThreadID("<root@example.com>", "", nil, "Topic", "alice@example.com"))
+	danglingThreadID := mail.NormalizeIndexedThreadID(account.ID, mail.DeriveIndexedThreadID("<follow-up@example.com>", "<sent-child@example.com>", nil, "Re: Topic", "carol@example.com"))
+
+	seed := []models.IndexedMessage{
+		{
+			ID:              mail.EncodeMessageID("Archive", 9),
+			AccountID:       account.ID,
+			Mailbox:         "Archive",
+			UID:             9,
+			ThreadID:        rootThreadID,
+			MessageIDHeader: "root@example.com",
+			FromValue:       "alice@example.com",
+			ToValue:         "user@example.com",
+			Subject:         "Topic",
+			Snippet:         "root",
+			BodyText:        "root body",
+			RawSource:       "Message-ID: <root@example.com>\r\n\r\nroot body",
+			DateHeader:      time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+			InternalDate:    time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:               mail.EncodeMessageID("Sent Messages", 1),
+			AccountID:        account.ID,
+			Mailbox:          "Sent Messages",
+			UID:              1,
+			ThreadID:         rootThreadID,
+			MessageIDHeader:  "sent-child@example.com",
+			InReplyToHeader:  "root@example.com",
+			FromValue:        "user@example.com",
+			ToValue:          "alice@example.com",
+			Subject:          "Re: Topic",
+			Snippet:          "sent",
+			BodyText:         "sent reply",
+			RawSource:        "Message-ID: <sent-child@example.com>\r\nIn-Reply-To: <root@example.com>\r\n\r\nsent reply",
+			DateHeader:       time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+			InternalDate:     time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+			ReferencesHeader: "",
+		},
+		{
+			ID:              mail.EncodeMessageID("INBOX", 1),
+			AccountID:       account.ID,
+			Mailbox:         "INBOX",
+			UID:             1,
+			ThreadID:        danglingThreadID,
+			MessageIDHeader: "follow-up@example.com",
+			InReplyToHeader: "sent-child@example.com",
+			FromValue:       "carol@example.com",
+			ToValue:         "user@example.com",
+			Subject:         "Re: Topic",
+			Snippet:         "follow up",
+			BodyText:        "follow up",
+			RawSource:       "Message-ID: <follow-up@example.com>\r\nIn-Reply-To: <sent-child@example.com>\r\n\r\nfollow up",
+			DateHeader:      time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
+			InternalDate:    time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC),
+		},
+	}
+	for _, item := range seed {
+		if _, err := st.UpsertIndexedMessage(ctx, item); err != nil {
+			t.Fatalf("seed indexed message %s: %v", item.ID, err)
+		}
+	}
+	if err := st.RefreshThreadIndex(ctx, account.ID, []string{rootThreadID, danglingThreadID}); err != nil {
+		t.Fatalf("seed thread index: %v", err)
+	}
+
+	if _, err := st.UpsertSyncState(ctx, store.SyncState{
+		AccountID:   account.ID,
+		Mailbox:     "INBOX",
+		UIDValidity: 1,
+		UIDNext:     2,
+	}); err != nil {
+		t.Fatalf("seed inbox sync state: %v", err)
+	}
+	if _, err := st.UpsertSyncState(ctx, store.SyncState{
+		AccountID:   account.ID,
+		Mailbox:     "Sent Messages",
+		UIDValidity: 1,
+		UIDNext:     2,
+	}); err != nil {
+		t.Fatalf("seed sent sync state: %v", err)
+	}
+
+	fake := &fakeMailSyncClient{
+		snapshots: []mail.MailboxSnapshot{
+			{
+				Mailbox:     mail.Mailbox{Name: "INBOX"},
+				UIDValidity: 1,
+				UIDNext:     2,
+			},
+			{
+				Mailbox:     mail.Mailbox{Name: "Sent Messages", Role: "sent"},
+				UIDValidity: 1,
+				UIDNext:     2,
+			},
+		},
+	}
+	worker := newTestMailWorker(st, fake, time.Now)
+
+	result, err := worker.syncAccount(ctx, account)
+	if err != nil {
+		t.Fatalf("syncAccount: %v", err)
+	}
+	if result.fullRebuild {
+		t.Fatalf("expected incremental sync for historical repair")
+	}
+	if fake.recentUIDCalls != 0 || fake.fetchCalls != 0 {
+		t.Fatalf("expected one-time repair to avoid fetching unchanged mailboxes, got recent=%d fetch=%d", fake.recentUIDCalls, fake.fetchCalls)
+	}
+
+	child, err := st.GetIndexedMessageByID(ctx, account.ID, mail.EncodeMessageID("INBOX", 1))
+	if err != nil {
+		t.Fatalf("reload child after one-time repair: %v", err)
+	}
+	if child.ThreadID != rootThreadID {
+		t.Fatalf("expected historical dangling child to be repaired to root thread, got %q want %q", child.ThreadID, rootThreadID)
+	}
+
+	threads, total, err := st.ListThreads(ctx, account.ID, "", "", 10, 0)
+	if err != nil {
+		t.Fatalf("list threads after one-time repair: %v", err)
+	}
+	if total != 1 || len(threads) != 1 || threads[0].MessageCount != 3 {
+		t.Fatalf("expected one merged historical thread after repair, got total=%d threads=%+v", total, threads)
 	}
 }
 

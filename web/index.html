@@ -86,7 +86,7 @@
               <div class="auth-method-stack">
                 <form id="form-login" class="stack auth-form auth-method-card auth-method-card--password">
                   <h3>Password Sign-In</h3>
-                  <label>Email <input name="email" type="email" required autocomplete="username"></label>
+                  <label><span id="login-identifier-label">Email</span> <input id="login-identifier-input" name="email" type="text" required autocomplete="username"></label>
                   <label>Password <input name="password" type="password" required autocomplete="current-password"></label>
                   <div class="auth-pane-actions">
                     <button class="cmd-btn cmd-btn--primary" type="submit">Access Mail</button>
@@ -137,7 +137,7 @@
                 <form id="form-reset-request" class="stack auth-form auth-group">
                   <h3>Request Token</h3>
                   <p id="reset-capability-note" class="hint">Reset token delivery follows current server reset policy.</p>
-                  <label>Account Or Recovery Email <input id="reset-request-email" name="email" type="email" required autocomplete="email"></label>
+                  <label><span id="reset-request-label">Account Or Recovery Email</span> <input id="reset-request-email" name="email" type="text" required autocomplete="username"></label>
                   <div class="auth-pane-actions">
                     <button class="cmd-btn" type="submit">Request Token</button>
                   </div>
@@ -590,14 +590,14 @@
                 <div class="oobe-hero-mark" aria-hidden="true">DESPATCH</div>
                 <div class="oobe-step-copy">
                   <h2>Welcome to Despatch</h2>
-                  <p>This setup assistant prepares your mail domain, first administrator, sign-in defaults, and update policy in a few focused steps.</p>
+                  <p>This setup assistant prepares your mail source, first administrator, sign-in defaults, and update policy in a few focused steps.</p>
                   <p class="hint">Everything here stays editable later from Admin.</p>
                 </div>
                 <div class="oobe-feature-grid" aria-label="What setup covers">
                   <article class="oobe-feature-card">
                     <span class="oobe-feature-index">01</span>
-                    <h3>Mail address</h3>
-                    <p>Choose the domain, admin address, and recovery email used by the first account.</p>
+                    <h3>Mail source</h3>
+                    <p>Choose whether this instance runs a local mail stack, external accounts, or both.</p>
                   </article>
                   <article class="oobe-feature-card">
                     <span class="oobe-feature-index">02</span>
@@ -614,6 +614,35 @@
 
               <div id="setup-step-1" class="oobe-step hidden">
                 <div class="oobe-stage-mark" aria-hidden="true">01</div>
+                <div class="oobe-step-copy">
+                  <h2>How Despatch will get mail</h2>
+                  <p>Choose the mail model first. Later screens stay focused by only asking what this mode needs.</p>
+                </div>
+                <div class="setup-choice-grid" role="radiogroup" aria-label="Mail source">
+                  <button id="setup-mode-local" class="setup-choice-card" type="button" data-setup-mode="local_stack" aria-pressed="false">
+                    <span class="setup-choice-copy">
+                      <strong>Local server mail</strong>
+                      <span class="hint">Use Despatch as the control plane for a local Postfix and Dovecot stack.</span>
+                    </span>
+                  </button>
+                  <button id="setup-mode-external" class="setup-choice-card" type="button" data-setup-mode="external_accounts" aria-pressed="false">
+                    <span class="setup-choice-copy">
+                      <strong>External mail accounts</strong>
+                      <span class="hint">Sign in to Despatch, then connect Gmail, Libero, and generic IMAP/SMTP accounts.</span>
+                    </span>
+                  </button>
+                  <button id="setup-mode-hybrid" class="setup-choice-card" type="button" data-setup-mode="hybrid" aria-pressed="false">
+                    <span class="setup-choice-copy">
+                      <strong>Both</strong>
+                      <span class="hint">Keep local server controls and connect external accounts in the same workspace.</span>
+                    </span>
+                  </button>
+                </div>
+                <p class="hint">You can expand later, but this first choice keeps the rest of setup calm and short.</p>
+              </div>
+
+              <div id="setup-step-2" class="oobe-step hidden">
+                <div class="oobe-stage-mark" aria-hidden="true">02</div>
                 <div class="oobe-step-copy">
                   <h2>Where Despatch will be set up</h2>
                   <p>Choose the default region profile used for timestamps and region-sensitive defaults in the interface.</p>
@@ -632,8 +661,8 @@
                 <p class="hint">This affects defaults in the web client only. Server timezone stays under host control.</p>
               </div>
 
-              <div id="setup-step-2" class="oobe-step hidden">
-                <div class="oobe-stage-mark" aria-hidden="true">02</div>
+              <div id="setup-step-4" class="oobe-step hidden">
+                <div class="oobe-stage-mark" aria-hidden="true">04</div>
                 <div class="oobe-step-copy">
                   <h2>Choose your look</h2>
                   <p>Select the interface style this browser should use during first run. You can change it later from the top bar.</p>
@@ -691,18 +720,18 @@
                 <p class="hint">This controls Despatch updates only. The host OS remains managed separately.</p>
               </div>
 
-              <div id="setup-step-4" class="oobe-step hidden">
-                <div class="oobe-stage-mark" aria-hidden="true">04</div>
+              <div id="setup-step-5" class="oobe-step hidden">
+                <div class="oobe-stage-mark" aria-hidden="true">05</div>
                 <div class="oobe-step-copy">
                   <h2>Admin account</h2>
-                  <p>Create the first admin address used to sign in, approve accounts, and recover access later if needed.</p>
+                  <p>Create the first admin sign-in used to manage Despatch and recover access later if needed.</p>
                 </div>
                 <div class="oobe-field-stack">
-                  <label>Mail domain
+                  <label id="setup-domain-wrap">Mail domain
                     <input id="setup-domain" name="base_domain" type="text" placeholder="example.com" autocomplete="off">
                   </label>
-                  <label>Admin email
-                    <input id="setup-admin-email" name="admin_email" type="email" autocomplete="email">
+                  <label><span id="setup-admin-identifier-label">Admin email</span>
+                    <input id="setup-admin-email" name="admin_email" type="text" autocomplete="username">
                   </label>
                   <label>Recovery email
                     <input id="setup-admin-recovery-email" name="admin_recovery_email" type="email" autocomplete="email" placeholder="you@example.net">
@@ -711,11 +740,11 @@
                     <input id="setup-admin-mailbox-login" name="admin_mailbox_login" type="text" autocomplete="username" placeholder="e.g. webmaster or system user">
                   </label>
                 </div>
-                <p class="hint">The admin email defaults to <code>webmaster@{domain}</code>. Recovery email must be different from the admin email.</p>
+                <p id="setup-admin-identifier-hint" class="hint">The admin email defaults to <code>webmaster@{domain}</code>. Recovery email must be different from the admin email.</p>
               </div>
 
-              <div id="setup-step-5" class="oobe-step hidden">
-                <div class="oobe-stage-mark" aria-hidden="true">05</div>
+              <div id="setup-step-6" class="oobe-step hidden">
+                <div class="oobe-stage-mark" aria-hidden="true">06</div>
                 <div class="oobe-step-copy">
                   <h2>Sign-in and security</h2>
                   <p>Choose the first admin password and whether passkeys should be allowed for primary sign-in on this server.</p>
@@ -738,29 +767,30 @@
                 </label>
                 <details class="oobe-inline-details">
                   <summary>Data &amp; Privacy</summary>
-                  <p>Despatch stores the admin email, recovery email, sign-in preference, and password hash needed to run the first account. Recovery email is only used for account recovery and password reset.</p>
+                  <p>Despatch stores the admin sign-in, recovery email, sign-in preference, and password hash needed to run the first account. Recovery email is only used for account recovery and password reset.</p>
                 </details>
               </div>
 
-              <div id="setup-step-6" class="oobe-step hidden">
-                <div class="oobe-stage-mark" aria-hidden="true">06</div>
+              <div id="setup-step-7" class="oobe-step hidden">
+                <div class="oobe-stage-mark" aria-hidden="true">07</div>
                 <div class="oobe-step-copy">
                   <h2>Ready to initialize</h2>
                   <p>Review the setup choices below. Initialization will write baseline settings, create the first admin account, and sign you in.</p>
                 </div>
                 <div class="oobe-summary-card setup-summary">
+                  <div><b>Mail Source:</b> <span id="setup-summary-mode">-</span></div>
                   <div><b>Region:</b> <span id="setup-summary-region">-</span></div>
                   <div><b>Theme:</b> <span id="setup-summary-theme">-</span></div>
                   <div><b>Software Updates:</b> <span id="setup-summary-updates">Automatic updates on</span></div>
-                  <div><b>Domain:</b> <span id="setup-summary-domain">-</span></div>
-                  <div><b>Admin:</b> <span id="setup-summary-email">-</span></div>
+                  <div id="setup-summary-domain-row"><b>Domain:</b> <span id="setup-summary-domain">-</span></div>
+                  <div><b id="setup-summary-admin-label">Admin:</b> <span id="setup-summary-email">-</span></div>
                   <div><b>Recovery Email:</b> <span id="setup-summary-recovery-email">-</span></div>
                   <div><b>Passkey Sign-In:</b> <span id="setup-summary-passkey">Enabled</span></div>
                 </div>
                 <p class="hint">Admin MFA setup is mandatory and will begin immediately after initialization.</p>
               </div>
 
-              <div id="setup-step-7" class="oobe-step hidden">
+              <div id="setup-step-8" class="oobe-step hidden">
                 <div class="oobe-stage-mark" aria-hidden="true">DONE</div>
                 <div class="oobe-step-copy">
                   <h2>Finished</h2>
@@ -1375,7 +1405,7 @@
             <section id="admin-section-users" class="panel admin-section hidden">
               <header class="settings-page-head">
                 <h3>Users</h3>
-                <p class="hint">Manage account status, role, and password actions.</p>
+                <p class="hint">Create mail accounts and manage account status, role, and password actions.</p>
               </header>
               <div class="section-tools">
                 <input id="admin-user-q" type="text" placeholder="Search users">
@@ -1408,6 +1438,7 @@
                   <option value="asc">Oldest first</option>
                 </select>
                 <button id="btn-admin-user-apply" class="cmd-btn cmd-btn--dense" type="button">Apply</button>
+                <button id="btn-user-create" class="cmd-btn cmd-btn--primary cmd-btn--dense" type="button">Create user</button>
               </div>
               <div class="bulk-bar">
                 <label class="bulk-check"><input id="admin-user-check-all" type="checkbox"> Select visible</label>
@@ -1528,7 +1559,7 @@
           <div class="compose-meta-row">
             <div class="compose-meta-label">Subject</div>
             <div class="compose-meta-value">
-              <input id="compose-subject-input" name="subject" type="text" required autocomplete="off" placeholder="Subject">
+              <input id="compose-subject-input" name="subject" type="text" autocomplete="off" placeholder="Subject">
             </div>
             <span class="compose-meta-tail"></span>
           </div>

@@ -1011,6 +1011,7 @@ func normalizedRecipients(in []string) []string {
 }
 
 var (
+	htmlNoisePattern      = regexp.MustCompile(`(?is)<(?:style|script|head|svg|noscript)[^>]*>.*?</(?:style|script|head|svg|noscript)>`)
 	htmlTagPattern        = regexp.MustCompile(`(?s)<[^>]+>`)
 	htmlBreakTagPattern   = regexp.MustCompile(`(?i)<\s*br\s*/?\s*>`)
 	htmlCloseBlockPattern = regexp.MustCompile(`(?i)</\s*(p|div|li|h[1-6]|tr|table|blockquote)\s*>`)
@@ -1019,6 +1020,7 @@ var (
 
 func plainTextFromHTML(rawHTML string) string {
 	s := strings.ReplaceAll(rawHTML, "\r\n", "\n")
+	s = htmlNoisePattern.ReplaceAllString(s, " ")
 	s = htmlBreakTagPattern.ReplaceAllString(s, "\n")
 	s = htmlCloseBlockPattern.ReplaceAllString(s, "\n")
 	s = htmlOpenLiPattern.ReplaceAllString(s, "- ")

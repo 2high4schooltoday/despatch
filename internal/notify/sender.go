@@ -40,6 +40,14 @@ func (s LogSender) SendPasswordReset(ctx context.Context, toEmail, token string)
 	return nil
 }
 
+func (s LogSender) SendRecoveryEmailCode(ctx context.Context, toEmail, code string) error {
+	_ = ctx
+	sum := sha256.Sum256([]byte(code))
+	prefix := hex.EncodeToString(sum[:])[:16]
+	log.Printf("recovery email mfa code generated for %s code_hash_prefix=%s", toEmail, prefix)
+	return nil
+}
+
 type SMTPSender struct {
 	host               string
 	port               int
@@ -112,6 +120,14 @@ func (s SMTPSender) SendPasswordReset(ctx context.Context, toEmail, token string
 	return internalmail.SubmitSMTP(ctx, s.submitConfig(), s.from, []string{toEmail}, raw)
 }
 
+func (s SMTPSender) SendRecoveryEmailCode(ctx context.Context, toEmail, code string) error {
+	raw, err := s.buildRecoveryEmailCodeRFC822(toEmail, code)
+	if err != nil {
+		return err
+	}
+	return internalmail.SubmitSMTP(ctx, s.submitConfig(), s.from, []string{toEmail}, raw)
+}
+
 func (s SMTPSender) ProbePasswordReset(ctx context.Context) error {
 	cfg := s.submitConfig()
 	cfg.Timeout = 5 * time.Second
@@ -167,6 +183,29 @@ func (s SMTPSender) buildRFC822(toEmail, token, link string) ([]byte, error) {
 	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
 	fmt.Fprintf(&b, "Message-ID: %s\r\n", generateMessageID(fromAddr.Address))
 	fmt.Fprintf(&b, "Subject: Password Reset Token\r\n")
+	fmt.Fprintf(&b, "MIME-Version: 1.0\r\n")
+	fmt.Fprintf(&b, "Content-Type: text/plain; charset=UTF-8\r\n")
+	fmt.Fprintf(&b, "Content-Transfer-Encoding: 8bit\r\n")
+	fmt.Fprintf(&b, "\r\n%s", body)
+	return []byte(b.String()), nil
+}
+
+func (s SMTPSender) buildRecoveryEmailCodeRFC822(toEmail, code string) ([]byte, error) {
+	fromAddr, err := mail.ParseAddress(strings.TrimSpace(s.from))
+	if err != nil {
+		return nil, err
+	}
+	toAddr, err := mail.ParseAddress(strings.TrimSpace(toEmail))
+	if err != nil {
+		return nil, err
+	}
+	body := "Use this verification code to finish signing in to Despatch:\r\n" + strings.TrimSpace(code) + "\r\n\r\nThis code expires in 10 minutes.\r\n"
+	var b strings.Builder
+	fmt.Fprintf(&b, "From: %s\r\n", encodeAddress(fromAddr))
+	fmt.Fprintf(&b, "To: %s\r\n", encodeAddress(toAddr))
+	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
+	fmt.Fprintf(&b, "Message-ID: %s\r\n", generateMessageID(fromAddr.Address))
+	fmt.Fprintf(&b, "Subject: Sign-In Verification Code\r\n")
 	fmt.Fprintf(&b, "MIME-Version: 1.0\r\n")
 	fmt.Fprintf(&b, "Content-Type: text/plain; charset=UTF-8\r\n")
 	fmt.Fprintf(&b, "Content-Transfer-Encoding: 8bit\r\n")

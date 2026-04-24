@@ -154,6 +154,23 @@ jobs:
             dist/checksums.txt.sig
           generate_release_notes: true
 
+      - name: Apply checked-in release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          NOTES_FILE="docs/releases/${GITHUB_REF_NAME}.md"
+          if [ ! -f "${NOTES_FILE}" ]; then
+            exit 0
+          fi
+          TITLE="$(sed -n '1s/^# //p' "${NOTES_FILE}")"
+          if [ -z "${TITLE}" ]; then
+            TITLE="${GITHUB_REF_NAME}"
+          fi
+          gh release edit "${GITHUB_REF_NAME}" \
+            --title "${TITLE}" \
+            --notes-file "${NOTES_FILE}"
+
   package-installers:
     needs:
       - prepare-release

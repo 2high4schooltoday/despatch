@@ -105,6 +105,15 @@ func TestSetupStatusIncludesPasskeyPrimarySignInEnabledAndAutomaticUpdates(t *te
 	if enabled, ok := payload["automatic_updates_enabled"].(bool); !ok || !enabled {
 		t.Fatalf("expected automatic_updates_enabled=true, payload=%v", payload)
 	}
+	if mode, _ := payload["instance_mode"].(string); mode != service.InstanceModeLocalStack {
+		t.Fatalf("expected instance_mode=%q, payload=%v", service.InstanceModeLocalStack, payload)
+	}
+	if required, ok := payload["base_domain_required"].(bool); !ok || !required {
+		t.Fatalf("expected base_domain_required=true, payload=%v", payload)
+	}
+	if label, _ := payload["admin_identifier_label"].(string); label != "Admin email" {
+		t.Fatalf("expected admin_identifier_label=Admin email, payload=%v", payload)
+	}
 }
 
 func TestSetupCompletePersistsPasskeyPrimarySignInChoice(t *testing.T) {
@@ -236,5 +245,153 @@ func TestSetupCompleteRejectsRecoveryEmailMatchingLogin(t *testing.T) {
 	}
 	if code, _ := payload["code"].(string); code != "recovery_email_matches_login" {
 		t.Fatalf("expected recovery_email_matches_login, got %v", payload)
+	}
+}
+
+func TestSetupStatusReflectsExternalAccountsMode(t *testing.T) {
+	router, st := newSetupRouterWithConfigAndStore(t, nil)
+	if err := st.UpsertSetting(context.Background(), "instance.mode", service.InstanceModeExternalAccounts); err != nil {
+		t.Fatalf("set instance mode: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://localhost/api/v1/setup/status", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
+	}
+	if mode, _ := payload["instance_mode"].(string); mode != service.InstanceModeExternalAccounts {
+		t.Fatalf("expected instance_mode=%q, payload=%v", service.InstanceModeExternalAccounts, payload)
+	}
+	if required, ok := payload["base_domain_required"].(bool); !ok || required {
+		t.Fatalf("expected base_domain_required=false, payload=%v", payload)
+	}
+	if kind, _ := payload["admin_identifier_kind"].(string); kind != "username" {
+		t.Fatalf("expected admin_identifier_kind=username, payload=%v", payload)
+	}
+	if label, _ := payload["login_identifier_label"].(string); label != "Username" {
+		t.Fatalf("expected login_identifier_label=Username, payload=%v", payload)
+	}
+	if allowed, ok := payload["registration_allowed"].(bool); !ok || allowed {
+		t.Fatalf("expected registration_allowed=false, payload=%v", payload)
+	}
+}
+
+func TestSetupCompleteExternalAccountsAllowsAdminUsername(t *testing.T) {
+	router, st := newSetupRouterWithConfigAndStore(t, nil)
+
+	body := []byte(`{
+		"instance_mode":"external_accounts",
+		"admin_email":"opsdesk",
+		"admin_recovery_email":"recovery@example.net",
+		"admin_password":"SecretPass123!",
+		"region":"us-east"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/setup/complete", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected setup complete 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
+	}
+	if identifier, _ := payload["identifier"].(string); identifier != "opsdesk" {
+		t.Fatalf("expected identifier=opsdesk, payload=%v", payload)
+	}
+
+	user, err := st.GetUserByEmail(context.Background(), "opsdesk")
+	if err != nil {
+		t.Fatalf("load admin user: %v", err)
+	}
+	if user.RecoveryEmail == nil || *user.RecoveryEmail != "recovery@example.net" {
+		t.Fatalf("expected recovery email to persist, got %#v", user.RecoveryEmail)
+	}
+
+	rawMode, ok, err := st.GetSetting(context.Background(), "instance.mode")
+	if err != nil {
+		t.Fatalf("load instance mode: %v", err)
+	}
+	if !ok || rawMode != service.InstanceModeExternalAccounts {
+		t.Fatalf("expected instance.mode=%q, got ok=%v raw=%q", service.InstanceModeExternalAccounts, ok, rawMode)
+	}
+	localCap, ok, err := st.GetSetting(context.Background(), "instance.cap.local_mail")
+	if err != nil {
+		t.Fatalf("load local capability: %v", err)
+	}
+	if !ok || localCap != "0" {
+		t.Fatalf("expected local mail capability disabled, got ok=%v raw=%q", ok, localCap)
+	}
+	externalCap, ok, err := st.GetSetting(context.Background(), "instance.cap.external_mail")
+	if err != nil {
+		t.Fatalf("load external capability: %v", err)
+	}
+	if !ok || externalCap != "1" {
+		t.Fatalf("expected external mail capability enabled, got ok=%v raw=%q", ok, externalCap)
+	}
+
+	loginBody := []byte(`{"identifier":"opsdesk","password":"SecretPass123!"}`)
+	loginReq := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/login", bytes.NewReader(loginBody))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRec := httptest.NewRecorder()
+	router.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("expected login 200, got %d body=%s", loginRec.Code, loginRec.Body.String())
+	}
+
+	var loginPayload map[string]any
+	if err := json.Unmarshal(loginRec.Body.Bytes(), &loginPayload); err != nil {
+		t.Fatalf("decode login payload: %v body=%s", err, loginRec.Body.String())
+	}
+	if identifier, _ := loginPayload["identifier"].(string); identifier != "opsdesk" {
+		t.Fatalf("expected login identifier=opsdesk, payload=%v", loginPayload)
+	}
+}
+
+func TestRegisterIsDisabledInExternalAccountsMode(t *testing.T) {
+	router, _ := newSetupRouterWithConfigAndStore(t, nil)
+
+	setupBody := []byte(`{
+		"instance_mode":"external_accounts",
+		"admin_email":"opsdesk",
+		"admin_recovery_email":"recovery@example.net",
+		"admin_password":"SecretPass123!",
+		"region":"us-east"
+	}`)
+	setupReq := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/setup/complete", bytes.NewReader(setupBody))
+	setupReq.Header.Set("Content-Type", "application/json")
+	setupRec := httptest.NewRecorder()
+	router.ServeHTTP(setupRec, setupReq)
+	if setupRec.Code != http.StatusOK {
+		t.Fatalf("expected setup complete 200, got %d body=%s", setupRec.Code, setupRec.Body.String())
+	}
+
+	body := []byte(`{
+		"email":"user@example.com",
+		"recovery_email":"recovery@example.net",
+		"password":"UserPass123!"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected register 403, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
+	}
+	if code, _ := payload["code"].(string); code != "registration_disabled" {
+		t.Fatalf("expected registration_disabled, got %v", payload)
 	}
 }

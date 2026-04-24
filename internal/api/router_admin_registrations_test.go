@@ -18,14 +18,19 @@ import (
 	"despatch/internal/models"
 	"despatch/internal/service"
 	"despatch/internal/store"
+	"despatch/internal/util"
 )
 
 func newAdminRegistrationRouter(t *testing.T) (http.Handler, *store.Store) {
-	router, st, _ := newAdminRegistrationRouterWithDB(t)
+	router, st, _ := newAdminRegistrationRouterWithOptions(t, nil, &sendTestDespatch{}, mail.NoopProvisioner{})
 	return router, st
 }
 
 func newAdminRegistrationRouterWithDB(t *testing.T) (http.Handler, *store.Store, *sql.DB) {
+	return newAdminRegistrationRouterWithOptions(t, nil, &sendTestDespatch{}, mail.NoopProvisioner{})
+}
+
+func newAdminRegistrationRouterWithOptions(t *testing.T, configure func(*config.Config), client mail.Client, provisioner mail.AuthProvisioner) (http.Handler, *store.Store, *sql.DB) {
 	t.Helper()
 
 	sqdb, err := db.OpenSQLite(filepath.Join(t.TempDir(), "app.db"), 1, 1, time.Minute)
@@ -40,6 +45,19 @@ func newAdminRegistrationRouterWithDB(t *testing.T) (http.Handler, *store.Store,
 		filepath.Join("..", "..", "migrations", "004_cleanup_rejected_users_casefold.sql"),
 		filepath.Join("..", "..", "migrations", "005_admin_query_indexes.sql"),
 		filepath.Join("..", "..", "migrations", "006_users_recovery_email.sql"),
+		filepath.Join("..", "..", "migrations", "007_mail_accounts.sql"),
+		filepath.Join("..", "..", "migrations", "008_mail_index.sql"),
+		filepath.Join("..", "..", "migrations", "009_preferences_and_search.sql"),
+		filepath.Join("..", "..", "migrations", "010_drafts_schedule.sql"),
+		filepath.Join("..", "..", "migrations", "011_rules_sieve.sql"),
+		filepath.Join("..", "..", "migrations", "012_mfa_totp_webauthn.sql"),
+		filepath.Join("..", "..", "migrations", "013_crypto_keys.sql"),
+		filepath.Join("..", "..", "migrations", "014_session_management.sql"),
+		filepath.Join("..", "..", "migrations", "015_sync_state.sql"),
+		filepath.Join("..", "..", "migrations", "016_quota_and_health.sql"),
+		filepath.Join("..", "..", "migrations", "017_mfa_onboarding_flags.sql"),
+		filepath.Join("..", "..", "migrations", "018_mfa_usability_trusted_devices.sql"),
+		filepath.Join("..", "..", "migrations", "019_users_mail_secret.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -69,9 +87,36 @@ func newAdminRegistrationRouterWithDB(t *testing.T) (http.Handler, *store.Store,
 		PasswordMaxLength:   128,
 		DovecotAuthMode:     "sql",
 	}
+	if configure != nil {
+		configure(&cfg)
+	}
+	if client == nil {
+		client = &sendTestDespatch{}
+	}
+	if provisioner == nil {
+		provisioner = mail.NoopProvisioner{}
+	}
 
-	svc := service.New(cfg, st, &sendTestDespatch{}, mail.NoopProvisioner{}, nil)
+	svc := service.New(cfg, st, client, provisioner, nil)
 	return NewRouter(cfg, svc), st, sqdb
+}
+
+type captureAdminProvisioner struct {
+	upserts  []string
+	disabled []string
+}
+
+func (c *captureAdminProvisioner) UpsertActiveUser(ctx context.Context, email, passwordHash string) error {
+	_ = ctx
+	_ = passwordHash
+	c.upserts = append(c.upserts, email)
+	return nil
+}
+
+func (c *captureAdminProvisioner) DisableUser(ctx context.Context, email string) error {
+	_ = ctx
+	c.disabled = append(c.disabled, email)
+	return nil
 }
 
 func addPendingRegistration(t *testing.T, st *store.Store, email string) string {
@@ -334,6 +379,207 @@ func TestAdminBulkUserActionSuspendUnsuspend(t *testing.T) {
 	}
 	if afterUnsuspend.Status != models.UserActive {
 		t.Fatalf("expected active status, got %q", afterUnsuspend.Status)
+	}
+}
+
+func TestAdminCreateUserProvisionsActiveAccount(t *testing.T) {
+	provisioner := &captureAdminProvisioner{}
+	router, st, _ := newAdminRegistrationRouterWithOptions(t, nil, &sendTestDespatch{}, provisioner)
+	sess, csrf := loginForSend(t, router)
+
+	rec := doAdminRequest(t, router, http.MethodPost, "/api/v1/admin/users", []byte(`{
+		"email":"new.user@example.com",
+		"recovery_email":"new.user@personal.test",
+		"password":"NewUserPass123!"
+	}`), sess, csrf)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	user, err := st.GetUserByEmail(context.Background(), "new.user@example.com")
+	if err != nil {
+		t.Fatalf("load created user: %v", err)
+	}
+	if user.Status != models.UserActive {
+		t.Fatalf("expected active status, got %q", user.Status)
+	}
+	if user.ProvisionState != "ok" {
+		t.Fatalf("expected provision ok, got %q", user.ProvisionState)
+	}
+	if user.RecoveryEmail == nil || *user.RecoveryEmail != "new.user@personal.test" {
+		t.Fatalf("expected recovery email to persist, got %+v", user.RecoveryEmail)
+	}
+	if len(provisioner.upserts) != 1 || provisioner.upserts[0] != "new.user@example.com" {
+		t.Fatalf("expected provisioner upsert call, got %+v", provisioner.upserts)
+	}
+}
+
+func TestAdminCreateUserInPAMModePersistsAcceptedMailboxLogin(t *testing.T) {
+	router, st, _ := newAdminRegistrationRouterWithOptions(t, func(cfg *config.Config) {
+		cfg.DovecotAuthMode = "pam"
+		cfg.IMAPHost = "127.0.0.1"
+		cfg.IMAPPort = 993
+		cfg.IMAPTLS = true
+		cfg.SMTPHost = "127.0.0.1"
+		cfg.SMTPPort = 25
+		cfg.SMTPTLS = false
+		cfg.SMTPStartTLS = false
+	}, pamLoginTestDespatch{
+		acceptPassword: "SecretPass123!",
+		acceptedUsers: map[string]bool{
+			"admin":   true,
+			"newuser": true,
+		},
+	}, mail.NoopProvisioner{})
+	sess, csrf := loginForSend(t, router)
+
+	rec := doAdminRequest(t, router, http.MethodPost, "/api/v1/admin/users", []byte(`{
+		"email":"newuser@example.com",
+		"password":"SecretPass123!"
+	}`), sess, csrf)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	user, err := st.GetUserByEmail(context.Background(), "newuser@example.com")
+	if err != nil {
+		t.Fatalf("load created pam user: %v", err)
+	}
+	if user.Status != models.UserActive {
+		t.Fatalf("expected active status, got %q", user.Status)
+	}
+	if user.ProvisionState != "ok" {
+		t.Fatalf("expected provision ok, got %q", user.ProvisionState)
+	}
+	if user.MailLogin == nil || *user.MailLogin != "newuser" {
+		t.Fatalf("expected accepted PAM mailbox login, got %+v", user.MailLogin)
+	}
+	accounts, err := st.ListMailAccounts(context.Background(), user.ID)
+	if err != nil {
+		t.Fatalf("list bootstrapped mail accounts: %v", err)
+	}
+	if len(accounts) != 1 || accounts[0].Login != "newuser" {
+		t.Fatalf("expected one bootstrapped account for newuser, got %+v", accounts)
+	}
+}
+
+func TestAdminMailboxCRUDWithStoredUserCredentials(t *testing.T) {
+	client := &mailRouterTestClient{
+		mailboxes: []mail.Mailbox{
+			{Name: "INBOX", Messages: 3, Unread: 1},
+			{Name: "Trash", Role: "trash"},
+		},
+	}
+	router, st, _ := newAdminRegistrationRouterWithOptions(t, nil, client, mail.NoopProvisioner{})
+	sess, csrf := loginForSend(t, router)
+
+	pwHash, err := auth.HashPassword("MailboxPass123!")
+	if err != nil {
+		t.Fatalf("hash managed user password: %v", err)
+	}
+	user, err := st.CreateUser(context.Background(), "managed@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create managed user: %v", err)
+	}
+	secret, err := util.EncryptString(util.Derive32ByteKey("this_is_a_valid_long_session_encrypt_key_123456"), "mailbox-secret")
+	if err != nil {
+		t.Fatalf("encrypt mailbox secret: %v", err)
+	}
+	if err := st.UpsertUserMailSecret(context.Background(), user.ID, secret); err != nil {
+		t.Fatalf("store mailbox secret: %v", err)
+	}
+
+	listRec := doAdminRequest(t, router, http.MethodGet, "/api/v1/admin/users/"+user.ID+"/mailboxes", nil, sess, csrf)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected list 200, got %d body=%s", listRec.Code, listRec.Body.String())
+	}
+	var listPayload struct {
+		Items []mail.Mailbox `json:"items"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &listPayload); err != nil {
+		t.Fatalf("decode list payload: %v body=%s", err, listRec.Body.String())
+	}
+	if len(listPayload.Items) != 2 {
+		t.Fatalf("expected 2 mailboxes, got %d", len(listPayload.Items))
+	}
+
+	createRec := doAdminRequest(t, router, http.MethodPost, "/api/v1/admin/users/"+user.ID+"/mailboxes", []byte(`{"mailbox_name":"Projects"}`), sess, csrf)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected create 201, got %d body=%s", createRec.Code, createRec.Body.String())
+	}
+	if len(client.createdMailboxes) != 1 || client.createdMailboxes[0] != "Projects" {
+		t.Fatalf("expected Projects mailbox creation, got %+v", client.createdMailboxes)
+	}
+	var createPayload struct {
+		MailboxName string         `json:"mailbox_name"`
+		Mailboxes   []mail.Mailbox `json:"mailboxes"`
+	}
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("decode create payload: %v body=%s", err, createRec.Body.String())
+	}
+	if createPayload.MailboxName != "Projects" {
+		t.Fatalf("expected created mailbox Projects, got %q", createPayload.MailboxName)
+	}
+	foundCreated := false
+	for _, item := range createPayload.Mailboxes {
+		if item.Name == "Projects" {
+			foundCreated = true
+			break
+		}
+	}
+	if !foundCreated {
+		t.Fatalf("expected Projects in response mailboxes, got %+v", createPayload.Mailboxes)
+	}
+
+	deleteRec := doAdminRequest(t, router, http.MethodDelete, "/api/v1/admin/users/"+user.ID+"/mailboxes", []byte(`{"mailbox_name":"Projects"}`), sess, csrf)
+	if deleteRec.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d body=%s", deleteRec.Code, deleteRec.Body.String())
+	}
+	if len(client.deletedMailboxes) != 1 || client.deletedMailboxes[0] != "Projects" {
+		t.Fatalf("expected Projects mailbox deletion, got %+v", client.deletedMailboxes)
+	}
+	var deletePayload struct {
+		MailboxName string         `json:"mailbox_name"`
+		Mailboxes   []mail.Mailbox `json:"mailboxes"`
+	}
+	if err := json.Unmarshal(deleteRec.Body.Bytes(), &deletePayload); err != nil {
+		t.Fatalf("decode delete payload: %v body=%s", err, deleteRec.Body.String())
+	}
+	if deletePayload.MailboxName != "Projects" {
+		t.Fatalf("expected deleted mailbox Projects, got %q", deletePayload.MailboxName)
+	}
+	for _, item := range deletePayload.Mailboxes {
+		if item.Name == "Projects" {
+			t.Fatalf("expected Projects to be removed, got %+v", deletePayload.Mailboxes)
+		}
+	}
+}
+
+func TestAdminMailboxListRequiresStoredCredentials(t *testing.T) {
+	router, st, _ := newAdminRegistrationRouterWithOptions(t, nil, &mailRouterTestClient{}, mail.NoopProvisioner{})
+	sess, csrf := loginForSend(t, router)
+
+	pwHash, err := auth.HashPassword("MailboxPass123!")
+	if err != nil {
+		t.Fatalf("hash managed user password: %v", err)
+	}
+	user, err := st.CreateUser(context.Background(), "nocreds@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create managed user without credentials: %v", err)
+	}
+
+	rec := doAdminRequest(t, router, http.MethodGet, "/api/v1/admin/users/"+user.ID+"/mailboxes", nil, sess, csrf)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var apiErr struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &apiErr); err != nil {
+		t.Fatalf("decode api error: %v body=%s", err, rec.Body.String())
+	}
+	if apiErr.Code != "mailbox_credentials_unavailable" {
+		t.Fatalf("expected mailbox_credentials_unavailable, got %q body=%s", apiErr.Code, rec.Body.String())
 	}
 }
 

@@ -210,6 +210,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Use(middleware.AdminOnly)
 					r.Get("/registrations", h.AdminListRegistrations)
 					r.Get("/users", h.AdminListUsers)
+					r.Get("/users/{id}/mailboxes", h.AdminListUserMailboxes)
 					r.Get("/audit-log", h.AdminAuditLog)
 					r.Get("/system/mail-health", h.AdminMailHealth)
 					r.Get("/system/version", h.AdminVersion)
@@ -220,11 +221,14 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 						r.Post("/registrations/{id}/approve", h.AdminApproveRegistration)
 						r.Post("/registrations/{id}/reject", h.AdminRejectRegistration)
 						r.Post("/registrations/bulk/decision", h.AdminBulkRegistrationDecision)
+						r.Post("/users", h.AdminCreateUser)
+						r.Post("/users/{id}/mailboxes", h.AdminCreateUserMailbox)
 						r.Post("/users/{id}/suspend", h.AdminSuspendUser)
 						r.Post("/users/{id}/unsuspend", h.AdminUnsuspendUser)
 						r.Post("/users/bulk/action", h.AdminBulkUserAction)
 						r.Post("/users/{id}/reset-password", h.AdminResetPassword)
 						r.Post("/users/{id}/retry-provision", h.AdminRetryProvisionUser)
+						r.Delete("/users/{id}/mailboxes", h.AdminDeleteUserMailbox)
 						r.With(middleware.RateLimit(h.limiter, "update_check", 20, time.Minute, h.cfg.TrustProxy)).Post("/system/update/check", h.AdminUpdateCheck)
 						r.With(middleware.RateLimit(h.limiter, "update_apply", 10, time.Minute, h.cfg.TrustProxy)).Post("/system/update/apply", h.AdminUpdateApply)
 						r.With(middleware.RateLimit(h.limiter, "update_auto", 20, time.Minute, h.cfg.TrustProxy)).Post("/system/update/automatic", h.AdminUpdateAutomatic)
@@ -251,6 +255,10 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Post("/mfa/webauthn/begin", h.V2MFAWebAuthnBegin)
 				r.Post("/mfa/webauthn/finish", h.V2MFAWebAuthnFinish)
 				r.Post("/mfa/recovery-code/verify", h.V2MFARecoveryCodeVerify)
+				r.With(middleware.RateLimit(h.limiter, "mfa_recovery_email_send_v2", 5, 10*time.Minute, h.cfg.TrustProxy)).Post("/mfa/recovery-email/send", h.V2MFARecoveryEmailSend)
+				r.With(middleware.RateLimit(h.limiter, "mfa_recovery_email_verify_v2", 20, 10*time.Minute, h.cfg.TrustProxy)).Post("/mfa/recovery-email/verify", h.V2MFARecoveryEmailVerify)
+				r.With(middleware.RateLimit(h.limiter, "mfa_device_approval_request_v2", 10, 10*time.Minute, h.cfg.TrustProxy)).Post("/mfa/device-approval/request", h.V2MFADeviceApprovalRequest)
+				r.Post("/mfa/device-approval/cancel", h.V2MFADeviceApprovalCancel)
 				r.Post("/security/mfa/totp/enroll", h.V2MFAEnrollTOTP)
 				r.Post("/security/mfa/totp/confirm", h.V2MFAConfirmTOTP)
 				r.Post("/security/mfa/webauthn/register/begin", h.V2MFAWebAuthnRegisterBegin)
@@ -260,6 +268,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Post("/security/mfa/legacy-dismiss", h.V2MFALegacyDismiss)
 			})
 
+			r.Get("/mfa/device-approval/status", h.V2MFADeviceApprovalStatus)
 			r.Get("/security/mfa/status", h.V2GetMFAStatus)
 			r.Get("/security/mfa/webauthn", h.V2MFAWebAuthnList)
 
@@ -299,6 +308,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Get("/preferences", h.V2GetPreferences)
 				r.Get("/security/sessions", h.V2ListSessions)
 				r.Get("/security/mfa/trusted-devices", h.V2ListTrustedDevices)
+				r.Get("/security/mfa/device-approvals/pending", h.V2ListPendingMFADeviceApprovals)
 				r.Get("/quota", h.V2GetQuota)
 				r.Get("/security/crypto/keyrings", h.V2ListCryptoKeyrings)
 				r.Get("/security/crypto/trust-policies", h.V2ListCryptoTrustPolicies)
@@ -373,6 +383,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Patch("/preferences", h.V2UpdatePreferences)
 					r.Patch("/security/mfa/webauthn/{id}", h.V2MFAWebAuthnRename)
 					r.Delete("/security/mfa/webauthn/{id}", h.V2MFAWebAuthnDelete)
+					r.Post("/security/mfa/device-approvals/{id}/decision", h.V2DecidePendingMFADeviceApproval)
 					r.Post("/security/mfa/trusted-devices/revoke-all", h.V2RevokeAllTrustedDevices)
 					r.Post("/security/mfa/trusted-devices/{id}/revoke", h.V2RevokeTrustedDevice)
 					r.Post("/security/sessions/{id}/revoke", h.V2RevokeSession)
@@ -461,10 +472,12 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		BaseDomain                  string `json:"base_domain"`
 		AdminEmail                  string `json:"admin_email"`
+		AdminIdentifier             string `json:"admin_identifier"`
 		AdminRecoveryEmail          string `json:"admin_recovery_email"`
 		AdminMailboxLogin           string `json:"admin_mailbox_login"`
 		AdminPassword               string `json:"admin_password"`
 		Region                      string `json:"region"`
+		InstanceMode                string `json:"instance_mode"`
 		PasskeyPrimarySignInEnabled *bool  `json:"passkey_primary_sign_in_enabled"`
 		AutomaticUpdatesEnabled     *bool  `json:"automatic_updates_enabled"`
 	}
@@ -474,11 +487,12 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	token, user, err := h.svc.CompleteSetup(r.Context(), service.SetupCompleteRequest{
 		BaseDomain:                  req.BaseDomain,
-		AdminEmail:                  req.AdminEmail,
+		AdminEmail:                  firstNonEmptyString(req.AdminIdentifier, req.AdminEmail),
 		AdminRecoveryEmail:          req.AdminRecoveryEmail,
 		AdminMailboxLogin:           req.AdminMailboxLogin,
 		AdminPassword:               req.AdminPassword,
 		Region:                      req.Region,
+		InstanceMode:                req.InstanceMode,
 		PasskeyPrimarySignInEnabled: req.PasskeyPrimarySignInEnabled,
 	}, r.RemoteAddr, r.UserAgent())
 	if err != nil {
@@ -507,6 +521,8 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 			code = "invalid_domain"
 		case strings.Contains(strings.ToLower(msg), "invalid admin email"):
 			code = "invalid_admin_email"
+		case strings.Contains(strings.ToLower(msg), "admin username"):
+			code = "invalid_admin_identifier"
 		case strings.Contains(strings.ToLower(msg), "must use @"):
 			code = "admin_email_domain_mismatch"
 		case errors.Is(err, service.ErrRecoveryEmailRequired):
@@ -534,12 +550,13 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 			failureClass = "invalid_identity_or_password"
 			msg = "PAM auth mode is enabled. The password or mailbox login identity is invalid."
 		}
-		log.Printf("setup_complete_failed code=%s class=%s status=%d admin_email=%s base_domain=%s request_id=%s pam_attempt_count=%d pam_attempts=%q err=%q",
+		log.Printf("setup_complete_failed code=%s class=%s status=%d admin_identifier=%s base_domain=%s instance_mode=%s request_id=%s pam_attempt_count=%d pam_attempts=%q err=%q",
 			code,
 			failureClass,
 			status,
-			strings.ToLower(strings.TrimSpace(req.AdminEmail)),
+			strings.ToLower(strings.TrimSpace(firstNonEmptyString(req.AdminIdentifier, req.AdminEmail))),
 			strings.ToLower(strings.TrimSpace(req.BaseDomain)),
+			service.NormalizeInstanceMode(req.InstanceMode),
 			middleware.RequestID(r.Context()),
 			pamAttemptCount,
 			pamAttempts,
@@ -574,6 +591,7 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 		"status":     "ok",
 		"user_id":    user.ID,
 		"email":      user.Email,
+		"identifier": user.Email,
 		"role":       user.Role,
 		"csrf_token": csrfToken,
 	}
@@ -584,6 +602,13 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 	if !h.ensureSetupComplete(w, r) {
+		return
+	}
+	if mode, err := h.svc.InstanceMode(r.Context()); err != nil {
+		util.WriteError(w, 500, "internal_error", "cannot resolve instance mode", middleware.RequestID(r.Context()))
+		return
+	} else if service.NormalizeInstanceMode(mode) == service.InstanceModeExternalAccounts {
+		util.WriteError(w, 403, "registration_disabled", "account registration is unavailable in external accounts mode", middleware.RequestID(r.Context()))
 		return
 	}
 	var req registerRequest
@@ -629,8 +654,22 @@ func (h *Handlers) Register(w http.ResponseWriter, r *http.Request) {
 }
 
 type loginRequest struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email      string `json:"email"`
+	Identifier string `json:"identifier"`
+	Password   string `json:"password"`
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func loginRequestIdentifier(req loginRequest) string {
+	return firstNonEmptyString(req.Identifier, req.Email)
 }
 
 func applyAuthStageFields(out map[string]any, stage service.MFAStage) {
@@ -697,7 +736,8 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		writeJSONDecodeError(w, r, err)
 		return
 	}
-	token, user, err := h.svc.Login(r.Context(), req.Email, req.Password, r.RemoteAddr, r.UserAgent())
+	identifier := loginRequestIdentifier(req)
+	token, user, err := h.svc.Login(r.Context(), identifier, req.Password, r.RemoteAddr, r.UserAgent())
 	if err != nil {
 		if errors.Is(err, service.ErrPAMVerifierDown) {
 			msg := "cannot validate PAM credentials because IMAP connectivity failed; check IMAP_HOST/IMAP_PORT/IMAP_TLS/IMAP_STARTTLS"
@@ -706,7 +746,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 				msg = "IMAP TLS verification failed while validating PAM credentials. If using IMAP_HOST=127.0.0.1, set IMAP_INSECURE_SKIP_VERIFY=true or set IMAP_HOST to your mail FQDN."
 			}
 			log.Printf("login_failed code=pam_verifier_unavailable class=verifier_unavailable status=502 email=%s request_id=%s err=%q",
-				strings.ToLower(strings.TrimSpace(req.Email)),
+				strings.ToLower(strings.TrimSpace(identifier)),
 				middleware.RequestID(r.Context()),
 				err.Error(),
 			)
@@ -714,7 +754,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		normalizedEmail := strings.ToLower(strings.TrimSpace(req.Email))
+		normalizedEmail := strings.ToLower(strings.TrimSpace(identifier))
 		ip := middleware.ClientIP(r, h.cfg.TrustProxy)
 		key := ip + "|" + normalizedEmail
 		windowStart := time.Now().UTC().Truncate(15 * time.Minute)
@@ -742,7 +782,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, status, code, err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	normalizedEmail := strings.ToLower(strings.TrimSpace(req.Email))
+	normalizedEmail := strings.ToLower(strings.TrimSpace(identifier))
 	ip := middleware.ClientIP(r, h.cfg.TrustProxy)
 	_ = h.svc.Store().DeleteRateEvents(r.Context(), ip+"|"+normalizedEmail, "login_failed")
 
@@ -756,7 +796,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		h.setAuthCookies(w, r, token, csrfToken)
-		payload := map[string]any{"user_id": user.ID, "email": user.Email, "role": user.Role, "csrf_token": csrfToken}
+		payload := map[string]any{"user_id": user.ID, "email": user.Email, "identifier": user.Email, "role": user.Role, "csrf_token": csrfToken}
 		applyAuthStageFields(payload, stage)
 		payload["mail_secret_required"] = strings.TrimSpace(sess.MailSecret) == ""
 		util.WriteJSON(w, 200, payload)
@@ -1312,7 +1352,7 @@ func (h *Handlers) ComposeIdentities(w http.ResponseWriter, r *http.Request) {
 
 	util.WriteJSON(w, 200, map[string]any{
 		"auth_email":               strings.TrimSpace(service.MailIdentity(u)),
-		"manual_fallback_required": false,
+		"manual_fallback_required": len(items) == 0,
 		"items":                    items,
 	})
 }
@@ -1743,6 +1783,56 @@ func (h *Handlers) AdminListUsers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	util.WriteJSON(w, 200, map[string]any{"items": out, "page": page, "page_size": pageSize, "total": total})
+}
+
+func (h *Handlers) AdminCreateUser(w http.ResponseWriter, r *http.Request) {
+	admin, _ := middleware.User(r.Context())
+	var req struct {
+		Email         string `json:"email"`
+		RecoveryEmail string `json:"recovery_email"`
+		MailboxLogin  string `json:"mailbox_login"`
+		Password      string `json:"password"`
+	}
+	if err := decodeJSON(w, r, &req, jsonLimitAuthControl, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	user, err := h.svc.AdminCreateUser(r.Context(), admin.ID, service.AdminCreateUserRequest{
+		Email:         req.Email,
+		RecoveryEmail: req.RecoveryEmail,
+		MailboxLogin:  req.MailboxLogin,
+		Password:      req.Password,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, store.ErrConflict):
+			util.WriteError(w, http.StatusConflict, "user_exists", "user already exists", middleware.RequestID(r.Context()))
+		case errors.Is(err, service.ErrRecoveryEmailMatchesLogin):
+			util.WriteError(w, http.StatusBadRequest, "recovery_email_matches_login", "recovery_email must differ from email", middleware.RequestID(r.Context()))
+		case errors.Is(err, service.ErrInvalidRecoveryEmail):
+			util.WriteError(w, http.StatusBadRequest, "invalid_recovery_email", "valid recovery_email is required", middleware.RequestID(r.Context()))
+		case errors.Is(err, service.ErrPAMVerifierDown):
+			util.WriteError(w, http.StatusBadGateway, "pam_verifier_unavailable", "cannot validate PAM credentials", middleware.RequestID(r.Context()))
+		default:
+			var pamCredErr *service.PAMCredentialsInvalidError
+			if errors.As(err, &pamCredErr) {
+				util.WriteError(w, http.StatusBadRequest, "pam_credentials_invalid", err.Error(), middleware.RequestID(r.Context()))
+				return
+			}
+			util.WriteError(w, http.StatusBadRequest, "create_user_failed", err.Error(), middleware.RequestID(r.Context()))
+		}
+		return
+	}
+	util.WriteJSON(w, http.StatusCreated, map[string]any{
+		"status": "created",
+		"user": map[string]any{
+			"id":              user.ID,
+			"email":           user.Email,
+			"role":            user.Role,
+			"status":          user.Status,
+			"provision_state": user.ProvisionState,
+		},
+	})
 }
 
 func (h *Handlers) AdminSuspendUser(w http.ResponseWriter, r *http.Request) {

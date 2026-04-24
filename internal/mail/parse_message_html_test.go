@@ -66,6 +66,14 @@ func TestParseMessageHTMLOnlyFallsBackToPlainText(t *testing.T) {
 	}
 }
 
+func TestPlainTextFromHTMLStripsStyleAndScriptContents(t *testing.T) {
+	rawHTML := `<html><head><style>@font-face{font-family:"Söhne";src:url(data:font/woff2;base64,AAAA)}body{font-family:"Söhne"}</style><script>console.log("nope")</script></head><body><p>Your ChatGPT code is 680860</p></body></html>`
+	got := strings.TrimSpace(PlainTextFromHTML(rawHTML))
+	if got != "Your ChatGPT code is 680860" {
+		t.Fatalf("expected style/script content removed from html plaintext, got %q", got)
+	}
+}
+
 func TestParseMessageIncludesInlineCIDAttachmentAndExtractParity(t *testing.T) {
 	raw := []byte(strings.Join([]string{
 		"From: Alice <alice@example.com>",

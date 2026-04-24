@@ -73,3 +73,59 @@ func (s *Store) UpsertSpecialMailboxMapping(ctx context.Context, userID, mailIde
 	}
 	return s.UpsertSetting(ctx, specialMailboxSettingKey(userID, mailIdentity), string(body))
 }
+
+func (s *Store) RenameSpecialMailboxMappings(ctx context.Context, userID, mailIdentity, mailbox, newMailbox string) error {
+	mailbox = strings.TrimSpace(mailbox)
+	newMailbox = strings.TrimSpace(newMailbox)
+	if mailbox == "" || newMailbox == "" || strings.EqualFold(mailbox, newMailbox) {
+		return nil
+	}
+	current, err := s.ListSpecialMailboxMappings(ctx, userID, mailIdentity)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for role, mapped := range current {
+		if strings.EqualFold(strings.TrimSpace(mapped), mailbox) {
+			current[role] = newMailbox
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	body, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	return s.UpsertSetting(ctx, specialMailboxSettingKey(userID, mailIdentity), string(body))
+}
+
+func (s *Store) DeleteSpecialMailboxMappingsByMailbox(ctx context.Context, userID, mailIdentity, mailbox string) error {
+	mailbox = strings.TrimSpace(mailbox)
+	if mailbox == "" {
+		return nil
+	}
+	current, err := s.ListSpecialMailboxMappings(ctx, userID, mailIdentity)
+	if err != nil {
+		return err
+	}
+	changed := false
+	for role, mapped := range current {
+		if strings.EqualFold(strings.TrimSpace(mapped), mailbox) {
+			delete(current, role)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
+	if len(current) == 0 {
+		return s.DeleteSetting(ctx, specialMailboxSettingKey(userID, mailIdentity))
+	}
+	body, err := json.Marshal(current)
+	if err != nil {
+		return err
+	}
+	return s.UpsertSetting(ctx, specialMailboxSettingKey(userID, mailIdentity), string(body))
+}

@@ -74,9 +74,13 @@ func (s *Store) EnsureIndexedThreadHeadersRepaired(ctx context.Context) error {
 	}()
 
 	now := time.Now().UTC()
-	accountIDs, err := repairIndexedThreadHeadersOnConn(ctx, conn, "", now)
+	touchedThreadIDsByAccount, err := repairIndexedThreadHeadersOnConn(ctx, conn, "", now)
 	if err != nil {
 		return err
+	}
+	accountIDs := make([]string, 0, len(touchedThreadIDsByAccount))
+	for accountID := range touchedThreadIDsByAccount {
+		accountIDs = append(accountIDs, accountID)
 	}
 	sort.Strings(accountIDs)
 	for _, accountID := range accountIDs {
@@ -106,29 +110,34 @@ func (s *Store) EnsureIndexedThreadHeadersRepaired(ctx context.Context) error {
 // one account. This is used after full rebuild/reindex paths where mailbox or
 // batch ordering may have temporarily indexed descendants before their parents.
 func (s *Store) RepairIndexedThreadHeadersByAccount(ctx context.Context, accountID string) error {
+	_, err := s.RepairIndexedThreadHeadersByAccountWithTouchedThreads(ctx, accountID)
+	return err
+}
+
+func (s *Store) RepairIndexedThreadHeadersByAccountWithTouchedThreads(ctx context.Context, accountID string) ([]string, error) {
 	accountID = strings.TrimSpace(accountID)
 	if accountID == "" {
-		return nil
+		return nil, nil
 	}
 	if !s.tableExists(ctx, "message_index") {
-		return nil
+		return nil, nil
 	}
 
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer conn.Close()
 
 	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys=OFF`); err != nil {
-		return err
+		return nil, err
 	}
 	defer func() {
 		_, _ = conn.ExecContext(context.Background(), `PRAGMA foreign_keys=ON`)
 	}()
 
 	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return err
+		return nil, err
 	}
 	committed := false
 	defer func() {
@@ -138,23 +147,27 @@ func (s *Store) RepairIndexedThreadHeadersByAccount(ctx context.Context, account
 	}()
 
 	now := time.Now().UTC()
-	accountIDs, err := repairIndexedThreadHeadersOnConn(ctx, conn, accountID, now)
+	touchedThreadIDsByAccount, err := repairIndexedThreadHeadersOnConn(ctx, conn, accountID, now)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	accountIDs := make([]string, 0, len(touchedThreadIDsByAccount))
+	for repairedAccountID := range touchedThreadIDsByAccount {
+		accountIDs = append(accountIDs, repairedAccountID)
 	}
 	for _, repairedAccountID := range accountIDs {
 		if err := rebuildThreadIndexOnConn(ctx, conn, repairedAccountID, now); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return err
+		return nil, err
 	}
 	committed = true
-	return nil
+	return normalizeThreadIDs(accountID, touchedThreadIDsByAccount[accountID]), nil
 }
 
-func repairIndexedThreadHeadersOnConn(ctx context.Context, conn *sql.Conn, accountFilter string, now time.Time) ([]string, error) {
+func repairIndexedThreadHeadersOnConn(ctx context.Context, conn *sql.Conn, accountFilter string, now time.Time) (map[string][]string, error) {
 	query := `SELECT account_id,id,mailbox,uid,thread_id,message_id_header,in_reply_to_header,references_header,subject,from_value,raw_source
 		 FROM message_index`
 	args := make([]any, 0, 1)
@@ -267,6 +280,19 @@ func repairIndexedThreadHeadersOnConn(ctx context.Context, conn *sql.Conn, accou
 	}
 
 	touchedAccounts := map[string]struct{}{}
+	touchedThreadsByAccount := map[string]map[string]struct{}{}
+	addTouchedThread := func(accountID, threadID string) {
+		normalized := mail.NormalizeIndexedThreadID(accountID, threadID)
+		if normalized == "" {
+			return
+		}
+		set := touchedThreadsByAccount[accountID]
+		if set == nil {
+			set = map[string]struct{}{}
+			touchedThreadsByAccount[accountID] = set
+		}
+		set[normalized] = struct{}{}
+	}
 	for _, item := range items {
 		if item.originalThreadID == item.threadID &&
 			item.originalMessageID == item.messageIDHeader &&
@@ -289,13 +315,26 @@ func repairIndexedThreadHeadersOnConn(ctx context.Context, conn *sql.Conn, accou
 			return nil, err
 		}
 		touchedAccounts[item.accountID] = struct{}{}
+		addTouchedThread(item.accountID, item.originalThreadID)
+		addTouchedThread(item.accountID, item.threadID)
 	}
 
 	accountIDs := make([]string, 0, len(touchedAccounts))
 	for accountID := range touchedAccounts {
 		accountIDs = append(accountIDs, accountID)
 	}
-	return accountIDs, nil
+	sort.Strings(accountIDs)
+	out := make(map[string][]string, len(accountIDs))
+	for _, accountID := range accountIDs {
+		set := touchedThreadsByAccount[accountID]
+		threads := make([]string, 0, len(set))
+		for threadID := range set {
+			threads = append(threads, threadID)
+		}
+		sort.Strings(threads)
+		out[accountID] = threads
+	}
+	return out, nil
 }
 
 func shouldReplaceRepairMessageRow(existing, candidate *repairThreadRow) bool {

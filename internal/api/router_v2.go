@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -10,11 +11,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	stdmail "net/mail"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,19 +37,28 @@ import (
 	"despatch/internal/util"
 )
 
+const (
+	mfaRecoveryEmailCodeTTL            = 10 * time.Minute
+	mfaRecoveryEmailCodeDigits         = 8
+	mfaRecoveryEmailCodeResendCooldown = 30 * time.Second
+	mfaRecoveryEmailCodeMaxAttempts    = 6
+	mfaDeviceApprovalTTL               = 10 * time.Minute
+)
+
 func (h *Handlers) V2Login(w http.ResponseWriter, r *http.Request) {
 	if !h.ensureSetupComplete(w, r) {
 		return
 	}
 	var req struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email      string `json:"email"`
+		Identifier string `json:"identifier"`
+		Password   string `json:"password"`
 	}
 	if err := decodeJSON(w, r, &req, jsonLimitAuthControl, false); err != nil {
 		writeJSONDecodeError(w, r, err)
 		return
 	}
-	token, user, err := h.svc.Login(r.Context(), req.Email, req.Password, r.RemoteAddr, r.UserAgent())
+	token, user, err := h.svc.Login(r.Context(), firstNonEmptyString(req.Identifier, req.Email), req.Password, r.RemoteAddr, r.UserAgent())
 	if err != nil {
 		if errors.Is(err, service.ErrPAMVerifierDown) {
 			util.WriteError(w, http.StatusBadGateway, "pam_verifier_unavailable", "cannot validate PAM credentials", middleware.RequestID(r.Context()))
@@ -76,6 +88,7 @@ func (h *Handlers) V2Login(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{
 		"user_id":              user.ID,
 		"email":                user.Email,
+		"identifier":           user.Email,
 		"role":                 user.Role,
 		"csrf_token":           csrfToken,
 		"session_active":       true,
@@ -677,6 +690,430 @@ func (h *Handlers) V2MFARecoveryCodeVerify(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	util.WriteJSON(w, 200, map[string]any{"status": "ok", "verified": true, "auth_stage": "authenticated"})
+}
+
+func (h *Handlers) requirePendingMFAVerification(w http.ResponseWriter, r *http.Request) (models.User, models.Session, bool) {
+	u, _ := middleware.User(r.Context())
+	sess, ok := middleware.Session(r.Context())
+	if !ok {
+		util.WriteError(w, http.StatusUnauthorized, "session_missing", "authentication required", middleware.RequestID(r.Context()))
+		return models.User{}, models.Session{}, false
+	}
+	stage, err := h.svc.ResolveMFAStage(r.Context(), u, &sess)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "internal_error", "cannot resolve mfa stage", middleware.RequestID(r.Context()))
+		return models.User{}, models.Session{}, false
+	}
+	switch stage.AuthStage {
+	case service.AuthStageMFARequired:
+		return u, sess, true
+	case service.AuthStageMFASetupNeeded:
+		util.WriteError(w, http.StatusConflict, "mfa_setup_required", "multi-factor setup must be completed first", middleware.RequestID(r.Context()))
+	default:
+		util.WriteError(w, http.StatusConflict, "already_authenticated", "session is already fully authenticated", middleware.RequestID(r.Context()))
+	}
+	return models.User{}, models.Session{}, false
+}
+
+func (h *Handlers) V2MFARecoveryEmailSend(w http.ResponseWriter, r *http.Request) {
+	u, sess, ok := h.requirePendingMFAVerification(w, r)
+	if !ok {
+		return
+	}
+	now := time.Now().UTC()
+	if state, found, err := h.loadMFARecoveryEmailChallenge(r.Context(), sess.ID); err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "recovery_email_send_failed", "cannot read recovery email challenge state", middleware.RequestID(r.Context()))
+		return
+	} else if found && now.Before(state.ExpiresAt) && !state.SentAt.IsZero() && now.Sub(state.SentAt) < mfaRecoveryEmailCodeResendCooldown {
+		util.WriteError(w, http.StatusTooManyRequests, "recovery_email_code_recently_sent", "a recovery email code was just sent; wait before requesting another", middleware.RequestID(r.Context()))
+		return
+	}
+	code, err := generateNumericCode(mfaRecoveryEmailCodeDigits)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "recovery_email_send_failed", "cannot generate verification code", middleware.RequestID(r.Context()))
+		return
+	}
+	deliveryEmail, err := h.svc.SendRecoveryEmailMFACode(r.Context(), u, code)
+	if err != nil {
+		switch {
+		case errors.Is(err, service.ErrRecoveryEmailRequired), errors.Is(err, service.ErrInvalidRecoveryEmail), errors.Is(err, service.ErrRecoveryEmailMatchesLogin):
+			util.WriteError(w, http.StatusConflict, "recovery_email_unavailable", "a distinct recovery email is required before this fallback can be used", middleware.RequestID(r.Context()))
+		case errors.Is(err, service.ErrRecoveryEmailMFAUnavailable):
+			util.WriteError(w, http.StatusServiceUnavailable, "recovery_email_unavailable", "recovery email verification is currently unavailable", middleware.RequestID(r.Context()))
+		case errors.Is(err, service.ErrRecoveryEmailMFADelivery):
+			util.WriteError(w, http.StatusBadGateway, "recovery_email_send_failed", "failed to send recovery email verification code", middleware.RequestID(r.Context()))
+		default:
+			util.WriteError(w, http.StatusInternalServerError, "recovery_email_send_failed", err.Error(), middleware.RequestID(r.Context()))
+		}
+		return
+	}
+	state := mfaRecoveryEmailChallengeState{
+		SessionID:     sess.ID,
+		UserID:        u.ID,
+		DeliveryEmail: deliveryEmail,
+		CodeHash:      trustedDeviceTokenHash(code),
+		SentAt:        now,
+		ExpiresAt:     now.Add(mfaRecoveryEmailCodeTTL),
+		AttemptCount:  0,
+		MaxAttempts:   mfaRecoveryEmailCodeMaxAttempts,
+	}
+	if err := h.storeMFARecoveryEmailChallenge(r.Context(), sess.ID, state); err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "recovery_email_send_failed", "cannot persist recovery email challenge", middleware.RequestID(r.Context()))
+		return
+	}
+	meta, _ := json.Marshal(map[string]any{
+		"session_id":     sess.ID,
+		"delivery_hint":  maskEmailAddress(deliveryEmail),
+		"expires_at":     state.ExpiresAt,
+		"code_length":    mfaRecoveryEmailCodeDigits,
+		"remember_bound": false,
+	})
+	_ = h.svc.Store().InsertAudit(r.Context(), u.ID, "auth.mfa.recovery_email.send", sess.ID, string(meta))
+	setNoStoreHeaders(w)
+	util.WriteJSON(w, http.StatusOK, map[string]any{
+		"status":        "sent",
+		"delivery_hint": maskEmailAddress(deliveryEmail),
+		"expires_at":    state.ExpiresAt,
+		"code_length":   mfaRecoveryEmailCodeDigits,
+	})
+}
+
+func (h *Handlers) V2MFARecoveryEmailVerify(w http.ResponseWriter, r *http.Request) {
+	u, sess, ok := h.requirePendingMFAVerification(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Code           string `json:"code"`
+		RememberDevice bool   `json:"remember_device"`
+	}
+	if err := decodeJSON(w, r, &req, jsonLimitAuthControl, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	code := strings.TrimSpace(req.Code)
+	if code == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "code is required", middleware.RequestID(r.Context()))
+		return
+	}
+	state, found, err := h.loadMFARecoveryEmailChallenge(r.Context(), sess.ID)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "recovery_email_verify_failed", "cannot read recovery email challenge state", middleware.RequestID(r.Context()))
+		return
+	}
+	if !found || state.UserID != u.ID || state.SessionID != sess.ID {
+		util.WriteError(w, http.StatusConflict, "recovery_email_code_missing", "request a recovery email code before verifying", middleware.RequestID(r.Context()))
+		return
+	}
+	now := time.Now().UTC()
+	if state.MaxAttempts <= 0 {
+		state.MaxAttempts = mfaRecoveryEmailCodeMaxAttempts
+	}
+	if now.After(state.ExpiresAt) {
+		_ = h.deleteMFARecoveryEmailChallenge(r.Context(), sess.ID)
+		util.WriteError(w, http.StatusUnauthorized, "invalid_recovery_email_code", "recovery email code is missing or expired", middleware.RequestID(r.Context()))
+		return
+	}
+	state.AttemptCount++
+	if state.AttemptCount > state.MaxAttempts {
+		_ = h.deleteMFARecoveryEmailChallenge(r.Context(), sess.ID)
+		util.WriteError(w, http.StatusTooManyRequests, "rate_limited", "too many attempts", middleware.RequestID(r.Context()))
+		return
+	}
+	codeHash := trustedDeviceTokenHash(code)
+	if subtleConstantCompare(state.CodeHash, codeHash) != 1 {
+		if state.AttemptCount >= state.MaxAttempts {
+			_ = h.deleteMFARecoveryEmailChallenge(r.Context(), sess.ID)
+			util.WriteError(w, http.StatusTooManyRequests, "rate_limited", "too many attempts", middleware.RequestID(r.Context()))
+			return
+		}
+		if err := h.storeMFARecoveryEmailChallenge(r.Context(), sess.ID, state); err != nil {
+			util.WriteError(w, http.StatusInternalServerError, "recovery_email_verify_failed", "cannot update verification attempt count", middleware.RequestID(r.Context()))
+			return
+		}
+		util.WriteError(w, http.StatusUnauthorized, "invalid_recovery_email_code", "invalid recovery email code", middleware.RequestID(r.Context()))
+		return
+	}
+	if err := h.svc.Store().SetSessionMFAVerified(r.Context(), sess.ID, "recovery_email"); err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "recovery_email_verify_failed", "cannot mark session mfa state", middleware.RequestID(r.Context()))
+		return
+	}
+	if req.RememberDevice {
+		if err := h.issueTrustedDevice(r.Context(), w, r, u.ID); err != nil {
+			util.WriteError(w, http.StatusInternalServerError, "recovery_email_verify_failed", "cannot remember trusted device", middleware.RequestID(r.Context()))
+			return
+		}
+	}
+	_ = h.deleteMFARecoveryEmailChallenge(r.Context(), sess.ID)
+	meta, _ := json.Marshal(map[string]any{
+		"session_id":      sess.ID,
+		"delivery_hint":   maskEmailAddress(state.DeliveryEmail),
+		"remember_device": req.RememberDevice,
+	})
+	_ = h.svc.Store().InsertAudit(r.Context(), u.ID, "auth.mfa.recovery_email.verify", sess.ID, string(meta))
+	setNoStoreHeaders(w)
+	util.WriteJSON(w, http.StatusOK, map[string]any{"status": "ok", "verified": true, "auth_stage": "authenticated"})
+}
+
+func (h *Handlers) V2MFADeviceApprovalRequest(w http.ResponseWriter, r *http.Request) {
+	u, sess, ok := h.requirePendingMFAVerification(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		RememberDevice bool `json:"remember_device"`
+	}
+	if err := decodeJSON(w, r, &req, jsonLimitAuthControl, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	now := time.Now().UTC()
+	_ = h.svc.Store().DeleteSettingsByPrefixOlderThan(r.Context(), mfaDeviceApprovalSettingsPrefix(), now.Add(-2*time.Hour))
+	otherDeviceCount, err := h.countEligibleMFAApprovalSessions(r.Context(), u.ID, sess.ID, now)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "device_approval_request_failed", "cannot inspect existing sessions", middleware.RequestID(r.Context()))
+		return
+	}
+	if otherDeviceCount == 0 {
+		util.WriteError(w, http.StatusConflict, "authenticated_device_unavailable", "no other signed-in device is available to approve this login", middleware.RequestID(r.Context()))
+		return
+	}
+	requestID := uuid.NewString()
+	state := mfaDeviceApprovalRequestState{
+		RequestID:          requestID,
+		UserID:             u.ID,
+		SessionID:          sess.ID,
+		RequestIPHint:      middleware.ClientIP(r, h.cfg.TrustProxy),
+		RequestUserAgent:   r.UserAgent(),
+		RequestDeviceLabel: trustedDeviceLabel(r.UserAgent()),
+		RequestedAt:        now,
+		ExpiresAt:          now.Add(mfaDeviceApprovalTTL),
+		Status:             "pending",
+		RememberDevice:     req.RememberDevice,
+	}
+	if err := h.storeMFADeviceApprovalRequest(r.Context(), u.ID, requestID, state); err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "device_approval_request_failed", "cannot persist device approval request", middleware.RequestID(r.Context()))
+		return
+	}
+	meta, _ := json.Marshal(map[string]any{
+		"request_id":         requestID,
+		"session_id":         sess.ID,
+		"request_ip_hint":    state.RequestIPHint,
+		"request_device":     summarizeApprovalDevice(state),
+		"remember_device":    req.RememberDevice,
+		"other_device_count": otherDeviceCount,
+		"expires_at":         state.ExpiresAt,
+	})
+	_ = h.svc.Store().InsertAudit(r.Context(), u.ID, "auth.mfa.device_approval.request", sess.ID, string(meta))
+	setNoStoreHeaders(w)
+	out := approvalRequestResponse(state)
+	out["status"] = "pending"
+	out["other_device_count"] = otherDeviceCount
+	util.WriteJSON(w, http.StatusOK, out)
+}
+
+func (h *Handlers) V2MFADeviceApprovalCancel(w http.ResponseWriter, r *http.Request) {
+	u, sess, ok := h.requirePendingMFAVerification(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		RequestID string `json:"request_id"`
+	}
+	if err := decodeJSON(w, r, &req, jsonLimitAuthControl, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	requestID := strings.TrimSpace(req.RequestID)
+	if requestID == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "request_id is required", middleware.RequestID(r.Context()))
+		return
+	}
+	state, found, err := h.loadMFADeviceApprovalRequest(r.Context(), u.ID, requestID)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "device_approval_cancel_failed", "cannot read device approval request", middleware.RequestID(r.Context()))
+		return
+	}
+	if !found || state.SessionID != sess.ID {
+		util.WriteError(w, http.StatusNotFound, "approval_request_not_found", "approval request not found", middleware.RequestID(r.Context()))
+		return
+	}
+	if strings.TrimSpace(state.Status) == "pending" {
+		state.Status = "cancelled"
+		state.DecisionAt = time.Now().UTC()
+		state.DecisionBySessionID = sess.ID
+		if err := h.storeMFADeviceApprovalRequest(r.Context(), u.ID, requestID, state); err != nil {
+			util.WriteError(w, http.StatusInternalServerError, "device_approval_cancel_failed", "cannot cancel device approval request", middleware.RequestID(r.Context()))
+			return
+		}
+		meta, _ := json.Marshal(map[string]any{"request_id": requestID, "session_id": sess.ID})
+		_ = h.svc.Store().InsertAudit(r.Context(), u.ID, "auth.mfa.device_approval.cancel", sess.ID, string(meta))
+	}
+	util.WriteJSON(w, http.StatusOK, map[string]any{"status": "cancelled"})
+}
+
+func (h *Handlers) V2MFADeviceApprovalStatus(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	sess, ok := middleware.Session(r.Context())
+	if !ok {
+		util.WriteError(w, http.StatusUnauthorized, "session_missing", "authentication required", middleware.RequestID(r.Context()))
+		return
+	}
+	requestID := strings.TrimSpace(r.URL.Query().Get("request_id"))
+	if requestID == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "request_id is required", middleware.RequestID(r.Context()))
+		return
+	}
+	state, found, err := h.loadMFADeviceApprovalRequest(r.Context(), u.ID, requestID)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "device_approval_status_failed", "cannot read device approval request", middleware.RequestID(r.Context()))
+		return
+	}
+	if !found {
+		stage, stageErr := h.svc.ResolveMFAStage(r.Context(), u, &sess)
+		if stageErr != nil {
+			util.WriteError(w, http.StatusInternalServerError, "device_approval_status_failed", "cannot resolve mfa stage", middleware.RequestID(r.Context()))
+			return
+		}
+		if stage.AuthStage == service.AuthStageAuthenticated {
+			setNoStoreHeaders(w)
+			util.WriteJSON(w, http.StatusOK, map[string]any{"status": "approved", "verified": true, "auth_stage": "authenticated"})
+			return
+		}
+		setNoStoreHeaders(w)
+		util.WriteJSON(w, http.StatusOK, map[string]any{"status": "expired"})
+		return
+	}
+	if state.SessionID != sess.ID {
+		util.WriteError(w, http.StatusNotFound, "approval_request_not_found", "approval request not found", middleware.RequestID(r.Context()))
+		return
+	}
+	now := time.Now().UTC()
+	if strings.TrimSpace(state.Status) == "pending" && now.After(state.ExpiresAt) {
+		state.Status = "expired"
+		state.DecisionAt = now
+		_ = h.storeMFADeviceApprovalRequest(r.Context(), u.ID, requestID, state)
+	}
+	switch strings.TrimSpace(state.Status) {
+	case "approved":
+		if sess.MFAVerifiedAt == nil {
+			if err := h.svc.Store().SetSessionMFAVerified(r.Context(), sess.ID, "device_approval"); err != nil {
+				util.WriteError(w, http.StatusInternalServerError, "device_approval_status_failed", "cannot mark session mfa state", middleware.RequestID(r.Context()))
+				return
+			}
+			if state.RememberDevice {
+				if err := h.issueTrustedDevice(r.Context(), w, r, u.ID); err != nil {
+					util.WriteError(w, http.StatusInternalServerError, "device_approval_status_failed", "cannot remember trusted device", middleware.RequestID(r.Context()))
+					return
+				}
+			}
+		}
+		_ = h.deleteMFADeviceApprovalRequest(r.Context(), u.ID, requestID)
+		setNoStoreHeaders(w)
+		util.WriteJSON(w, http.StatusOK, map[string]any{"status": "approved", "verified": true, "auth_stage": "authenticated"})
+		return
+	case "rejected":
+		setNoStoreHeaders(w)
+		util.WriteJSON(w, http.StatusOK, map[string]any{"status": "rejected"})
+		return
+	case "cancelled":
+		setNoStoreHeaders(w)
+		util.WriteJSON(w, http.StatusOK, map[string]any{"status": "cancelled"})
+		return
+	case "expired":
+		setNoStoreHeaders(w)
+		util.WriteJSON(w, http.StatusOK, map[string]any{"status": "expired"})
+		return
+	default:
+		setNoStoreHeaders(w)
+		util.WriteJSON(w, http.StatusOK, map[string]any{"status": "pending", "expires_at": state.ExpiresAt})
+		return
+	}
+}
+
+func (h *Handlers) V2ListPendingMFADeviceApprovals(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	sess, _ := middleware.Session(r.Context())
+	now := time.Now().UTC()
+	_ = h.svc.Store().DeleteSettingsByPrefixOlderThan(r.Context(), mfaDeviceApprovalSettingsPrefix(), now.Add(-2*time.Hour))
+	items, err := h.listPendingMFADeviceApprovalRequests(r.Context(), u.ID, sess.ID, now)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "device_approvals_list_failed", "cannot load pending device approvals", middleware.RequestID(r.Context()))
+		return
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		out = append(out, approvalRequestResponse(item))
+	}
+	setNoStoreHeaders(w)
+	util.WriteJSON(w, http.StatusOK, map[string]any{"items": out})
+}
+
+func (h *Handlers) V2DecidePendingMFADeviceApproval(w http.ResponseWriter, r *http.Request) {
+	u, _ := middleware.User(r.Context())
+	sess, _ := middleware.Session(r.Context())
+	requestID := strings.TrimSpace(chi.URLParam(r, "id"))
+	if requestID == "" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "approval request id is required", middleware.RequestID(r.Context()))
+		return
+	}
+	var req struct {
+		Decision string `json:"decision"`
+	}
+	if err := decodeJSON(w, r, &req, jsonLimitAuthControl, false); err != nil {
+		writeJSONDecodeError(w, r, err)
+		return
+	}
+	decision := strings.ToLower(strings.TrimSpace(req.Decision))
+	if decision != "approve" && decision != "reject" {
+		util.WriteError(w, http.StatusBadRequest, "bad_request", "decision must be approve or reject", middleware.RequestID(r.Context()))
+		return
+	}
+	state, found, err := h.loadMFADeviceApprovalRequest(r.Context(), u.ID, requestID)
+	if err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "device_approval_decision_failed", "cannot read device approval request", middleware.RequestID(r.Context()))
+		return
+	}
+	if !found {
+		util.WriteError(w, http.StatusNotFound, "approval_request_not_found", "approval request not found", middleware.RequestID(r.Context()))
+		return
+	}
+	now := time.Now().UTC()
+	if now.After(state.ExpiresAt) {
+		state.Status = "expired"
+		state.DecisionAt = now
+		_ = h.storeMFADeviceApprovalRequest(r.Context(), u.ID, requestID, state)
+		util.WriteError(w, http.StatusConflict, "approval_request_expired", "approval request has expired", middleware.RequestID(r.Context()))
+		return
+	}
+	if strings.TrimSpace(state.Status) != "pending" {
+		util.WriteError(w, http.StatusConflict, "approval_request_resolved", "approval request has already been resolved", middleware.RequestID(r.Context()))
+		return
+	}
+	state.Status = "approved"
+	if decision == "reject" {
+		state.Status = "rejected"
+	}
+	state.DecisionAt = now
+	state.DecisionBySessionID = sess.ID
+	state.DecisionDeviceLabel = trustedDeviceLabel(r.UserAgent())
+	if err := h.storeMFADeviceApprovalRequest(r.Context(), u.ID, requestID, state); err != nil {
+		util.WriteError(w, http.StatusInternalServerError, "device_approval_decision_failed", "cannot persist device approval decision", middleware.RequestID(r.Context()))
+		return
+	}
+	action := "auth.mfa.device_approval.approve"
+	if state.Status == "rejected" {
+		action = "auth.mfa.device_approval.reject"
+	}
+	meta, _ := json.Marshal(map[string]any{
+		"request_id":            requestID,
+		"request_session_id":    state.SessionID,
+		"decision_session_id":   sess.ID,
+		"decision_device_label": trustedDeviceLabel(r.UserAgent()),
+		"remember_device":       state.RememberDevice,
+	})
+	_ = h.svc.Store().InsertAudit(r.Context(), u.ID, action, state.SessionID, string(meta))
+	util.WriteJSON(w, http.StatusOK, map[string]any{"status": state.Status})
 }
 
 func (h *Handlers) V2ListAccounts(w http.ResponseWriter, r *http.Request) {
@@ -4445,6 +4882,33 @@ func generateRecoveryCodes(n int) ([]string, error) {
 	return out, nil
 }
 
+type mfaRecoveryEmailChallengeState struct {
+	SessionID     string    `json:"session_id"`
+	UserID        string    `json:"user_id"`
+	DeliveryEmail string    `json:"delivery_email"`
+	CodeHash      string    `json:"code_hash"`
+	SentAt        time.Time `json:"sent_at"`
+	ExpiresAt     time.Time `json:"expires_at"`
+	AttemptCount  int       `json:"attempt_count"`
+	MaxAttempts   int       `json:"max_attempts"`
+}
+
+type mfaDeviceApprovalRequestState struct {
+	RequestID           string    `json:"request_id"`
+	UserID              string    `json:"user_id"`
+	SessionID           string    `json:"session_id"`
+	RequestIPHint       string    `json:"request_ip_hint"`
+	RequestUserAgent    string    `json:"request_user_agent"`
+	RequestDeviceLabel  string    `json:"request_device_label"`
+	RequestedAt         time.Time `json:"requested_at"`
+	ExpiresAt           time.Time `json:"expires_at"`
+	Status              string    `json:"status"`
+	RememberDevice      bool      `json:"remember_device"`
+	DecisionAt          time.Time `json:"decision_at,omitempty"`
+	DecisionBySessionID string    `json:"decision_by_session_id,omitempty"`
+	DecisionDeviceLabel string    `json:"decision_device_label,omitempty"`
+}
+
 type webAuthnChallengeState struct {
 	UserID    string    `json:"user_id"`
 	Mode      string    `json:"mode"`
@@ -4487,6 +4951,22 @@ func passkeyLoginChallengeSettingsPrefix() string {
 
 func passkeyLoginChallengeSettingKey(challengeID string) string {
 	return passkeyLoginChallengeSettingsPrefix() + strings.TrimSpace(challengeID)
+}
+
+func mfaRecoveryEmailChallengeSettingKey(sessionID string) string {
+	return "mfa:recovery-email:challenge:" + strings.TrimSpace(sessionID)
+}
+
+func mfaDeviceApprovalSettingsPrefix() string {
+	return "mfa:device-approval:"
+}
+
+func mfaDeviceApprovalRequestSettingsPrefix(userID string) string {
+	return mfaDeviceApprovalSettingsPrefix() + strings.TrimSpace(userID) + ":"
+}
+
+func mfaDeviceApprovalRequestSettingKey(userID, requestID string) string {
+	return mfaDeviceApprovalRequestSettingsPrefix(userID) + strings.TrimSpace(requestID)
 }
 
 func mfaTrustedPendingRememberSettingKey(sessionID string) string {
@@ -4543,6 +5023,176 @@ func (h *Handlers) loadPasskeyLoginChallenge(ctx context.Context, challengeID st
 		return passkeyLoginChallengeState{}, false, err
 	}
 	return state, true, nil
+}
+
+func (h *Handlers) storeMFARecoveryEmailChallenge(ctx context.Context, sessionID string, state mfaRecoveryEmailChallengeState) error {
+	b, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return h.svc.Store().UpsertSetting(ctx, mfaRecoveryEmailChallengeSettingKey(sessionID), string(b))
+}
+
+func (h *Handlers) loadMFARecoveryEmailChallenge(ctx context.Context, sessionID string) (mfaRecoveryEmailChallengeState, bool, error) {
+	raw, ok, err := h.svc.Store().GetSetting(ctx, mfaRecoveryEmailChallengeSettingKey(sessionID))
+	if err != nil {
+		return mfaRecoveryEmailChallengeState{}, false, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return mfaRecoveryEmailChallengeState{}, false, nil
+	}
+	var state mfaRecoveryEmailChallengeState
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return mfaRecoveryEmailChallengeState{}, false, err
+	}
+	return state, true, nil
+}
+
+func (h *Handlers) deleteMFARecoveryEmailChallenge(ctx context.Context, sessionID string) error {
+	return h.svc.Store().DeleteSetting(ctx, mfaRecoveryEmailChallengeSettingKey(sessionID))
+}
+
+func (h *Handlers) storeMFADeviceApprovalRequest(ctx context.Context, userID, requestID string, state mfaDeviceApprovalRequestState) error {
+	b, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return h.svc.Store().UpsertSetting(ctx, mfaDeviceApprovalRequestSettingKey(userID, requestID), string(b))
+}
+
+func (h *Handlers) loadMFADeviceApprovalRequest(ctx context.Context, userID, requestID string) (mfaDeviceApprovalRequestState, bool, error) {
+	raw, ok, err := h.svc.Store().GetSetting(ctx, mfaDeviceApprovalRequestSettingKey(userID, requestID))
+	if err != nil {
+		return mfaDeviceApprovalRequestState{}, false, err
+	}
+	if !ok || strings.TrimSpace(raw) == "" {
+		return mfaDeviceApprovalRequestState{}, false, nil
+	}
+	var state mfaDeviceApprovalRequestState
+	if err := json.Unmarshal([]byte(raw), &state); err != nil {
+		return mfaDeviceApprovalRequestState{}, false, err
+	}
+	return state, true, nil
+}
+
+func (h *Handlers) deleteMFADeviceApprovalRequest(ctx context.Context, userID, requestID string) error {
+	return h.svc.Store().DeleteSetting(ctx, mfaDeviceApprovalRequestSettingKey(userID, requestID))
+}
+
+func (h *Handlers) listPendingMFADeviceApprovalRequests(ctx context.Context, userID, currentSessionID string, now time.Time) ([]mfaDeviceApprovalRequestState, error) {
+	rows, err := h.svc.Store().ListSettingsByPrefix(ctx, mfaDeviceApprovalRequestSettingsPrefix(userID), 50)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]mfaDeviceApprovalRequestState, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.Value) == "" {
+			continue
+		}
+		var state mfaDeviceApprovalRequestState
+		if err := json.Unmarshal([]byte(row.Value), &state); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(state.Status) != "pending" {
+			continue
+		}
+		if !state.ExpiresAt.IsZero() && now.After(state.ExpiresAt) {
+			continue
+		}
+		if currentSessionID != "" && state.SessionID == currentSessionID {
+			continue
+		}
+		out = append(out, state)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].RequestedAt.After(out[j].RequestedAt)
+	})
+	return out, nil
+}
+
+func (h *Handlers) countEligibleMFAApprovalSessions(ctx context.Context, userID, excludeSessionID string, now time.Time) (int, error) {
+	items, err := h.svc.Store().ListSessionsMeta(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	count := 0
+	for _, item := range items {
+		if strings.TrimSpace(item.SessionID) == strings.TrimSpace(excludeSessionID) {
+			continue
+		}
+		if !item.RevokedAt.IsZero() || item.MFAVerifiedAt.IsZero() {
+			continue
+		}
+		if (!item.ExpiresAt.IsZero() && !now.Before(item.ExpiresAt)) || (!item.IdleExpiresAt.IsZero() && !now.Before(item.IdleExpiresAt)) {
+			continue
+		}
+		count++
+	}
+	return count, nil
+}
+
+func approvalRequestResponse(state mfaDeviceApprovalRequestState) map[string]any {
+	out := map[string]any{
+		"id":              state.RequestID,
+		"request_id":      state.RequestID,
+		"session_id":      state.SessionID,
+		"request_ip_hint": state.RequestIPHint,
+		"requested_at":    state.RequestedAt,
+		"expires_at":      state.ExpiresAt,
+		"status":          strings.TrimSpace(state.Status),
+		"remember_device": state.RememberDevice,
+	}
+	for k, v := range summarizeApprovalDevice(state) {
+		out[k] = v
+	}
+	if !state.DecisionAt.IsZero() {
+		out["decision_at"] = state.DecisionAt
+	}
+	return out
+}
+
+func summarizeApprovalDevice(state mfaDeviceApprovalRequestState) map[string]any {
+	displayLabel, browser, osLabel, deviceType := summarizeTrustedDeviceLabel(firstNonEmpty(state.RequestDeviceLabel, state.RequestUserAgent))
+	return map[string]any{
+		"request_device_label":  firstNonEmpty(state.RequestDeviceLabel, state.RequestUserAgent, "Sign-in device"),
+		"request_display_label": displayLabel,
+		"request_browser":       browser,
+		"request_os":            osLabel,
+		"request_device_type":   deviceType,
+	}
+}
+
+func maskEmailAddress(email string) string {
+	email = strings.TrimSpace(strings.ToLower(email))
+	parts := strings.Split(email, "@")
+	if len(parts) != 2 {
+		return email
+	}
+	local := parts[0]
+	domain := parts[1]
+	if local == "" {
+		return "***@" + domain
+	}
+	if len(local) == 1 {
+		return local + "***@" + domain
+	}
+	return local[:1] + strings.Repeat("*", minInt(len(local)-1, 4)) + "@" + domain
+}
+
+func generateNumericCode(digits int) (string, error) {
+	if digits <= 0 {
+		digits = 6
+	}
+	max := big.NewInt(1)
+	ten := big.NewInt(10)
+	for i := 0; i < digits; i++ {
+		max.Mul(max, ten)
+	}
+	n, err := cryptorand.Int(cryptorand.Reader, max)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%0*d", digits, n.Int64()), nil
 }
 
 func (h *Handlers) deletePasskeyLoginChallenge(ctx context.Context, challengeID string) error {
@@ -4621,6 +5271,10 @@ func (h *Handlers) verifyTOTPCode(ctx context.Context, userID, secret, code stri
 }
 
 func (h *Handlers) authCapabilities(r *http.Request) map[string]any {
+	mode := service.InstanceModeLocalStack
+	if currentMode, err := h.svc.InstanceMode(r.Context()); err == nil {
+		mode = currentMode
+	}
 	mailsecAvailable := h.mailSecRuntimeEnabled()
 	context := h.resolveWebAuthnContext(r)
 	mfaAvailable := mailsecAvailable && context.Reason == ""
@@ -4642,25 +5296,43 @@ func (h *Handlers) authCapabilities(r *http.Request) map[string]any {
 		"passkey_mfa_available":          mfaAvailable,
 		"passkey_passwordless_available": passwordlessAvailable,
 		"passkey_usernameless_enabled":   true,
+		"registration_allowed":           service.NormalizeInstanceMode(mode) != service.InstanceModeExternalAccounts,
+		"request_origin":                 context.RequestOrigin,
 		"rp_id":                          context.RPID,
 		"allowed_origins":                context.Origins,
 		"reason":                         reason,
 	}
 }
 
+func (h *Handlers) requestHost(r *http.Request) string {
+	if h.cfg.TrustProxy {
+		if xfh := strings.TrimSpace(r.Header.Get("X-Forwarded-Host")); xfh != "" {
+			return strings.TrimSpace(strings.Split(xfh, ",")[0])
+		}
+	}
+	return strings.TrimSpace(r.Host)
+}
+
 func (h *Handlers) webAuthnRPID(r *http.Request) string {
 	if raw := normalizeRPIDCandidate(h.cfg.WebAuthnRPID); raw != "" {
 		return raw
+	}
+	mode := service.InstanceModeLocalStack
+	if currentMode, err := h.svc.InstanceMode(r.Context()); err == nil {
+		mode = currentMode
 	}
 	if raw, ok, err := h.svc.Store().GetSetting(r.Context(), "base_domain"); err == nil && ok {
 		if normalized := normalizeRPIDCandidate(raw); normalized != "" {
 			return normalized
 		}
 	}
+	if mode == service.InstanceModeExternalAccounts {
+		return normalizeRPIDCandidate(hostWithoutPort(h.requestHost(r)))
+	}
 	if raw := normalizeRPIDCandidate(h.cfg.BaseDomain); raw != "" {
 		return raw
 	}
-	return normalizeRPIDCandidate(hostWithoutPort(strings.TrimSpace(r.Host)))
+	return normalizeRPIDCandidate(hostWithoutPort(h.requestHost(r)))
 }
 
 func (h *Handlers) webAuthnAllowedOrigins(r *http.Request, requestOrigin string) []string {
@@ -4700,7 +5372,7 @@ func (h *Handlers) requestOrigin(r *http.Request) string {
 	} else if r.TLS == nil {
 		scheme = "http"
 	}
-	host := strings.TrimSpace(r.Host)
+	host := h.requestHost(r)
 	if host == "" {
 		host = h.webAuthnRPID(r)
 	}
@@ -4731,7 +5403,7 @@ func (h *Handlers) resolveWebAuthnContext(r *http.Request) webAuthnContext {
 		resolved.Reason = "origin_mismatch"
 		return resolved
 	}
-	host := hostWithoutPort(strings.TrimSpace(r.Host))
+	host := hostWithoutPort(h.requestHost(r))
 	if host == "" {
 		host = originHost(requestOrigin)
 	}

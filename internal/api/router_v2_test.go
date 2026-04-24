@@ -15,6 +15,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,6 +304,22 @@ func startFakeMailSecServerWithRecorder(t *testing.T) (string, *fakeMailSecRecor
 		}
 	}()
 	return socketPath, recorder
+}
+
+type captureRecoveryMFASender struct {
+	captureResetSender
+	recoveryCalls int
+	recoveryTo    string
+	recoveryCode  string
+	recoveryErr   error
+}
+
+func (s *captureRecoveryMFASender) SendRecoveryEmailCode(ctx context.Context, toEmail, code string) error {
+	_ = ctx
+	s.recoveryCalls++
+	s.recoveryTo = toEmail
+	s.recoveryCode = code
+	return s.recoveryErr
 }
 
 func loginV2WithResponse(t *testing.T, router http.Handler) (*http.Cookie, *http.Cookie, map[string]any) {
@@ -858,6 +875,177 @@ func TestV2TrustedDeviceRememberAndRevokeFlow(t *testing.T) {
 	}
 	if stage, _ := loginPayload2["auth_stage"].(string); stage != "mfa_required" {
 		t.Fatalf("expected mfa_required stage after trusted devices revoked, got %v payload=%v", stage, loginPayload2)
+	}
+}
+
+func TestV2MFARecoveryEmailFallbackFlow(t *testing.T) {
+	socketPath := startFakeMailSecServer(t)
+	sender := &captureRecoveryMFASender{}
+	router, st, _ := newV2RouterWithMailClientStoreAndHook(t, mail.NoopClient{}, func(cfg *config.Config) {
+		cfg.MailSecEnabled = true
+		cfg.MailSecSocket = socketPath
+		cfg.MailSecTimeoutMS = 2000
+	}, func(svc *service.Service, st *store.Store, _ *sql.DB, _ *config.Config) {
+		svc.SetNotificationSender(sender)
+	})
+	ctx := context.Background()
+	admin, err := st.GetUserByEmail(ctx, "admin@example.com")
+	if err != nil {
+		t.Fatalf("load admin user: %v", err)
+	}
+	if err := st.UpdateUserRecoveryEmail(ctx, admin.ID, "recovery@example.net"); err != nil {
+		t.Fatalf("set recovery email: %v", err)
+	}
+
+	sess, csrf := loginV2(t, router)
+	enroll := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/security/mfa/totp/enroll", map[string]any{}, sess, csrf)
+	if enroll.Code != http.StatusOK {
+		t.Fatalf("expected enroll 200, got %d body=%s", enroll.Code, enroll.Body.String())
+	}
+	confirm := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/security/mfa/totp/confirm", map[string]any{
+		"code":               "123456",
+		"recovery_codes_ack": true,
+	}, sess, csrf)
+	if confirm.Code != http.StatusOK {
+		t.Fatalf("expected confirm 200, got %d body=%s", confirm.Code, confirm.Body.String())
+	}
+
+	pendingSess, pendingCSRF, login := loginV2WithResponse(t, router)
+	if required, _ := login["mfa_required"].(bool); !required {
+		t.Fatalf("expected mfa_required=true after totp enrollment")
+	}
+
+	send := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/mfa/recovery-email/send", map[string]any{}, pendingSess, pendingCSRF)
+	if send.Code != http.StatusOK {
+		t.Fatalf("expected recovery email send 200, got %d body=%s", send.Code, send.Body.String())
+	}
+	if sender.recoveryCalls != 1 {
+		t.Fatalf("expected one recovery email code send, got %d", sender.recoveryCalls)
+	}
+	if sender.recoveryTo != "recovery@example.net" {
+		t.Fatalf("expected delivery to recovery@example.net, got %q", sender.recoveryTo)
+	}
+	if strings.TrimSpace(sender.recoveryCode) == "" {
+		t.Fatalf("expected non-empty recovery email code")
+	}
+
+	verify := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/mfa/recovery-email/verify", map[string]any{
+		"code":            sender.recoveryCode,
+		"remember_device": true,
+	}, pendingSess, pendingCSRF)
+	if verify.Code != http.StatusOK {
+		t.Fatalf("expected recovery email verify 200, got %d body=%s", verify.Code, verify.Body.String())
+	}
+	trustedCookieFound := false
+	for _, c := range verify.Result().Cookies() {
+		if c.Name == "despatch_mfa_trusted" && strings.TrimSpace(c.Value) != "" {
+			trustedCookieFound = true
+			break
+		}
+	}
+	if !trustedCookieFound {
+		t.Fatalf("expected trusted device cookie after recovery email verification")
+	}
+
+	unblocked := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/accounts", nil, pendingSess, pendingCSRF)
+	if unblocked.Code != http.StatusOK {
+		t.Fatalf("expected accounts list 200 after recovery email verification, got %d body=%s", unblocked.Code, unblocked.Body.String())
+	}
+}
+
+func TestV2MFADeviceApprovalFlow(t *testing.T) {
+	socketPath := startFakeMailSecServer(t)
+	router := newV2RouterWithConfig(t, func(cfg *config.Config) {
+		cfg.MailSecEnabled = true
+		cfg.MailSecSocket = socketPath
+		cfg.MailSecTimeoutMS = 2000
+	})
+
+	approverSess, approverCSRF := loginV2(t, router)
+	enroll := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/security/mfa/totp/enroll", map[string]any{}, approverSess, approverCSRF)
+	if enroll.Code != http.StatusOK {
+		t.Fatalf("expected enroll 200, got %d body=%s", enroll.Code, enroll.Body.String())
+	}
+	confirm := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/security/mfa/totp/confirm", map[string]any{
+		"code":               "123456",
+		"recovery_codes_ack": true,
+	}, approverSess, approverCSRF)
+	if confirm.Code != http.StatusOK {
+		t.Fatalf("expected confirm 200, got %d body=%s", confirm.Code, confirm.Body.String())
+	}
+
+	pendingSess, pendingCSRF, login := loginV2WithResponse(t, router)
+	if required, _ := login["mfa_required"].(bool); !required {
+		t.Fatalf("expected mfa_required=true after totp enrollment")
+	}
+
+	request := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/mfa/device-approval/request", map[string]any{
+		"remember_device": true,
+	}, pendingSess, pendingCSRF)
+	if request.Code != http.StatusOK {
+		t.Fatalf("expected device approval request 200, got %d body=%s", request.Code, request.Body.String())
+	}
+	var requestPayload map[string]any
+	if err := json.Unmarshal(request.Body.Bytes(), &requestPayload); err != nil {
+		t.Fatalf("decode device approval request payload: %v", err)
+	}
+	requestID, _ := requestPayload["request_id"].(string)
+	if strings.TrimSpace(requestID) == "" {
+		t.Fatalf("expected non-empty request_id payload=%v", requestPayload)
+	}
+	if count, _ := requestPayload["other_device_count"].(float64); count < 1 {
+		t.Fatalf("expected at least one eligible device, payload=%v", requestPayload)
+	}
+
+	pending := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/security/mfa/device-approvals/pending", nil, approverSess, approverCSRF)
+	if pending.Code != http.StatusOK {
+		t.Fatalf("expected pending approvals 200, got %d body=%s", pending.Code, pending.Body.String())
+	}
+	var pendingPayload struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(pending.Body.Bytes(), &pendingPayload); err != nil {
+		t.Fatalf("decode pending approvals payload: %v", err)
+	}
+	if len(pendingPayload.Items) == 0 {
+		t.Fatalf("expected at least one pending approval request")
+	}
+	if got, _ := pendingPayload.Items[0]["id"].(string); got != requestID {
+		t.Fatalf("expected pending approval id %q, got %q", requestID, got)
+	}
+
+	decision := doV2AuthedJSON(t, router, http.MethodPost, "/api/v2/security/mfa/device-approvals/"+requestID+"/decision", map[string]any{
+		"decision": "approve",
+	}, approverSess, approverCSRF)
+	if decision.Code != http.StatusOK {
+		t.Fatalf("expected approval decision 200, got %d body=%s", decision.Code, decision.Body.String())
+	}
+
+	status := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/mfa/device-approval/status?request_id="+url.QueryEscape(requestID), nil, pendingSess, pendingCSRF)
+	if status.Code != http.StatusOK {
+		t.Fatalf("expected approval status 200, got %d body=%s", status.Code, status.Body.String())
+	}
+	var statusPayload map[string]any
+	if err := json.Unmarshal(status.Body.Bytes(), &statusPayload); err != nil {
+		t.Fatalf("decode approval status payload: %v", err)
+	}
+	if got, _ := statusPayload["status"].(string); got != "approved" {
+		t.Fatalf("expected approved status payload=%v", statusPayload)
+	}
+	trustedCookieFound := false
+	for _, c := range status.Result().Cookies() {
+		if c.Name == "despatch_mfa_trusted" && strings.TrimSpace(c.Value) != "" {
+			trustedCookieFound = true
+			break
+		}
+	}
+	if !trustedCookieFound {
+		t.Fatalf("expected trusted device cookie after device approval verification")
+	}
+
+	unblocked := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/accounts", nil, pendingSess, pendingCSRF)
+	if unblocked.Code != http.StatusOK {
+		t.Fatalf("expected accounts list 200 after device approval, got %d body=%s", unblocked.Code, unblocked.Body.String())
 	}
 }
 

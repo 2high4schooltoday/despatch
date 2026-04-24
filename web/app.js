@@ -49,6 +49,7 @@ const state = {
     mailboxes: [],
     mailboxesByAccount: {},
     drafts: [],
+    optimisticSentSummaries: [],
     indexedAccounts: [],
     indexedAccountID: "",
     selectedIndexedAccountID: "",
@@ -105,12 +106,21 @@ const state = {
     recoveryPromptShownForSession: false,
     legacyMFAOfferShownForSession: false,
     mfaFlowPromise: null,
+    keepaliveTimer: 0,
+    keepaliveInFlight: false,
+    approvalPollTimer: 0,
+    approvalPollInFlight: false,
+    approvalPromptingRequestID: "",
+    approvalPromptMutedUntilByID: {},
   },
   setup: {
     required: false,
     step: 0,
+    instanceMode: "local_stack",
     baseDomain: "",
+    baseDomainRequired: true,
     defaultAdminEmail: "",
+    registrationAllowed: true,
     automaticUpdatesEnabled: true,
     passkeyPrimaryEnabled: true,
     authMode: "sql",
@@ -289,6 +299,14 @@ const state = {
       items: [],
       detailId: "",
     },
+    userMailboxes: {
+      userID: "",
+      items: [],
+      loading: false,
+      loaded: false,
+      error: "",
+      errorCode: "",
+    },
     audit: {
       q: "",
       action: "all",
@@ -345,6 +363,9 @@ const el = {
   authPaneLogin: document.getElementById("auth-pane-login"),
   authPaneRegister: document.getElementById("auth-pane-register"),
   authPaneReset: document.getElementById("auth-pane-reset"),
+  loginIdentifierLabel: document.getElementById("login-identifier-label"),
+  loginIdentifierInput: document.getElementById("login-identifier-input"),
+  resetRequestLabel: document.getElementById("reset-request-label"),
   resetRequestEmail: document.getElementById("reset-request-email"),
   resetTokenInput: document.getElementById("reset-token-input"),
   resetNewPasswordInput: document.getElementById("reset-new-password"),
@@ -726,6 +747,7 @@ const el = {
   adminUserSort: document.getElementById("admin-user-sort"),
   adminUserOrder: document.getElementById("admin-user-order"),
   btnAdminUserApply: document.getElementById("btn-admin-user-apply"),
+  btnUserCreate: document.getElementById("btn-user-create"),
   btnUserSelectAll: document.getElementById("btn-user-select-all"),
   btnUserClear: document.getElementById("btn-user-clear"),
   btnUserSuspend: document.getElementById("btn-user-suspend"),
@@ -770,23 +792,32 @@ const el = {
   setupNext: document.getElementById("setup-next"),
   setupOpenMail: document.getElementById("setup-open-mail"),
   setupOpenAdmin: document.getElementById("setup-open-admin"),
+  setupModeLocal: document.getElementById("setup-mode-local"),
+  setupModeExternal: document.getElementById("setup-mode-external"),
+  setupModeHybrid: document.getElementById("setup-mode-hybrid"),
   setupRegion: document.getElementById("setup-region"),
   setupThemeMachine: document.getElementById("setup-theme-machine"),
   setupThemePaper: document.getElementById("setup-theme-paper"),
   setupUpdatesAuto: document.getElementById("setup-updates-auto"),
   setupUpdatesManual: document.getElementById("setup-updates-manual"),
   setupDomain: document.getElementById("setup-domain"),
+  setupDomainWrap: document.getElementById("setup-domain-wrap"),
+  setupAdminIdentifierLabel: document.getElementById("setup-admin-identifier-label"),
   setupAdminEmail: document.getElementById("setup-admin-email"),
+  setupAdminIdentifierHint: document.getElementById("setup-admin-identifier-hint"),
   setupAdminRecoveryEmail: document.getElementById("setup-admin-recovery-email"),
   setupAdminMailboxLogin: document.getElementById("setup-admin-mailbox-login"),
   setupAdminMailboxLoginWrap: document.getElementById("setup-mailbox-login-wrap"),
   setupPassword: document.getElementById("setup-password"),
   setupPasswordConfirm: document.getElementById("setup-password-confirm"),
   setupPasskeyPrimaryEnabled: document.getElementById("setup-passkey-primary-enabled"),
+  setupSummaryMode: document.getElementById("setup-summary-mode"),
   setupSummaryRegion: document.getElementById("setup-summary-region"),
   setupSummaryTheme: document.getElementById("setup-summary-theme"),
   setupSummaryUpdates: document.getElementById("setup-summary-updates"),
+  setupSummaryDomainRow: document.getElementById("setup-summary-domain-row"),
   setupSummaryDomain: document.getElementById("setup-summary-domain"),
+  setupSummaryAdminLabel: document.getElementById("setup-summary-admin-label"),
   setupSummaryEmail: document.getElementById("setup-summary-email"),
   setupSummaryRecoveryEmail: document.getElementById("setup-summary-recovery-email"),
   setupSummaryPasskey: document.getElementById("setup-summary-passkey"),
@@ -833,10 +864,12 @@ const setupSteps = [
   document.getElementById("setup-step-5"),
   document.getElementById("setup-step-6"),
   document.getElementById("setup-step-7"),
+  document.getElementById("setup-step-8"),
 ];
 
 const setupStepTitles = [
   "Welcome",
+  "How Despatch Will Get Mail",
   "Where Despatch will be set up",
   "Choose your look",
   "Software updates",
@@ -1611,7 +1644,10 @@ function presentAPIError(err, fallbackMessage) {
 }
 
 function setActiveAuthTask(task) {
-  const next = ["login", "register", "reset"].includes(String(task || "")) ? String(task) : "login";
+  let next = ["login", "register", "reset"].includes(String(task || "")) ? String(task) : "login";
+  if (next === "register" && state.setup.registrationAllowed === false) {
+    next = "login";
+  }
   state.ui.activeAuthTask = next;
   const modes = {
     login: el.authModeLogin,
@@ -1670,6 +1706,26 @@ function authCapabilityReasonMessage(reason, fallback = "Passkeys are currently 
   }
 }
 
+function authCapabilityDiagnosticMessage(caps = authCapabilities()) {
+  const reason = String(caps?.reason || "").trim();
+  const requestOrigin = String(caps?.request_origin || "").trim();
+  const rpID = String(caps?.rp_id || "").trim();
+  const allowedOrigins = (Array.isArray(caps?.allowed_origins) ? caps.allowed_origins : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  const details = [];
+  if ((reason === "origin_mismatch" || reason === "rp_mismatch" || reason === "insecure_origin") && requestOrigin) {
+    details.push(`Current origin: ${requestOrigin}.`);
+  }
+  if (reason === "origin_mismatch" && allowedOrigins.length > 0) {
+    details.push(`Allowed origins: ${allowedOrigins.join(", ")}.`);
+  }
+  if ((reason === "origin_mismatch" || reason === "rp_mismatch") && rpID) {
+    details.push(`RP ID: ${rpID}.`);
+  }
+  return details.join(" ");
+}
+
 function authCapabilities() {
   if (!state.auth.capabilities || typeof state.auth.capabilities !== "object") {
     return {};
@@ -1695,10 +1751,12 @@ function renderPasskeyLoginUI() {
     el.passkeyLoginHint.textContent = "Passkey login is not supported by this browser.";
     return;
   }
-  el.passkeyLoginHint.textContent = authCapabilityReasonMessage(
+  const baseMessage = authCapabilityReasonMessage(
     caps.reason,
     "Passkey login is not available on this server.",
   );
+  const detail = authCapabilityDiagnosticMessage(caps);
+  el.passkeyLoginHint.textContent = detail ? `${baseMessage} ${detail}` : baseMessage;
 }
 
 function renderPasskeySecurityNote() {
@@ -1707,12 +1765,26 @@ function renderPasskeySecurityNote() {
   }
   const caps = authCapabilities();
   const lines = [];
-  lines.push(caps.passkey_mfa_available
-    ? "Passkeys are available as a second factor (MFA)."
-    : authCapabilityReasonMessage(caps.reason, "Passkeys are currently unavailable for MFA."));
-  lines.push(caps.passkey_passwordless_available
-    ? "Passkeys are available for primary sign-in."
-    : authCapabilityReasonMessage(caps.reason, "Passkey sign-in is currently unavailable."));
+  if (caps.passkey_mfa_available) {
+    lines.push("Passkeys are available as a second factor (MFA).");
+  }
+  if (caps.passkey_passwordless_available) {
+    lines.push("Passkeys are available for primary sign-in.");
+  }
+  const unavailableReasons = [];
+  if (!caps.passkey_mfa_available) {
+    unavailableReasons.push(authCapabilityReasonMessage(caps.reason, "Passkeys are currently unavailable for MFA."));
+  }
+  if (!caps.passkey_passwordless_available) {
+    unavailableReasons.push(authCapabilityReasonMessage(caps.reason, "Passkey sign-in is currently unavailable."));
+  }
+  for (const reason of [...new Set(unavailableReasons.filter(Boolean))]) {
+    lines.push(reason);
+  }
+  const diagnostic = authCapabilityDiagnosticMessage(caps);
+  if (diagnostic) {
+    lines.push(diagnostic);
+  }
   lines.push("Passkey sign-in uses built-in account discovery and does not require an email prompt.");
   el.passkeysNote.textContent = lines.join(" ");
 }
@@ -1721,9 +1793,13 @@ async function loadAuthCapabilities() {
   try {
     const payload = await api("/api/v1/public/auth/capabilities", { logErrors: false });
     state.auth.capabilities = payload && typeof payload === "object" ? payload : {};
+    if (Object.prototype.hasOwnProperty.call(state.auth.capabilities, "registration_allowed")) {
+      state.setup.registrationAllowed = state.auth.capabilities.registration_allowed !== false;
+    }
   } catch {
     state.auth.capabilities = {};
   }
+  renderAuthModeAvailability();
   renderPasskeyLoginUI();
   renderPasskeySecurityNote();
   if (el.btnPasskeysAdd) {
@@ -1833,6 +1909,7 @@ function routeToAuthWithMessage(message, code = "") {
   state.auth.recoveryPromptShownForSession = false;
   state.auth.legacyMFAOfferShownForSession = false;
   state.auth.mfaFlowPromise = null;
+  stopSessionKeepalive();
   state.user = null;
   clearMailMessageSelection({ render: false });
   clearReaderSelection();
@@ -3286,9 +3363,8 @@ function composeHasInvalidRecipients() {
 function composeCanSubmit() {
   const toRows = composeEffectiveRecipients("to");
   const toCount = toRows.filter((item) => item.valid).length;
-  const subjectOk = String(el.composeSubjectInput?.value || "").trim() !== "";
   const hasBody = composeEditorHasContent();
-  if (toCount === 0 || !subjectOk || !hasBody || composeHasInvalidRecipients()) return false;
+  if (toCount === 0 || !hasBody || composeHasInvalidRecipients()) return false;
   if (composeAssetUploadInProgress() || composeAssetHasFailed()) return false;
   if (!String(state.compose.selectedSenderID || "").trim()) return false;
   if (!composeSelectedSenderCanSend()) return false;
@@ -3764,7 +3840,7 @@ function buildDraftMessageSummary(draft) {
 }
 
 function isActionableMailSummary(item) {
-  return !!item && !item.isDraft;
+  return !!item && !item.isDraft && !item.is_optimistic_sent;
 }
 
 function visibleActionableMessages() {
@@ -3917,7 +3993,7 @@ function selectedMailActionIDs() {
   const activeID = String(currentActiveMailMessageID() || "").trim();
   const currentID = String(state.selectedMessage?.id || "").trim();
   if (currentID && !isDraftsMailboxSelected()) return [currentID];
-  if (activeID && !isDraftsMailboxSelected()) return [activeID];
+  if (activeID && !isDraftsMailboxSelected() && isActionableMailSummary(mailActionItemByID(activeID))) return [activeID];
   return [];
 }
 
@@ -4444,7 +4520,7 @@ function addComposeFiles(files) {
 function setComposeFromMode(mode) {
   state.compose.fromMode = "sender";
   if (mode === "error") {
-    setComposeFromNote("Add a sender in Settings before sending.", "warn");
+    setComposeFromNote("Connect a mail account before sending.", "warn");
   } else if (state.compose.senderLookupError) {
     setComposeFromNote("Sender list is unavailable right now.", "warn");
   } else {
@@ -4556,6 +4632,7 @@ function renderComposeFromControls() {
     state.compose.selectedSenderID = "";
     state.compose.selectedAccountID = "";
     setComposeFromMode("error");
+    setComposeFromNote("Connect a mail account before sending.", "warn");
     updateComposeFromFields();
     syncComposeDeliveryControls();
     return;
@@ -5994,6 +6071,162 @@ async function verifyTOTPCodeFlow(endpoint, title = "Enter Authenticator Code", 
   }
 }
 
+function delay(ms) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, Math.max(0, Number(ms) || 0));
+  });
+}
+
+async function runRecoveryEmailVerifyFlow(rememberDevice = true) {
+  let errorHint = "";
+  let deliveryHint = "";
+  let expiresAt = "";
+  let codeLength = 8;
+  const sendCode = async () => {
+    const payload = await api("/api/v2/mfa/recovery-email/send", {
+      method: "POST",
+      json: {},
+      skipUnauthorizedHandling: true,
+      skipMFAHandling: true,
+      logErrors: false,
+    });
+    deliveryHint = String(payload.delivery_hint || "your recovery email").trim();
+    expiresAt = String(payload.expires_at || "").trim();
+    codeLength = Number(payload.code_length || 8) || 8;
+  };
+  await sendCode();
+  while (true) {
+    const bodyParts = [];
+    if (errorHint) bodyParts.push(errorHint);
+    if (deliveryHint) bodyParts.push(`We sent a ${codeLength}-digit code to ${deliveryHint}.`);
+    else bodyParts.push("Enter the code we sent to your recovery email.");
+    if (expiresAt) bodyParts.push(`This code expires ${formatDateTimeOrNA(expiresAt)}.`);
+    const out = await openMFAModal({
+      title: "Enter Recovery Email Code",
+      body: bodyParts.join(" "),
+      showInput: true,
+      inputLabel: "Email code",
+      inputType: "text",
+      actions: [
+        { id: "confirm", label: "Verify", kind: "primary" },
+        { id: "resend", label: "Resend Code", kind: "ghost" },
+        { id: "cancel", label: "Cancel", kind: "ghost" },
+      ],
+    });
+    if (!out || out.action === "cancel") {
+      throw new Error("Recovery email verification was cancelled.");
+    }
+    if (out.action === "resend") {
+      try {
+        await sendCode();
+        errorHint = "";
+      } catch (err) {
+        errorHint = formatAPIError(err, "Failed to send recovery email code.");
+      }
+      continue;
+    }
+    const code = String(out.value || "").trim();
+    if (!code) {
+      errorHint = "Enter the recovery email code to continue.";
+      continue;
+    }
+    try {
+      await api("/api/v2/mfa/recovery-email/verify", {
+        method: "POST",
+        json: { code, remember_device: !!rememberDevice },
+        skipUnauthorizedHandling: true,
+        skipMFAHandling: true,
+        logErrors: false,
+      });
+      return;
+    } catch (err) {
+      errorHint = formatAPIError(err, "Recovery email verification failed.");
+    }
+  }
+}
+
+async function runDeviceApprovalFlow(rememberDevice = true) {
+  const begin = await api("/api/v2/mfa/device-approval/request", {
+    method: "POST",
+    json: { remember_device: !!rememberDevice },
+    skipUnauthorizedHandling: true,
+    skipMFAHandling: true,
+    logErrors: false,
+  });
+  const requestID = String(begin.request_id || "").trim();
+  if (!requestID) {
+    throw new Error("Device approval request could not be created.");
+  }
+  let active = true;
+  const pollPromise = (async () => {
+    while (active) {
+      await delay(3000);
+      if (!active) return;
+      try {
+        const status = await api(`/api/v2/mfa/device-approval/status?request_id=${encodeURIComponent(requestID)}`, {
+          skipUnauthorizedHandling: true,
+          skipMFAHandling: true,
+          logErrors: false,
+        });
+        const value = String(status.status || "pending").trim();
+        if (value === "pending") {
+          continue;
+        }
+        active = false;
+        closeMFAModal({ action: value, value: "", meta: status });
+        return;
+      } catch (err) {
+        active = false;
+        closeMFAModal({ action: "error", value: "", meta: { error: formatAPIError(err, "Device approval failed.") } });
+        return;
+      }
+    }
+  })();
+  const count = Number(begin.other_device_count || 0);
+  const body = count > 0
+    ? `Approve this sign-in from one of your ${count} other signed-in device${count === 1 ? "" : "s"}.`
+    : "Approve this sign-in from another signed-in device.";
+  const out = await openMFAModal({
+    title: "Approve From Another Device",
+    body: `${body} Keep this window open while we wait for approval.`,
+    actions: [
+      { id: "cancel", label: "Cancel", kind: "ghost" },
+    ],
+  });
+  active = false;
+  await pollPromise;
+  if (!out || out.action === "cancel") {
+    try {
+      await api("/api/v2/mfa/device-approval/cancel", {
+        method: "POST",
+        json: { request_id: requestID },
+        skipUnauthorizedHandling: true,
+        skipMFAHandling: true,
+        logErrors: false,
+      });
+    } catch {
+      // ignore cancellation cleanup errors
+    }
+    throw new Error("Device approval was cancelled.");
+  }
+  if (out.action === "approved") {
+    return;
+  }
+  if (out.action === "rejected") {
+    throw new Error("The sign-in request was rejected from another device.");
+  }
+  if (out.action === "cancelled") {
+    throw new Error("The device approval request was cancelled.");
+  }
+  if (out.action === "expired") {
+    throw new Error("The device approval request expired. Try again.");
+  }
+  if (out.action === "error") {
+    throw new Error(String(out.meta?.error || "Device approval failed."));
+  }
+  throw new Error("Device approval did not complete.");
+}
+
 async function runTOTPSetupFlow() {
   const enroll = await api("/api/v2/security/mfa/totp/enroll", {
     method: "POST",
@@ -6247,7 +6480,7 @@ function formatPasskeyPrimaryLoginError(err) {
   if (err.code !== "invalid_credentials") {
     return formatAPIError(err, "Passkey login failed.");
   }
-  return `No discoverable passkey was accepted on this device. Try again or sign in with email and password.${apiRequestRef(err)}`;
+  return `No discoverable passkey was accepted on this device. Try again or use password sign-in.${apiRequestRef(err)}`;
 }
 
 async function runMFASetupStage(stage) {
@@ -6302,14 +6535,17 @@ async function runMFAVerificationStage() {
   let lastError = "";
   while (true) {
     const rememberPanel = createRememberDevicePanel(true);
-    const actions = [
-      { id: "totp", label: "Use Authenticator Code", kind: "primary" },
-      { id: "recovery", label: "Use Recovery Code", kind: "ghost" },
-      { id: "cancel", label: "Cancel", kind: "ghost" },
-    ];
+    const actions = [];
     if (supportsWebAuthn()) {
-      actions.unshift({ id: "passkey", label: "Use Passkey", kind: "primary" });
+      actions.push({ id: "passkey", label: "Use Passkey", kind: "primary" });
     }
+    actions.push({ id: "totp", label: "Use Authenticator Code", kind: "primary" });
+    actions.push({ id: "device_approval", label: "Approve From Another Device", kind: "ghost" });
+    if (userHasDistinctRecoveryEmail(state.user)) {
+      actions.push({ id: "recovery_email", label: "Use Recovery Email", kind: "ghost" });
+    }
+    actions.push({ id: "recovery", label: "Use Recovery Code", kind: "ghost" });
+    actions.push({ id: "cancel", label: "Cancel", kind: "ghost" });
     const out = await openMFAModal({
       title: "MFA Verification Required",
       body: lastError ? `Verification failed: ${lastError}` : "Choose how to verify this login session.",
@@ -6326,6 +6562,10 @@ async function runMFAVerificationStage() {
         await runWebAuthnVerifyFlow(rememberDevice);
       } else if (out.action === "totp") {
         await verifyTOTPCodeFlow("/api/v2/mfa/totp/verify", "Enter Authenticator Code", "Authenticator code", rememberDevice);
+      } else if (out.action === "device_approval") {
+        await runDeviceApprovalFlow(rememberDevice);
+      } else if (out.action === "recovery_email") {
+        await runRecoveryEmailVerifyFlow(rememberDevice);
       } else if (out.action === "recovery") {
         await verifyTOTPCodeFlow("/api/v2/mfa/recovery-code/verify", "Enter Recovery Code", "Recovery code", rememberDevice);
       }
@@ -6343,7 +6583,7 @@ async function ensureMFAStageAuthenticated(initial = null) {
   }
   state.auth.mfaFlowPromise = (async () => {
     let stage = authStageFromPayload(initial || {});
-    if (!initial) {
+    if (!initial || (!state.user && stage.auth_stage !== "authenticated")) {
       stage = await fetchCurrentAuthStage();
     }
     while (stage.auth_stage !== "authenticated") {
@@ -10318,6 +10558,55 @@ function domainToDefaultEmail(domain) {
   return `webmaster@${d}`;
 }
 
+function normalizeSetupInstanceMode(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "external_accounts" || value === "hybrid") return value;
+  return "local_stack";
+}
+
+function setupModeUsesLocalMail(mode = state.setup.instanceMode) {
+  const normalized = normalizeSetupInstanceMode(mode);
+  return normalized === "local_stack" || normalized === "hybrid";
+}
+
+function setupModeUsesExternalMail(mode = state.setup.instanceMode) {
+  const normalized = normalizeSetupInstanceMode(mode);
+  return normalized === "external_accounts" || normalized === "hybrid";
+}
+
+function setupModeAdminIdentifierLabel(mode = state.setup.instanceMode) {
+  return normalizeSetupInstanceMode(mode) === "external_accounts" ? "Admin username" : "Admin email";
+}
+
+function setupModeLoginIdentifierLabel(mode = state.setup.instanceMode) {
+  return normalizeSetupInstanceMode(mode) === "external_accounts" ? "Username" : "Email";
+}
+
+function setupModeSummaryLabel(mode = state.setup.instanceMode) {
+  const normalized = normalizeSetupInstanceMode(mode);
+  if (normalized === "external_accounts") return "External mail accounts";
+  if (normalized === "hybrid") return "Local server and external accounts";
+  return "Local server mail";
+}
+
+function setupModeDefaultAdminValue(mode = state.setup.instanceMode, domain = state.setup.baseDomain) {
+  return normalizeSetupInstanceMode(mode) === "external_accounts"
+    ? "admin"
+    : domainToDefaultEmail(domain);
+}
+
+function setupModeIdentifierHint(mode = state.setup.instanceMode, domain = state.setup.baseDomain) {
+  const normalized = normalizeSetupInstanceMode(mode);
+  if (normalized === "external_accounts") {
+    return "Choose the admin username used to sign in to Despatch. It can be any short name you want. Recovery email must be different from the username.";
+  }
+  return `The admin email defaults to ${setupModeDefaultAdminValue(normalized, domain)}. Recovery email must be different from the admin email.`;
+}
+
+function setupModeAutoOpenTarget(mode = state.setup.instanceMode) {
+  return normalizeSetupInstanceMode(mode) === "external_accounts" ? "admin" : "mail";
+}
+
 function setupThemeLabel(themeName) {
   return themeName === "paper-light" ? "Paper" : "Machine";
 }
@@ -10343,23 +10632,60 @@ function passwordClassCount(password) {
   return classes;
 }
 
+function renderAuthModeAvailability() {
+  const registerAllowed = state.setup.registrationAllowed !== false;
+  if (el.authModeRegister) {
+    el.authModeRegister.classList.toggle("hidden", !registerAllowed);
+  }
+  if (!registerAllowed && state.ui.activeAuthTask === "register") {
+    setActiveAuthTask("login");
+    return;
+  }
+  if (el.authPaneRegister && !registerAllowed) {
+    el.authPaneRegister.classList.add("hidden");
+  }
+}
+
+function renderAuthIdentifierUI() {
+  const loginLabel = setupModeLoginIdentifierLabel();
+  if (el.loginIdentifierLabel) {
+    el.loginIdentifierLabel.textContent = loginLabel;
+  }
+  if (el.loginIdentifierInput) {
+    el.loginIdentifierInput.placeholder = loginLabel === "Username" ? "admin" : "admin@example.com";
+    el.loginIdentifierInput.autocomplete = "username";
+  }
+  if (el.resetRequestLabel) {
+    el.resetRequestLabel.textContent = loginLabel === "Username" ? "Username Or Recovery Email" : "Account Or Recovery Email";
+  }
+  if (el.resetRequestEmail) {
+    el.resetRequestEmail.placeholder = loginLabel === "Username" ? "username or recovery@example.net" : "account@example.com or recovery@example.net";
+    el.resetRequestEmail.autocomplete = "username";
+  }
+  renderAuthModeAvailability();
+}
+
 async function loadSetupStatus() {
   const data = await api("/api/v1/setup/status");
   state.setup.required = !!data.required;
+  state.setup.instanceMode = normalizeSetupInstanceMode(data.instance_mode || state.setup.instanceMode);
   state.setup.baseDomain = normalizeDomain(data.base_domain || "example.com");
-  state.setup.defaultAdminEmail = String(data.default_admin_email || domainToDefaultEmail(state.setup.baseDomain)).toLowerCase();
+  state.setup.baseDomainRequired = data.base_domain_required !== false;
+  state.setup.defaultAdminEmail = String(data.default_admin_identifier || data.default_admin_email || setupModeDefaultAdminValue(state.setup.instanceMode, state.setup.baseDomain)).trim().toLowerCase();
+  state.setup.registrationAllowed = data.registration_allowed !== false;
   state.setup.automaticUpdatesEnabled = data.automatic_updates_enabled !== false;
   state.setup.passkeyPrimaryEnabled = data.passkey_primary_sign_in_enabled !== false;
   state.setup.authMode = String(data.auth_mode || "sql").toLowerCase();
   state.setup.passwordMinLength = Number(data.password_min_length || 12);
   state.setup.passwordMaxLength = Number(data.password_max_length || 128);
   state.setup.passwordClassMin = Number(data.password_class_min || 3);
+  renderAuthIdentifierUI();
   return data;
 }
 
 async function completeSetup() {
   const domain = normalizeDomain(el.setupDomain.value);
-  const email = String(el.setupAdminEmail.value || "").trim().toLowerCase();
+  const identifier = String(el.setupAdminEmail.value || "").trim().toLowerCase();
   const recoveryEmail = String(el.setupAdminRecoveryEmail?.value || "").trim().toLowerCase();
   const region = String(el.setupRegion.value || "us-east").trim();
   const password = el.setupPassword.value;
@@ -10370,12 +10696,14 @@ async function completeSetup() {
   const setupPayload = await api("/api/v1/setup/complete", {
     method: "POST",
     json: {
-      base_domain: domain,
-      admin_email: email,
+      base_domain: setupModeUsesLocalMail() ? domain : "",
+      admin_email: identifier,
+      admin_identifier: identifier,
       admin_recovery_email: recoveryEmail,
       admin_mailbox_login: mailboxLogin,
       admin_password: password,
       region,
+      instance_mode: state.setup.instanceMode,
       passkey_primary_sign_in_enabled: passkeyPrimaryEnabled,
       automatic_updates_enabled: automaticUpdatesEnabled,
     },
@@ -10401,15 +10729,22 @@ async function completeSetup() {
   state.setup.required = false;
   applyNavVisibility();
   showView("setup");
-  setStatus("SETUP COMPLETE. SIGNED IN AS WEBMASTER.", "ok");
+  const liveIdentifier = String(
+    session.user?.identifier
+    || session.user?.email
+    || setupPayload?.identifier
+    || identifier
+    || "admin",
+  ).trim();
+  setStatus(`SETUP COMPLETE. SIGNED IN AS ${liveIdentifier.toUpperCase()}.`, "ok");
 }
 
 const OOBEController = {
   init() {
+    const mode = normalizeSetupInstanceMode(state.setup.instanceMode);
     const domain = state.setup.baseDomain || "example.com";
-    const email = state.setup.defaultAdminEmail || domainToDefaultEmail(domain);
     el.setupDomain.value = domain;
-    el.setupAdminEmail.value = email;
+    el.setupAdminEmail.value = state.setup.defaultAdminEmail || setupModeDefaultAdminValue(mode, domain);
     if (el.setupAdminRecoveryEmail) el.setupAdminRecoveryEmail.value = "";
     el.setupPassword.value = "";
     el.setupPasswordConfirm.value = "";
@@ -10420,7 +10755,7 @@ const OOBEController = {
       el.setupCompleteNote.textContent = "Auto opening mail in 3 seconds.";
     }
     state.setup.adminEmailTouched = false;
-    state.setup.lastAutoAdminEmail = email;
+    state.setup.lastAutoAdminEmail = "";
     state.setup.retryUntilMs = 0;
     if (state.setup.retryTimer) {
       clearInterval(state.setup.retryTimer);
@@ -10435,9 +10770,52 @@ const OOBEController = {
     this.setThemeChoice(ThemeController.getTheme() || state.theme || "machine-dark", { applyTheme: false });
     this.setAutomaticUpdatesChoice(state.setup.automaticUpdatesEnabled !== false);
     setSetupInlineStatus("");
+    this.setInstanceMode(mode, { forceDefault: true });
     this.updatePasswordHint();
     this.setStep(0);
     this.updateSummary();
+  },
+
+  setInstanceMode(mode, opts = {}) {
+    const normalized = normalizeSetupInstanceMode(mode);
+    const domain = normalizeDomain(el.setupDomain?.value || state.setup.baseDomain || "example.com");
+    const usesLocalMail = setupModeUsesLocalMail(normalized);
+    const autoIdentifier = setupModeDefaultAdminValue(normalized, domain);
+    const currentIdentifier = String(el.setupAdminEmail?.value || "").trim().toLowerCase();
+    const shouldAutoFill = opts.forceDefault === true
+      || !state.setup.adminEmailTouched
+      || currentIdentifier === String(state.setup.lastAutoAdminEmail || "").trim().toLowerCase();
+
+    state.setup.instanceMode = normalized;
+    state.setup.baseDomain = domain;
+    state.setup.baseDomainRequired = usesLocalMail;
+
+    setSetupChoicePressed(el.setupModeLocal, normalized === "local_stack");
+    setSetupChoicePressed(el.setupModeExternal, normalized === "external_accounts");
+    setSetupChoicePressed(el.setupModeHybrid, normalized === "hybrid");
+
+    if (el.setupDomainWrap) {
+      el.setupDomainWrap.classList.toggle("hidden", !usesLocalMail);
+    }
+    if (el.setupAdminIdentifierLabel) {
+      el.setupAdminIdentifierLabel.textContent = setupModeAdminIdentifierLabel(normalized);
+    }
+    if (el.setupAdminIdentifierHint) {
+      el.setupAdminIdentifierHint.textContent = setupModeIdentifierHint(normalized, domain);
+    }
+    if (el.setupAdminEmail) {
+      el.setupAdminEmail.placeholder = autoIdentifier;
+      el.setupAdminEmail.inputMode = usesLocalMail ? "email" : "text";
+      if (shouldAutoFill) {
+        el.setupAdminEmail.value = autoIdentifier;
+        state.setup.adminEmailTouched = false;
+      }
+    }
+    state.setup.lastAutoAdminEmail = autoIdentifier;
+    renderAuthIdentifierUI();
+    this.updatePasswordHint();
+    this.updateSummary();
+    this.refreshNavState();
   },
 
   setThemeChoice(themeName, opts = {}) {
@@ -10514,14 +10892,25 @@ const OOBEController = {
   },
 
   updateSummary() {
+    const mode = normalizeSetupInstanceMode(state.setup.instanceMode);
+    const usesLocalMail = setupModeUsesLocalMail(mode);
     el.setupSummaryRegion.textContent = el.setupRegion.options[el.setupRegion.selectedIndex]?.text || "-";
+    if (el.setupSummaryMode) {
+      el.setupSummaryMode.textContent = setupModeSummaryLabel(mode);
+    }
     if (el.setupSummaryTheme) {
       el.setupSummaryTheme.textContent = setupThemeLabel(ThemeController.getTheme());
     }
     if (el.setupSummaryUpdates) {
       el.setupSummaryUpdates.textContent = setupAutomaticUpdatesLabel(state.setup.automaticUpdatesEnabled !== false);
     }
-    el.setupSummaryDomain.textContent = normalizeDomain(el.setupDomain.value) || "-";
+    if (el.setupSummaryDomainRow) {
+      el.setupSummaryDomainRow.classList.toggle("hidden", !usesLocalMail);
+    }
+    el.setupSummaryDomain.textContent = usesLocalMail ? (normalizeDomain(el.setupDomain.value) || "-") : "Not used";
+    if (el.setupSummaryAdminLabel) {
+      el.setupSummaryAdminLabel.textContent = `${setupModeAdminIdentifierLabel(mode)}:`;
+    }
     el.setupSummaryEmail.textContent = String(el.setupAdminEmail.value || "-").trim().toLowerCase();
     if (el.setupSummaryRecoveryEmail) {
       el.setupSummaryRecoveryEmail.textContent = normalizeRecoveryEmailInput(el.setupAdminRecoveryEmail?.value) || "-";
@@ -10532,28 +10921,42 @@ const OOBEController = {
   },
 
   validateStep(stepId) {
-    if (stepId === 4) {
+    if (stepId === 5) {
+      const mode = normalizeSetupInstanceMode(state.setup.instanceMode);
+      const usesLocalMail = setupModeUsesLocalMail(mode);
       const domain = normalizeDomain(el.setupDomain.value);
-      const email = String(el.setupAdminEmail.value || "").trim().toLowerCase();
+      const identifier = String(el.setupAdminEmail.value || "").trim().toLowerCase();
       const recoveryEmail = normalizeRecoveryEmailInput(el.setupAdminRecoveryEmail?.value);
-      if (!validDomain(domain)) {
-        throw new Error("Enter a valid domain (example: mail.example.com or example.com)");
-      }
-      if (!validEmail(email)) {
-        throw new Error("Enter a valid admin email");
-      }
-      if (!email.endsWith(`@${domain}`)) {
-        throw new Error(`Admin email must use @${domain}`);
+      if (usesLocalMail) {
+        if (!validDomain(domain)) {
+          throw new Error("Enter a valid domain (example: mail.example.com or example.com)");
+        }
+        if (!validEmail(identifier)) {
+          throw new Error("Enter a valid admin email");
+        }
+        if (!identifier.endsWith(`@${domain}`)) {
+          throw new Error(`Admin email must use @${domain}`);
+        }
+      } else {
+        if (identifier.length < 3) {
+          throw new Error("Admin username must be at least 3 characters");
+        }
+        if (identifier.length > 64) {
+          throw new Error("Admin username must be at most 64 characters");
+        }
+        if (/\s/.test(identifier)) {
+          throw new Error("Admin username cannot contain spaces");
+        }
       }
       if (!validEmail(recoveryEmail)) {
         throw new Error("Enter a valid recovery email");
       }
-      if (recoveryEmail === email) {
-        throw new Error("Recovery email must be different from the admin email");
+      if (recoveryEmail === identifier) {
+        throw new Error(`Recovery email must be different from the admin ${usesLocalMail ? "email" : "username"}`);
       }
     }
 
-    if (stepId === 5) {
+    if (stepId === 6) {
       const p1 = el.setupPassword.value;
       const p2 = el.setupPasswordConfirm.value;
       if (p1.length === 0) {
@@ -10649,7 +11052,7 @@ const OOBEController = {
 
   updatePasswordHint() {
     if (!el.setupPasswordHint) return;
-    if (state.setup.authMode === "pam") {
+    if (state.setup.authMode === "pam" && setupModeUsesLocalMail()) {
       el.setupPasswordHint.textContent = "PAM mode: use the mailbox password already managed on this server. Add Mailbox Login if sign-in uses a different local account name.";
       if (el.setupAdminMailboxLoginWrap) {
         el.setupAdminMailboxLoginWrap.classList.remove("hidden");
@@ -10675,18 +11078,24 @@ const OOBEController = {
 
   scheduleAutoOpenMail() {
     if (state.setup.autoOpenTimer) clearTimeout(state.setup.autoOpenTimer);
+    const target = setupModeAutoOpenTarget();
+    const targetLabel = target === "admin" ? "Admin" : "mail";
     let ticks = 3;
     if (el.setupCompleteNote) {
-      el.setupCompleteNote.textContent = `Auto opening mail in ${ticks} seconds.`;
+      el.setupCompleteNote.textContent = `Auto opening ${targetLabel} in ${ticks} seconds.`;
     }
     const interval = setInterval(() => {
       ticks -= 1;
       if (ticks > 0 && el.setupCompleteNote) {
-        el.setupCompleteNote.textContent = `Auto opening mail in ${ticks} seconds.`;
+        el.setupCompleteNote.textContent = `Auto opening ${targetLabel} in ${ticks} seconds.`;
       }
     }, 1000);
     state.setup.autoOpenTimer = window.setTimeout(async () => {
       clearInterval(interval);
+      if (target === "admin") {
+        await this.openAdmin();
+        return;
+      }
       await this.openMail();
     }, 3000);
   },
@@ -10858,20 +11267,34 @@ async function refreshSession(opts = {}) {
       logErrors: !opts.skipUnauthorizedHandling,
     });
     state.user = me;
-    setStatus(`Signed in as ${me.email}.`, "ok");
+    if (!opts.quiet) {
+      setStatus(`Signed in as ${me.email}.`, "ok");
+    }
     applyNavVisibility();
-    await promptRecoveryEmailIfNeeded();
-    await promptLegacyMFAIfNeeded();
-    await loadTrustedDevices();
-    await loadPasskeyCredentials();
-    await loadSessions();
+    syncSessionKeepalive();
+    syncMFAApprovalPolling();
+    if (!opts.skipPostAuthLoads) {
+      await promptRecoveryEmailIfNeeded();
+      await promptLegacyMFAIfNeeded();
+      await loadTrustedDevices();
+      await loadPasskeyCredentials();
+      await loadSessions();
+    }
     return { ok: true, user: me };
   } catch (err) {
-    state.auth.recoveryPromptShownForSession = false;
-    state.auth.legacyMFAOfferShownForSession = false;
-    state.user = null;
-    renderSessions([]);
-    applyNavVisibility();
+    const authFailure = err?.status === 401
+      || isSessionErrorCode(String(err?.code || ""))
+      || isMFAStageCode(String(err?.code || ""));
+    if (authFailure) {
+      state.auth.recoveryPromptShownForSession = false;
+      state.auth.legacyMFAOfferShownForSession = false;
+      state.user = null;
+      renderSessions([]);
+      applyNavVisibility();
+      stopSessionKeepalive();
+      stopMFAApprovalPolling();
+      state.auth.approvalPromptingRequestID = "";
+    }
     if (opts.throwOnFail) throw err;
     return { ok: false, error: err };
   }
@@ -10890,6 +11313,127 @@ function userNeedsRecoveryEmail(user) {
     return true;
   }
   return login !== "" && recovery === login;
+}
+
+function userHasDistinctRecoveryEmail(user) {
+  return !!user && !userNeedsRecoveryEmail(user);
+}
+
+const sessionKeepaliveIntervalMs = 5 * 60 * 1000;
+const mfaApprovalPollIntervalMs = 15 * 1000;
+
+function stopSessionKeepalive() {
+  if (!state.auth.keepaliveTimer) return;
+  window.clearInterval(state.auth.keepaliveTimer);
+  state.auth.keepaliveTimer = 0;
+}
+
+async function runSessionKeepalive() {
+  if (!state.user || state.auth.keepaliveInFlight) return;
+  if (document.visibilityState !== "visible") return;
+  state.auth.keepaliveInFlight = true;
+  try {
+    await refreshSession({
+      quiet: true,
+      skipPostAuthLoads: true,
+    });
+  } finally {
+    state.auth.keepaliveInFlight = false;
+  }
+}
+
+function syncSessionKeepalive() {
+  if (!state.user) {
+    stopSessionKeepalive();
+    return;
+  }
+  if (state.auth.keepaliveTimer) return;
+  state.auth.keepaliveTimer = window.setInterval(() => {
+    void runSessionKeepalive();
+  }, sessionKeepaliveIntervalMs);
+}
+
+function stopMFAApprovalPolling() {
+  if (state.auth.approvalPollTimer) {
+    window.clearInterval(state.auth.approvalPollTimer);
+    state.auth.approvalPollTimer = 0;
+  }
+  state.auth.approvalPollInFlight = false;
+}
+
+async function maybePromptPendingMFADeviceApprovals() {
+  if (!state.user || requiresMFAStageAuthentication(state.user) || state.auth.approvalPollInFlight) return;
+  if (document.visibilityState !== "visible") return;
+  if (state.ui?.mfaModalOpen) return;
+  state.auth.approvalPollInFlight = true;
+  try {
+    const payload = await api("/api/v2/security/mfa/device-approvals/pending", {
+      logErrors: false,
+      skipUnauthorizedHandling: false,
+      skipMFAHandling: true,
+    });
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    const now = Date.now();
+    const next = items.find((item) => {
+      const id = String(item.id || "").trim();
+      if (!id) return false;
+      if (state.auth.approvalPromptingRequestID === id) return false;
+      const mutedUntil = Number(state.auth.approvalPromptMutedUntilByID[id] || 0);
+      return !Number.isFinite(mutedUntil) || mutedUntil <= now;
+    });
+    if (!next) return;
+    const requestID = String(next.id || "").trim();
+    state.auth.approvalPromptingRequestID = requestID;
+    const detailParts = [];
+    if (next.request_display_label) detailParts.push(String(next.request_display_label));
+    else if (next.request_device_label) detailParts.push(String(next.request_device_label));
+    if (next.request_ip_hint) detailParts.push(String(next.request_ip_hint));
+    const detail = detailParts.filter(Boolean).join(" from ");
+    const out = await openMFAModal({
+      title: "Approve Sign-In?",
+      body: detail
+        ? `A sign-in on ${detail} is waiting for approval.`
+        : "A sign-in on another device is waiting for approval.",
+      actions: [
+        { id: "approve", label: "Approve", kind: "primary" },
+        { id: "reject", label: "Reject", kind: "danger" },
+        { id: "later", label: "Later", kind: "ghost" },
+      ],
+    });
+    if (!out || out.action === "later" || out.action === "cancel") {
+      state.auth.approvalPromptMutedUntilByID[requestID] = Date.now() + 60 * 1000;
+      return;
+    }
+    const decision = out.action === "approve" ? "approve" : "reject";
+    await api(`/api/v2/security/mfa/device-approvals/${encodeURIComponent(requestID)}/decision`, {
+      method: "POST",
+      json: { decision },
+      logErrors: false,
+      skipMFAHandling: true,
+    });
+    setStatus(decision === "approve" ? "Sign-in approved." : "Sign-in rejected.", decision === "approve" ? "ok" : "info");
+  } catch (err) {
+    if (err && (err.code === "approval_request_not_found" || err.code === "approval_request_resolved" || err.code === "approval_request_expired")) {
+      return;
+    }
+    setStatus(formatAPIError(err, "Failed to review sign-in request."), "error");
+  } finally {
+    state.auth.approvalPromptingRequestID = "";
+    state.auth.approvalPollInFlight = false;
+  }
+}
+
+function syncMFAApprovalPolling() {
+  if (!state.user || requiresMFAStageAuthentication(state.user)) {
+    stopMFAApprovalPolling();
+    return;
+  }
+  if (!state.auth.approvalPollTimer) {
+    state.auth.approvalPollTimer = window.setInterval(() => {
+      void maybePromptPendingMFADeviceApprovals();
+    }, mfaApprovalPollIntervalMs);
+  }
+  void maybePromptPendingMFADeviceApprovals();
 }
 
 async function promptRecoveryEmailIfNeeded() {
@@ -13078,6 +13622,37 @@ function previewTokenLooksMachineish(token) {
   return chars.length > 0 && (machineChars * 100 / chars.length) >= 92;
 }
 
+function mailPreviewContainsText(raw) {
+  return /[\p{L}\p{N}]/u.test(String(raw || ""));
+}
+
+function stripInlineMailPreviewNoise(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return "";
+  const match = text.match(/\s+(?:@(?:font-face|media|supports|import|page|keyframes|charset|viewport|counter-style|property|layer)\b|(?:font-family|font-size|font-weight|font-style|font-display|line-height|letter-spacing|border-collapse|border-spacing|background(?:-color|-image)?|color|display|src|unicode-range|cellpadding|cellspacing|mso-[\w-]+)\b\s*[:=]|mime-version\s*:|content-type\s*:|content-transfer-encoding\s*:|quoted-printable\b|multipart\/|text\/html\b|charset=)/i);
+  if (!match || typeof match.index !== "number") return text;
+  const prefix = text.slice(0, match.index).trim();
+  return mailPreviewContainsText(prefix) ? prefix : text;
+}
+
+function mailPreviewLineLooksNoisy(raw) {
+  const line = String(raw || "").trim();
+  if (!line) return true;
+  return /(?:@font-face|@media|@supports|@import|\b(?:border-collapse|border-spacing|font-family|font-size|font-weight|font-style|font-display|line-height|letter-spacing|cellpadding|cellspacing|mso-|mime-version|content-transfer-encoding|content-type|return-path|dkim-signature|authentication-results|multipart\/|text\/html|charset=|quoted-printable|unicode-range)\b|src\s*:)/i.test(line);
+}
+
+function filterMailPreviewNoiseLines(raw) {
+  const lines = String(raw || "").replace(/\r\n?/g, "\n").split("\n");
+  const kept = [];
+  for (const line of lines) {
+    const cleaned = normalizeMailPreviewWhitespace(stripInlineMailPreviewNoise(line));
+    if (!cleaned) continue;
+    if (mailPreviewLineLooksNoisy(cleaned)) continue;
+    kept.push(cleaned);
+  }
+  return kept.join(" ");
+}
+
 function filterMailPreviewNoiseTokens(raw) {
   const parts = String(raw || "").split(/\s+/);
   const kept = [];
@@ -13088,7 +13663,7 @@ function filterMailPreviewNoiseTokens(raw) {
     const lower = trimmed.toLowerCase();
     if (!trimmed) continue;
     if (/[{}]/.test(trimmed)) continue;
-    if (/(?:border-collapse|font-family|font-size|line-height|cellpadding|cellspacing|quoted-printable|multipart\/|text\/html|charset=|mime-version|content-type|content-transfer-encoding|return-path|dkim-signature|authentication-results|mso-)/i.test(lower)) {
+    if (/(?:@font-face|@media|@supports|@import|border-collapse|border-spacing|font-family|font-size|font-weight|font-style|font-display|line-height|letter-spacing|cellpadding|cellspacing|quoted-printable|multipart\/|text\/html|charset=|mime-version|content-type|content-transfer-encoding|return-path|dkim-signature|authentication-results|unicode-range|src\s*:|mso-)/i.test(lower)) {
       continue;
     }
     if (/^[a-z0-9+/=_-]{24,}$/i.test(trimmed)) continue;
@@ -13109,16 +13684,18 @@ function sanitizeMailPreviewText(raw) {
     .replace(/<\/?[^>]+>/g, " ")
     .replace(/\bhttps?:\/\/[^\s<>"']+/gi, " ");
   text = decodeMailPreviewEntities(text);
+  text = filterMailPreviewNoiseLines(text);
   text = filterMailPreviewNoiseTokens(text);
+  text = stripInlineMailPreviewNoise(text);
   return normalizeMailPreviewWhitespace(text);
 }
 
 function mailPreviewLooksNoisy(raw, normalized = sanitizeMailPreviewText(raw)) {
   if (!normalized) return true;
-  if (/(?:border-collapse|font-family|font-size|line-height|cellpadding|cellspacing|mso-|mime-version|content-transfer-encoding|content-type|quoted-printable|return-path|dkim-signature|authentication-results)/i.test(normalized)) {
+  if (/(?:@font-face|@media|@supports|@import|border-collapse|border-spacing|font-family|font-size|font-weight|font-style|font-display|line-height|letter-spacing|cellpadding|cellspacing|mso-|mime-version|content-transfer-encoding|content-type|quoted-printable|return-path|dkim-signature|authentication-results|unicode-range|src\s*:)/i.test(normalized)) {
     return true;
   }
-  return !(/[\p{L}\p{N}]/u.test(normalized));
+  return !mailPreviewContainsText(normalized);
 }
 
 function safeMailPreviewText(raw) {
@@ -13576,6 +14153,9 @@ async function loadMailboxes(opts = {}) {
       indexedErr = err;
     }
   }
+  if (!mailboxes && !setupModeUsesLocalMail()) {
+    mailboxes = [];
+  }
   if (!mailboxes) {
     try {
       mailboxes = await api("/api/v1/mailboxes", { logErrors: opts.logErrors });
@@ -13592,7 +14172,7 @@ async function loadMailboxes(opts = {}) {
 }
 
 function updateLocalMailboxCounts(mailboxName, deltas = {}) {
-  const target = String(mailboxName || state.mailbox || "").trim();
+  const target = resolveVisibleMailboxName(String(mailboxName || state.mailbox || "").trim());
   if (!target) return;
   const unreadDelta = Number(deltas.unreadDelta || 0);
   const messagesDelta = Number(deltas.messagesDelta || 0);
@@ -13613,6 +14193,94 @@ function updateLocalMailboxCounts(mailboxName, deltas = {}) {
 
 function updateLocalMailboxUnread(mailboxName, delta) {
   updateLocalMailboxCounts(mailboxName, { unreadDelta: delta });
+}
+
+function mailboxesRepresentSameView(left, right) {
+  const leftName = String(left || "").trim();
+  const rightName = String(right || "").trim();
+  if (!leftName || !rightName) return false;
+  if (mailboxNameMatches(leftName, rightName)) return true;
+  const leftRole = normalizeMailboxRole("", leftName);
+  const rightRole = normalizeMailboxRole("", rightName);
+  return !!leftRole && leftRole === rightRole;
+}
+
+function resolveVisibleMailboxName(mailboxName, items = state.mail.mailboxes) {
+  const target = String(mailboxName || "").trim();
+  if (!target) return "";
+  const list = Array.isArray(items) ? items : [];
+  const exact = list.find((item) => mailboxNameMatches(item?.name, target));
+  if (exact) return String(exact?.name || target).trim();
+  const targetRole = normalizeMailboxRole("", target);
+  if (!targetRole) return target;
+  const roleMatch = list.find((item) => normalizeMailboxRole(item?.role, item?.name) === targetRole);
+  return String(roleMatch?.name || target).trim();
+}
+
+function pruneOptimisticSentSummaries(nowMs = Date.now()) {
+  const pending = Array.isArray(state.mail.optimisticSentSummaries) ? state.mail.optimisticSentSummaries : [];
+  state.mail.optimisticSentSummaries = pending.filter((item) => Number(item?.expires_at || 0) > nowMs);
+  return state.mail.optimisticSentSummaries;
+}
+
+function optimisticSentSummaryMatchesFetchedSummary(pending, item) {
+  if (!pending || !item || item?.is_optimistic_sent) return false;
+  if (!mailboxesRepresentSameView(pending.mailbox, item.mailbox)) return false;
+
+  const pendingThreadID = String(pending.thread_id || "").trim();
+  const itemThreadID = String(item?.thread_id || "").trim();
+  if (pendingThreadID && itemThreadID && pendingThreadID !== itemThreadID) return false;
+
+  const pendingSubject = String(pending.subject || "").trim().toLowerCase();
+  const itemSubject = String(item?.subject || "").trim().toLowerCase();
+  if (pendingSubject && itemSubject && pendingSubject !== itemSubject) return false;
+
+  const pendingFrom = extractPrimaryEmailAddress(pending.from);
+  const itemFrom = extractPrimaryEmailAddress(item?.from);
+  if (pendingFrom && itemFrom && pendingFrom !== itemFrom) return false;
+
+  const pendingPreview = mailSummaryPreviewText(pending).toLowerCase();
+  const itemPreview = mailSummaryPreviewText(item).toLowerCase();
+  if (pendingPreview && itemPreview && !pendingPreview.includes(itemPreview) && !itemPreview.includes(pendingPreview)) {
+    return false;
+  }
+
+  const pendingAt = Date.parse(String(pending.date || ""));
+  const itemAt = Date.parse(String(item?.date || ""));
+  if (Number.isFinite(pendingAt) && Number.isFinite(itemAt) && Math.abs(itemAt - pendingAt) > 5 * 60 * 1000) {
+    return false;
+  }
+  return true;
+}
+
+function mergeOptimisticSentSummaries(items) {
+  const baseItems = (Array.isArray(items) ? items : []).filter((item) => !item?.is_optimistic_sent);
+  const pending = pruneOptimisticSentSummaries();
+  if (pending.length === 0) return baseItems;
+  if (state.mail.viewKind !== "mailbox" || String(state.mail.searchQuery || "").trim() || hasAppliedAdvancedMailFilters()) {
+    return baseItems;
+  }
+
+  const currentMailbox = String(state.mailbox || "").trim();
+  const stillPending = [];
+  const visiblePending = [];
+  for (const summary of pending) {
+    if (baseItems.some((item) => optimisticSentSummaryMatchesFetchedSummary(summary, item))) {
+      continue;
+    }
+    stillPending.push(summary);
+    if (mailboxesRepresentSameView(summary.mailbox, currentMailbox)) {
+      visiblePending.push({
+        ...summary,
+        mailbox: currentMailbox || summary.mailbox,
+        is_optimistic_sent: true,
+      });
+    }
+  }
+  state.mail.optimisticSentSummaries = stillPending;
+  if (visiblePending.length === 0) return baseItems;
+  visiblePending.sort((a, b) => new Date(b?.date || 0).getTime() - new Date(a?.date || 0).getTime());
+  return [...visiblePending, ...baseItems];
 }
 
 function mailSnapshotValue(value) {
@@ -13821,6 +14489,7 @@ function optimisticComposeSummary(snapshot, mailboxName, options = {}) {
     answered: !!options.answered,
     preview: mailPreviewFromText(previewSource),
     thread_id: String(snapshot?.threadID || "").trim(),
+    is_optimistic_sent: true,
   };
 }
 
@@ -13828,11 +14497,18 @@ function insertOptimisticMailboxSummary(summary) {
   if (!summary || !summary.id) return;
   const mailboxName = String(summary.mailbox || "").trim();
   if (!mailboxName) return;
-  updateLocalMailboxCounts(mailboxName, { messagesDelta: 1 });
-  if (mailboxName !== String(state.mailbox || "").trim()) return;
-  const items = Array.isArray(state.messages) ? [...state.messages] : [];
-  items.unshift(summary);
-  renderMessages(items);
+  const resolvedMailbox = resolveVisibleMailboxName(mailboxName) || mailboxName;
+  state.mail.optimisticSentSummaries = [
+    {
+      ...summary,
+      mailbox: resolvedMailbox,
+      is_optimistic_sent: true,
+      expires_at: Date.now() + (60 * 1000),
+    },
+    ...pruneOptimisticSentSummaries().filter((item) => String(item?.id || "") !== String(summary.id || "")),
+  ];
+  updateLocalMailboxCounts(resolvedMailbox, { messagesDelta: 1 });
+  renderMessages(mergeOptimisticSentSummaries(state.messages));
 }
 
 function composeSenderForSummary() {
@@ -13984,6 +14660,9 @@ function renderMessages(items) {
     const contextBadge = m.isDraft && String(m.context_badge || "").trim()
       ? `<span class="message-context-badge">${escapeHtml(m.context_badge)}</span>`
       : "";
+    const optimisticBadge = m.is_optimistic_sent
+      ? `<span class="message-context-badge">Syncing</span>`
+      : "";
     const triageHTML = renderMailTriageInlineHTML(m, {
       compact: true,
       maxTags: 1,
@@ -14005,7 +14684,7 @@ function renderMessages(items) {
         previewText,
         dateText: formatListDate(m.date),
         senderAfterHTML: accountChip,
-        subjectAfterHTML: `${contextBadge}${triageHTML}`,
+        subjectAfterHTML: `${contextBadge}${optimisticBadge}${triageHTML}`,
       })}`;
     const cancelLongPress = () => {
       if (state.mail.rowLongPressTimer) {
@@ -14031,6 +14710,10 @@ function renderMessages(items) {
         && String(state.mail.suppressRowClickMessageID || "") === messageID
       ) {
         state.mail.suppressRowClickMessageID = "";
+        return;
+      }
+      if (m.is_optimistic_sent) {
+        setStatus("Sent copy is still syncing. It will open once the mailbox refresh catches up.", "info");
         return;
       }
       if (m.isDraft) {
@@ -14200,6 +14883,13 @@ async function loadMessages(opts = {}) {
   const query = String(state.mail.searchQuery || "").trim();
   const selectedID = String(state.selectedMessage?.id || "");
   let items = [];
+  if (!mailUsesIndexedMode() && !setupModeUsesLocalMail()) {
+    reconcileVisibleMessages([], { clearMissingReader: true });
+    if (!opts.quiet) {
+      setStatus("No connected mail accounts yet.", "info");
+    }
+    return;
+  }
   try {
     if (mailUsesIndexedMode()) {
       const hadFallback = state.mail.indexedRuntimeFallback;
@@ -14234,6 +14924,7 @@ async function loadMessages(opts = {}) {
     const fallback = await loadLegacyMailMessages(query);
     items = Array.isArray(fallback?.items) ? fallback.items : [];
   }
+  items = mergeOptimisticSentSummaries(items);
   reconcileVisibleMessages(items, { clearMissingReader: true });
   if (selectedID) {
     state.selectedMessageSummary = state.messages.find((item) => String(item?.id || "") === selectedID) || state.selectedMessageSummary;
@@ -16870,6 +17561,7 @@ function renderAdminUserDetail() {
     ? state.admin.users.items.find((it) => String(it.id || "") === state.admin.users.detailId)
     : null;
   if (!item) {
+    syncAdminUserMailboxState("");
     if (inDetailMode) {
       state.ui.adminNav.page = "list";
       state.ui.adminNav.detailId = "";
@@ -16880,6 +17572,9 @@ function renderAdminUserDetail() {
   }
   state.ui.adminNav.page = "detail";
   state.ui.adminNav.detailId = String(item.id || "");
+  const userID = String(item.id || "").trim();
+  const mailboxState = syncAdminUserMailboxState(userID);
+  ensureAdminUserMailboxesLoaded(userID);
   el.adminUsersDetail.classList.remove("hidden");
   const title = document.createElement("h4");
   title.textContent = String(item.email || "User");
@@ -16966,6 +17661,7 @@ function renderAdminUserDetail() {
         method: "POST",
         json: { new_password: String(pw).trim() },
       });
+      await loadAdminUserMailboxes(userID, { force: true });
       setStatus(`Password reset for ${item.email}.`, "ok");
     } catch (err) {
       presentAPIError(err, "Failed to reset password");
@@ -16989,6 +17685,87 @@ function renderAdminUserDetail() {
     actions.appendChild(retry);
   }
   el.adminUsersDetail.appendChild(actions);
+
+  const mailboxesSection = document.createElement("section");
+  const mailboxesTitle = document.createElement("h5");
+  mailboxesTitle.textContent = "Mailboxes";
+  mailboxesSection.appendChild(mailboxesTitle);
+  const mailboxesHint = document.createElement("p");
+  mailboxesHint.className = "hint";
+  mailboxesHint.textContent = "Create and delete this user's folders directly against Dovecot using the mailbox credentials Despatch has stored.";
+  mailboxesSection.appendChild(mailboxesHint);
+
+  const mailboxActions = document.createElement("div");
+  mailboxActions.className = "settings-detail-actions";
+  const refreshMailboxes = document.createElement("button");
+  refreshMailboxes.type = "button";
+  refreshMailboxes.className = "cmd-btn cmd-btn--dense";
+  refreshMailboxes.textContent = mailboxState.loading ? "Refreshing..." : "Refresh Mailboxes";
+  refreshMailboxes.disabled = mailboxState.loading;
+  refreshMailboxes.addEventListener("click", async () => {
+    await loadAdminUserMailboxes(userID, { force: true });
+    if (state.admin.userMailboxes.userID === userID && !state.admin.userMailboxes.error) {
+      setStatus(`Refreshed mailboxes for ${item.email}.`, "ok");
+    }
+  });
+  mailboxActions.appendChild(refreshMailboxes);
+
+  const createMailbox = document.createElement("button");
+  createMailbox.type = "button";
+  createMailbox.className = "cmd-btn cmd-btn--dense cmd-btn--primary";
+  createMailbox.textContent = "Create Mailbox";
+  createMailbox.disabled = mailboxState.loading;
+  createMailbox.addEventListener("click", async () => {
+    await promptAdminCreateMailbox(item);
+  });
+  mailboxActions.appendChild(createMailbox);
+  mailboxesSection.appendChild(mailboxActions);
+
+  if (mailboxState.loading && !mailboxState.loaded) {
+    const loading = document.createElement("p");
+    loading.className = "settings-list-empty";
+    loading.textContent = "Loading mailboxes...";
+    mailboxesSection.appendChild(loading);
+  } else if (mailboxState.error) {
+    const error = document.createElement("p");
+    error.className = "hint";
+    error.textContent = mailboxState.error;
+    mailboxesSection.appendChild(error);
+  } else if (!mailboxState.loaded || mailboxState.items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = mailboxState.loaded
+      ? "No mailboxes available for this user."
+      : "Mailboxes will appear here once loaded.";
+    mailboxesSection.appendChild(empty);
+  } else {
+    for (const mailbox of mailboxState.items) {
+      const mailboxName = String(mailbox?.name || "").trim();
+      const role = String(mailbox?.role || "").trim().toLowerCase();
+      const messages = Number(mailbox?.messages || 0);
+      const unread = Number(mailbox?.unread || 0);
+      const protectedMailbox = !mailbox?.can_delete;
+      const metaParts = [
+        `${messages} ${pluralizeMessages(messages)}`,
+        `${unread} unread`,
+      ];
+      if (protectedMailbox) {
+        metaParts.push("protected");
+      }
+      const row = renderListItem({
+        markerClass: protectedMailbox ? "status-chip status-chip--warning" : "status-chip status-chip--info",
+        markerText: role ? role.toUpperCase() : "MAILBOX",
+        title: mailboxName || "Mailbox",
+        meta: metaParts.join(" • "),
+        actionText: protectedMailbox ? "" : "Delete",
+        onAction: protectedMailbox ? null : async () => {
+          await deleteAdminMailbox(item, mailbox);
+        },
+      });
+      mailboxesSection.appendChild(row);
+    }
+  }
+  el.adminUsersDetail.appendChild(mailboxesSection);
 }
 
 function renderAdminAuditDetail() {
@@ -17273,6 +18050,321 @@ async function runBulkUserAction(action) {
     return;
   }
   setStatus(`${action === "suspend" ? "Suspended" : "Unsuspended"} ${appliedCount} user(s).`, "ok");
+}
+
+function syncAdminUserMailboxState(userID) {
+  const targetID = String(userID || "").trim();
+  if (state.admin.userMailboxes.userID === targetID) {
+    return state.admin.userMailboxes;
+  }
+  state.admin.userMailboxes = {
+    userID: targetID,
+    items: [],
+    loading: false,
+    loaded: false,
+    error: "",
+    errorCode: "",
+  };
+  return state.admin.userMailboxes;
+}
+
+function describeAdminUserMailboxError(err, fallbackMessage) {
+  if (err?.code === "mailbox_credentials_unavailable") {
+    return `Reset this user's password from the admin panel or have them sign in once so Despatch can store mailbox credentials.${apiRequestRef(err)}`;
+  }
+  return formatAPIError(err, fallbackMessage);
+}
+
+async function loadAdminUserMailboxes(userID, opts = {}) {
+  const targetID = String(userID || "").trim();
+  if (!targetID) return [];
+  const mailboxState = syncAdminUserMailboxState(targetID);
+  if (mailboxState.loading) {
+    return Array.isArray(mailboxState.items) ? mailboxState.items : [];
+  }
+  if (mailboxState.loaded && !opts.force) {
+    return Array.isArray(mailboxState.items) ? mailboxState.items : [];
+  }
+  mailboxState.loading = true;
+  mailboxState.error = "";
+  mailboxState.errorCode = "";
+  renderAdminUserDetail();
+  try {
+    const payload = await api(`/api/v1/admin/users/${encodeURIComponent(targetID)}/mailboxes`, {
+      logErrors: false,
+    });
+    if (state.admin.userMailboxes.userID !== targetID) {
+      return Array.isArray(payload?.items) ? payload.items : [];
+    }
+    mailboxState.items = Array.isArray(payload?.items) ? payload.items : [];
+    mailboxState.loaded = true;
+    mailboxState.loading = false;
+    mailboxState.error = "";
+    mailboxState.errorCode = "";
+    renderAdminUserDetail();
+    return mailboxState.items;
+  } catch (err) {
+    if (state.admin.userMailboxes.userID !== targetID) {
+      return [];
+    }
+    mailboxState.items = [];
+    mailboxState.loaded = true;
+    mailboxState.loading = false;
+    mailboxState.error = describeAdminUserMailboxError(err, "Failed to load mailboxes.");
+    mailboxState.errorCode = String(err?.code || "");
+    renderAdminUserDetail();
+    return [];
+  }
+}
+
+function ensureAdminUserMailboxesLoaded(userID) {
+  const targetID = String(userID || "").trim();
+  if (!targetID) return;
+  const mailboxState = syncAdminUserMailboxState(targetID);
+  if (mailboxState.loading || mailboxState.loaded) return;
+  void loadAdminUserMailboxes(targetID);
+}
+
+async function promptAdminCreateMailbox(user) {
+  const userID = String(user?.id || "").trim();
+  const userEmail = String(user?.email || "this user").trim();
+  if (!userID) {
+    setStatus("Select a user first.", "error");
+    return false;
+  }
+  const input = await showPromptModal({
+    title: "Create Mailbox",
+    body: `Type the full mailbox path to create for ${userEmail}.`,
+    label: "Mailbox name",
+    confirmText: "Create",
+    cancelText: "Cancel",
+    trigger: el.btnUserCreate || null,
+  });
+  if (input === null) return false;
+  const mailboxName = String(input || "").trim();
+  if (!mailboxName) {
+    setStatus("Mailbox name is required.", "error");
+    return false;
+  }
+  try {
+    const payload = await api(`/api/v1/admin/users/${encodeURIComponent(userID)}/mailboxes`, {
+      method: "POST",
+      json: { mailbox_name: mailboxName },
+      logErrors: false,
+    });
+    const mailboxState = syncAdminUserMailboxState(userID);
+    mailboxState.items = Array.isArray(payload?.mailboxes) ? payload.mailboxes : [];
+    mailboxState.loading = false;
+    mailboxState.loaded = true;
+    mailboxState.error = "";
+    mailboxState.errorCode = "";
+    renderAdminUserDetail();
+    const actualName = String(payload?.mailbox_name || mailboxName).trim() || mailboxName;
+    setStatus(`Mailbox ${actualName} created for ${userEmail}.`, "ok");
+    return true;
+  } catch (err) {
+    if (state.admin.userMailboxes.userID === userID && err?.code === "mailbox_credentials_unavailable") {
+      const mailboxState = syncAdminUserMailboxState(userID);
+      mailboxState.loading = false;
+      mailboxState.loaded = true;
+      mailboxState.error = describeAdminUserMailboxError(err, "Failed to create mailbox.");
+      mailboxState.errorCode = String(err?.code || "");
+      renderAdminUserDetail();
+    }
+    presentAPIError(err, "Failed to create mailbox");
+    return false;
+  }
+}
+
+async function deleteAdminMailbox(user, mailbox) {
+  const userID = String(user?.id || "").trim();
+  const userEmail = String(user?.email || "this user").trim();
+  const mailboxName = String(mailbox?.name || "").trim();
+  if (!userID || !mailboxName) {
+    setStatus("Mailbox name is required.", "error");
+    return false;
+  }
+  const confirmed = await showConfirmModal({
+    title: "Delete mailbox?",
+    body: `Delete ${mailboxName} for ${userEmail}? Despatch will move its messages to Trash first when needed, then remove the folder.`,
+    confirmText: "Delete",
+    cancelText: "Cancel",
+    trigger: el.btnUserCreate || null,
+  });
+  if (!confirmed) return false;
+  try {
+    const payload = await api(`/api/v1/admin/users/${encodeURIComponent(userID)}/mailboxes`, {
+      method: "DELETE",
+      json: { mailbox_name: mailboxName },
+      logErrors: false,
+    });
+    const mailboxState = syncAdminUserMailboxState(userID);
+    mailboxState.items = Array.isArray(payload?.mailboxes) ? payload.mailboxes : [];
+    mailboxState.loading = false;
+    mailboxState.loaded = true;
+    mailboxState.error = "";
+    mailboxState.errorCode = "";
+    renderAdminUserDetail();
+    const movedCount = Number(payload?.moved_count || 0) || 0;
+    const trashMailbox = String(payload?.trash_mailbox || "Trash").trim() || "Trash";
+    if (movedCount > 0) {
+      setStatus(`Mailbox ${mailboxName} deleted for ${userEmail}. Moved ${movedCount} ${pluralizeMessages(movedCount)} to ${trashMailbox}.`, "ok");
+      return true;
+    }
+    setStatus(`Mailbox ${mailboxName} deleted for ${userEmail}.`, "ok");
+    return true;
+  } catch (err) {
+    if (state.admin.userMailboxes.userID === userID && err?.code === "mailbox_credentials_unavailable") {
+      const mailboxState = syncAdminUserMailboxState(userID);
+      mailboxState.loading = false;
+      mailboxState.loaded = true;
+      mailboxState.error = describeAdminUserMailboxError(err, "Failed to delete mailbox.");
+      mailboxState.errorCode = String(err?.code || "");
+      renderAdminUserDetail();
+    }
+    presentAPIError(err, "Failed to delete mailbox");
+    return false;
+  }
+}
+
+async function promptAdminCreateUser() {
+  const authMode = String(state.setup.authMode || "sql").toLowerCase();
+  const baseDomain = normalizeDomain(state.setup.baseDomain || "");
+  const emailInput = await showPromptModal({
+    title: "Create User",
+    body: baseDomain
+      ? `Enter the mailbox address to create. It must use @${baseDomain}.`
+      : "Enter the mailbox address to create.",
+    label: "Email",
+    inputType: "email",
+    confirmText: "Next",
+    cancelText: "Cancel",
+    trigger: el.btnUserCreate || null,
+  });
+  if (emailInput === null) return;
+  const email = String(emailInput || "").trim().toLowerCase();
+  if (!validEmail(email)) {
+    setStatus("Enter a valid mailbox email.", "error");
+    return;
+  }
+  if (baseDomain && !email.endsWith(`@${baseDomain}`)) {
+    setStatus(`User email must use @${baseDomain}.`, "error");
+    return;
+  }
+
+  const recoveryInput = await showPromptModal({
+    title: "Create User",
+    body: "Add a recovery email for password reset delivery, or leave it blank so the user can add one later.",
+    label: "Recovery Email",
+    inputType: "email",
+    defaultValue: "",
+    confirmText: "Next",
+    cancelText: "Cancel",
+    trigger: el.btnUserCreate || null,
+  });
+  if (recoveryInput === null) return;
+  const recoveryEmail = normalizeRecoveryEmailInput(recoveryInput);
+  if (recoveryEmail && !validEmail(recoveryEmail)) {
+    setStatus("Enter a valid recovery email or leave it blank.", "error");
+    return;
+  }
+  if (recoveryEmail && recoveryEmail === email) {
+    setStatus("Recovery email must be different from the mailbox address.", "error");
+    return;
+  }
+
+  let mailboxLogin = "";
+  if (authMode === "pam") {
+    const loginInput = await showPromptModal({
+      title: "Create User",
+      body: "PAM mode validates the mailbox password against Dovecot now. Leave Mailbox Login blank to try the full email first, then the local-part fallback automatically.",
+      label: "Mailbox Login",
+      inputType: "text",
+      defaultValue: "",
+      confirmText: "Next",
+      cancelText: "Cancel",
+      trigger: el.btnUserCreate || null,
+    });
+    if (loginInput === null) return;
+    mailboxLogin = String(loginInput || "").trim();
+  }
+
+  const passwordInput = await showPromptModal({
+    title: "Create User",
+    body: authMode === "pam"
+      ? "Enter the mailbox password to validate the PAM-backed account."
+      : `Enter a password for ${email}.`,
+    label: "Password",
+    inputType: "password",
+    defaultValue: "",
+    confirmText: "Next",
+    cancelText: "Cancel",
+    trigger: el.btnUserCreate || null,
+  });
+  if (passwordInput === null) return;
+  const password = String(passwordInput || "").trim();
+  if (!password) {
+    setStatus("Password is required.", "error");
+    return;
+  }
+  if (authMode !== "pam") {
+    const minLen = Number(state.setup.passwordMinLength || 12);
+    const maxLen = Number(state.setup.passwordMaxLength || 128);
+    const classMin = Number(state.setup.passwordClassMin || 3);
+    if (password.length < minLen) {
+      setStatus(`Password must be at least ${minLen} characters.`, "error");
+      return;
+    }
+    if (password.length > maxLen) {
+      setStatus(`Password must be at most ${maxLen} characters.`, "error");
+      return;
+    }
+    if (passwordClassCount(password) < classMin) {
+      setStatus(`Password must include at least ${classMin} character classes.`, "error");
+      return;
+    }
+  }
+
+  const confirmInput = await showPromptModal({
+    title: "Create User",
+    body: `Re-enter the password for ${email} to confirm.`,
+    label: "Confirm Password",
+    inputType: "password",
+    defaultValue: "",
+    confirmText: "Create",
+    cancelText: "Cancel",
+    trigger: el.btnUserCreate || null,
+  });
+  if (confirmInput === null) return;
+  if (password !== String(confirmInput || "").trim()) {
+    setStatus("Password confirmation does not match.", "error");
+    return;
+  }
+
+  const payload = {
+    email,
+    recovery_email: recoveryEmail,
+    password,
+  };
+  if (mailboxLogin) {
+    payload.mailbox_login = mailboxLogin;
+  }
+  const out = await api("/api/v1/admin/users", {
+    method: "POST",
+    json: payload,
+  });
+  const createdID = String(out?.user?.id || "").trim();
+  state.admin.users.selected.clear();
+  await loadAdminUsers();
+  if (createdID && state.admin.users.items.some((item) => String(item.id || "").trim() === createdID)) {
+    state.admin.users.detailId = createdID;
+    state.ui.adminNav.page = "detail";
+    state.ui.adminNav.detailId = createdID;
+    renderAdminUserDetail();
+    setStatus(`Created ${email}.`, "ok");
+    return;
+  }
+  setStatus(`Created ${email}. Current filters may hide the new user.`, "ok");
 }
 
 function mailboxesButtons() {
@@ -17937,7 +19029,11 @@ function bindSetupUI() {
   el.setupBackIcon.onclick = () => OOBEController.back();
   el.setupClose.onclick = async () => {
     if (state.setup.step === setupCompleteStep && !state.setup.required) {
-      await OOBEController.openMail();
+      if (setupModeAutoOpenTarget() === "admin") {
+        await OOBEController.openAdmin();
+      } else {
+        await OOBEController.openMail();
+      }
       return;
     }
     OOBEController.openConfirm("cancel");
@@ -17976,7 +19072,7 @@ function bindSetupUI() {
       } else if (err.code === "recovery_email_required") {
         err.message = "A recovery email is required before setup can finish.";
       } else if (err.code === "recovery_email_matches_login") {
-        err.message = "Recovery email must be different from the admin email.";
+        err.message = `Recovery email must be different from the admin ${setupModeUsesLocalMail() ? "email" : "username"}.`;
       } else if (err.code === "invalid_recovery_email") {
         err.message = "Enter a valid recovery email address.";
       } else if (isSessionErrorCode(err.code)) {
@@ -18020,20 +19116,24 @@ function bindSetupUI() {
     }
   });
 
+  if (el.setupModeLocal) {
+    el.setupModeLocal.addEventListener("click", () => OOBEController.setInstanceMode("local_stack"));
+  }
+  if (el.setupModeExternal) {
+    el.setupModeExternal.addEventListener("click", () => OOBEController.setInstanceMode("external_accounts"));
+  }
+  if (el.setupModeHybrid) {
+    el.setupModeHybrid.addEventListener("click", () => OOBEController.setInstanceMode("hybrid"));
+  }
+
   el.setupDomain.addEventListener("input", () => {
-    const domain = normalizeDomain(el.setupDomain.value);
-    const autoEmail = domainToDefaultEmail(domain);
-    if (!state.setup.adminEmailTouched || String(el.setupAdminEmail.value).trim().toLowerCase() === state.setup.lastAutoAdminEmail) {
-      el.setupAdminEmail.value = autoEmail;
-      state.setup.lastAutoAdminEmail = autoEmail;
-    }
-    OOBEController.updateSummary();
-    OOBEController.refreshNavState();
+    state.setup.baseDomain = normalizeDomain(el.setupDomain.value);
+    OOBEController.setInstanceMode(state.setup.instanceMode);
   });
 
   el.setupAdminEmail.addEventListener("input", () => {
-    const email = String(el.setupAdminEmail.value || "").trim().toLowerCase();
-    state.setup.adminEmailTouched = email !== state.setup.lastAutoAdminEmail;
+    const identifier = String(el.setupAdminEmail.value || "").trim().toLowerCase();
+    state.setup.adminEmailTouched = identifier !== String(state.setup.lastAutoAdminEmail || "").trim().toLowerCase();
     OOBEController.updateSummary();
     OOBEController.refreshNavState();
   });
@@ -18435,6 +19535,15 @@ function bindUI() {
       syncAdminCheckAll();
     };
   }
+  if (el.btnUserCreate) {
+    el.btnUserCreate.onclick = async () => {
+      try {
+        await promptAdminCreateUser();
+      } catch (err) {
+        presentAPIError(err, "Failed to create user");
+      }
+    };
+  }
   if (el.btnUserSuspend) {
     el.btnUserSuspend.onclick = async () => {
       try {
@@ -18538,11 +19647,13 @@ function bindUI() {
     el.loginForm.addEventListener("submit", async (e) => {
       e.preventDefault();
       const fd = new FormData(e.target);
+      const identifier = String(fd.get("email") || fd.get("identifier") || "").trim();
       try {
         const loginPayload = await api("/api/v1/login", {
           method: "POST",
           json: {
-            email: fd.get("email"),
+            email: identifier,
+            identifier,
             password: fd.get("password"),
           },
         });
@@ -19199,7 +20310,6 @@ function bindUI() {
         }
         if (!scheduled
           && savedCopyMailbox
-          && savedCopyMailbox === String(state.mailbox || "").trim()
           && !String(state.mail.searchQuery || "").trim()
           && !hasAppliedAdvancedMailFilters()) {
           insertOptimisticMailboxSummary(optimisticComposeSummary(composeSnapshot, savedCopyMailbox, {
@@ -19751,6 +20861,11 @@ function bindUI() {
   }
   document.addEventListener("keydown", handleUIModalKeydown);
   document.addEventListener("keydown", handleMFAModalKeydown);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState !== "visible") return;
+    void runSessionKeepalive();
+    void maybePromptPendingMFADeviceApprovals();
+  });
 
   el.tabSetup.onclick = () => {
     if (!state.setup.required) return;
@@ -19917,9 +21032,13 @@ function bindUI() {
     }
     stopUpdatePolling();
     stopMailHealthPolling();
+    stopSessionKeepalive();
+    stopMFAApprovalPolling();
     state.auth.recoveryPromptShownForSession = false;
     state.auth.legacyMFAOfferShownForSession = false;
     state.auth.mfaFlowPromise = null;
+    state.auth.approvalPromptingRequestID = "";
+    state.auth.approvalPromptMutedUntilByID = {};
     state.user = null;
     state.update.lastStatus = null;
     state.update.notificationsPrimed = false;
@@ -20531,7 +21650,9 @@ async function bootstrap() {
     if (document.visibilityState === "visible" && !el.viewMail?.classList.contains("hidden")) {
       startMailPolling();
       void pollMailView();
-      return;
+    }
+    if (document.visibilityState === "visible" && state.user) {
+      void runSessionKeepalive();
     }
     if (document.visibilityState !== "visible") {
       stopMailPolling();

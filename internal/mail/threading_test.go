@@ -105,6 +105,14 @@ UEsDBAoAAAAIADZJaVy+kxu+8AEAAAMFAAALAAgCW0NvbnRlbnRfVHlwZXNdLnhtbCCiBAIooAAC
 	}
 }
 
+func TestBuildPreviewFromBodySampleTruncatesInlineCSSTail(t *testing.T) {
+	sample := `Your ChatGPT code is 680860 @font-face "Söhne"; src: url(data:font/woff2;base64,AAAA)`
+	got := BuildPreviewFromBodySample(sample, 120)
+	if got != "Your ChatGPT code is 680860" {
+		t.Fatalf("expected inline css tail removed, got %q", got)
+	}
+}
+
 func TestBuildPreviewFromBodySampleDropsTrackingLinks(t *testing.T) {
 	sample := `Read this update: https://example.com/click?utm_source=test&utm_medium=email&token=abcdef1234567890abcdef1234567890 Thanks.`
 	got := BuildPreviewFromBodySample(sample, 120)

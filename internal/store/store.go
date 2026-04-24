@@ -21,6 +21,12 @@ type Store struct {
 	db *sql.DB
 }
 
+type SettingValue struct {
+	Key       string
+	Value     string
+	UpdatedAt time.Time
+}
+
 func New(db *sql.DB) *Store { return &Store{db: db} }
 
 func (s *Store) CreateUser(ctx context.Context, email, passwordHash, role string, status models.UserStatus) (models.User, error) {
@@ -210,6 +216,38 @@ func (s *Store) DeleteSettingsByPrefixOlderThan(ctx context.Context, prefix stri
 	}
 	_, err := s.db.ExecContext(ctx, `DELETE FROM settings WHERE key LIKE ? AND updated_at < ?`, prefix+"%", before.UTC())
 	return err
+}
+
+func (s *Store) ListSettingsByPrefix(ctx context.Context, prefix string, limit int) ([]SettingValue, error) {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT key,value,updated_at
+		 FROM settings
+		 WHERE key LIKE ?
+		 ORDER BY updated_at DESC
+		 LIMIT ?`,
+		prefix+"%",
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]SettingValue, 0, limit)
+	for rows.Next() {
+		var item SettingValue
+		if err := rows.Scan(&item.Key, &item.Value, &item.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (models.User, error) {

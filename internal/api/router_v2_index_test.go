@@ -427,6 +427,45 @@ func TestV2ListAccountMailboxesIncludesCapabilities(t *testing.T) {
 	}
 }
 
+func TestV2ListAccountMailboxesDoesNotSurfaceStaleIndexedFoldersWhenDovecotListSucceeds(t *testing.T) {
+	client := &mailRouterTestClient{
+		mailboxes: []mail.Mailbox{
+			{Name: "INBOX", Role: "inbox", Unread: 2, Messages: 7},
+		},
+	}
+	withMailClientFactory(t, func(cfg config.Config) mail.Client { return client })
+	router, st, account := newIndexedRouterWithStore(t)
+	seedIndexedTestMessage(t, st, models.IndexedMessage{
+		ID:           "stale-project-msg",
+		AccountID:    account.ID,
+		Mailbox:      "Projects",
+		UID:          9,
+		ThreadID:     mail.ScopeIndexedThreadID(account.ID, "stale-project-thread"),
+		FromValue:    "Alice <alice@example.com>",
+		ToValue:      "account@example.com",
+		Subject:      "Stale mailbox should disappear",
+		Snippet:      "Projects was removed remotely.",
+		DateHeader:   time.Date(2026, 3, 11, 8, 0, 0, 0, time.UTC),
+		InternalDate: time.Date(2026, 3, 11, 8, 0, 0, 0, time.UTC),
+	})
+	sessionCookie, csrfCookie := loginForSend(t, router)
+
+	rec := authedV1Get(t, router, "/api/v2/accounts/"+url.PathEscape(account.ID)+"/mailboxes", sessionCookie, csrfCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload []mail.Mailbox
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode mailbox payload: %v body=%s", err, rec.Body.String())
+	}
+	if len(payload) != 1 {
+		t.Fatalf("expected only live dovecot mailboxes, got %+v", payload)
+	}
+	if strings.EqualFold(strings.TrimSpace(payload[0].Name), "Projects") {
+		t.Fatalf("expected stale indexed mailbox to stay hidden, got %+v", payload)
+	}
+}
+
 func TestV2SuggestRecipientsPrefersContactsAndGroups(t *testing.T) {
 	router, st, account := newIndexedRouterWithStore(t)
 	ctx := context.Background()
@@ -857,13 +896,61 @@ func TestV2ListMessagesRepairsNoisyStoredPreview(t *testing.T) {
 	}
 }
 
+func TestV2ListMessagesRepairsInlineCSSPreviewLeak(t *testing.T) {
+	router, st, account := newIndexedRouterWithStore(t)
+	raw := strings.Join([]string{
+		"From: noreply@example.com",
+		"To: account@example.com",
+		"Subject: Verification code",
+		"MIME-Version: 1.0",
+		"Content-Type: text/html; charset=utf-8",
+		"",
+		"<html><head><style>@font-face{font-family:\"Söhne\";src:url(data:font/woff2;base64,AAAA)}body{font-family:\"Söhne\"}</style></head><body><p>Your ChatGPT code is 680860</p></body></html>",
+	}, "\r\n")
+	seedIndexedTestMessage(t, st, models.IndexedMessage{
+		ID:                "msg-inline-css-preview",
+		AccountID:         account.ID,
+		Mailbox:           "INBOX",
+		UID:               15,
+		ThreadID:          mail.ScopeIndexedThreadID(account.ID, "thread-inline-css-preview"),
+		FromValue:         "noreply@example.com",
+		ToValue:           "account@example.com",
+		Subject:           "Verification code",
+		Snippet:           `Your ChatGPT code is 680860 @font-face "Söhne"; src: url(data:font/woff2;base64,AAAA)`,
+		BodyText:          `Your ChatGPT code is 680860 @font-face "Söhne"; src: url(data:font/woff2;base64,AAAA)`,
+		BodyHTMLSanitized: "<p>Your ChatGPT code is 680860</p>",
+		RawSource:         raw,
+		DateHeader:        time.Date(2026, 4, 11, 9, 0, 0, 0, time.UTC),
+		InternalDate:      time.Date(2026, 4, 11, 9, 0, 0, 0, time.UTC),
+	})
+
+	sessionCookie, csrfCookie := loginForSend(t, router)
+	rec := authedV1Get(t, router, "/api/v2/messages?account_id="+url.QueryEscape(account.ID)+"&mailbox=INBOX&page=1&page_size=10", sessionCookie, csrfCookie)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Items []mail.MessageSummary `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v body=%s", err, rec.Body.String())
+	}
+	if len(payload.Items) != 1 {
+		t.Fatalf("expected 1 item, got %+v", payload.Items)
+	}
+	if payload.Items[0].Preview != "Your ChatGPT code is 680860" {
+		t.Fatalf("expected css leak to be removed from preview, got %q", payload.Items[0].Preview)
+	}
+}
+
 func TestV2GetIndexedMessageRawDownloadSetsAttachmentFilename(t *testing.T) {
 	router, st, account := newIndexedRouterWithStore(t)
 	seedIndexedTestMessage(t, st, models.IndexedMessage{
 		ID:           "msg-raw-download",
 		AccountID:    account.ID,
 		Mailbox:      "INBOX",
-		UID:          15,
+		UID:          16,
 		ThreadID:     mail.ScopeIndexedThreadID(account.ID, "thread-raw-download"),
 		FromValue:    "Alice <alice@example.com>",
 		ToValue:      "account@example.com",

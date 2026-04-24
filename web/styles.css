@@ -1648,7 +1648,7 @@ a:focus-visible {
 .mail-toolbar-primary {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  align-items: start;
+  align-items: center;
   gap: var(--mail-toolbar-gap);
   min-width: 0;
 }
@@ -1656,7 +1656,7 @@ a:focus-visible {
 .mail-toolbar-secondary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
+  align-items: center;
   justify-content: initial;
   gap: var(--mail-toolbar-gap);
   padding-top: 2px;
@@ -1704,7 +1704,7 @@ a:focus-visible {
 
 .mail-toolbar-cluster--primary-tools {
   justify-content: flex-end;
-  align-self: start;
+  align-self: center;
   min-width: 0;
 }
 
@@ -1790,12 +1790,12 @@ a:focus-visible {
 }
 
 #search-input {
-  min-height: 40px;
+  min-height: var(--mail-control-h);
   padding-inline: 14px;
 }
 
 .search-field-shell--mail {
-  min-height: 40px;
+  min-height: var(--mail-control-h);
 }
 
 #search-input::placeholder,
@@ -2050,35 +2050,44 @@ a:focus-visible {
   width: auto;
   min-width: 0;
   max-width: min(var(--mail-health-toggle-max), 54vw);
-  min-height: 44px;
+  min-height: var(--mail-control-h);
   border: var(--border-w) solid var(--line-1);
   outline: none;
   background: color-mix(in srgb, var(--bg-2) 78%, transparent);
   color: var(--fg-0);
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   column-gap: 12px;
-  padding: 9px 14px;
+  padding: 0 14px;
   text-align: left;
   cursor: pointer;
 }
 
 .mail-health-toggle-copy {
-  display: grid;
-  gap: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
   overflow: hidden;
 }
 
 .mail-health-toggle-summary {
   color: var(--fg-muted);
-  font-family: var(--font-notice);
-  font-size: 0.82rem;
-  line-height: 1.2;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  line-height: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  white-space: nowrap;
 }
 
 .mail-health-toggle-caret {
@@ -2289,8 +2298,10 @@ a:focus-visible {
 .mail-index-status {
   color: var(--fg-0);
   display: block;
-  font-size: 0.79rem;
-  letter-spacing: 0.07em;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
   line-height: 1;
   text-transform: uppercase;
   white-space: nowrap;
@@ -5560,7 +5571,7 @@ button.setting-list-item {
   }
 
   .mail-health-toggle {
-    padding: 10px 12px;
+    padding: 0 12px;
   }
 
   .reader-tools-main,

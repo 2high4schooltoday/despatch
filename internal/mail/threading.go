@@ -28,7 +28,8 @@ var (
 	previewURLPattern        = regexp.MustCompile(`https?://[^\s<>"']+`)
 	previewBase64Token       = regexp.MustCompile(`(?i)^[a-z0-9+/=_-]{24,}$`)
 	previewHexToken          = regexp.MustCompile(`(?i)^[a-f0-9]{24,}$`)
-	previewResidualNoise     = regexp.MustCompile(`(?i)\b(?:border-collapse|font-family|font-size|line-height|cellpadding|cellspacing|mso-|mime-version|content-transfer-encoding|content-type|return-path|dkim-signature|authentication-results|multipart/|text/html|charset=|quoted-printable)\b`)
+	previewInlineNoiseStart  = regexp.MustCompile(`(?i)\s+(?:@(?:font-face|media|supports|import|page|keyframes|charset|viewport|counter-style|property|layer)\b|(?:font-family|font-size|font-weight|font-style|font-display|line-height|letter-spacing|border-collapse|border-spacing|background(?:-color|-image)?|color|display|src|unicode-range|cellpadding|cellspacing|mso-[\w-]+)\b\s*[:=]|mime-version\s*:|content-type\s*:|content-transfer-encoding\s*:|quoted-printable\b|multipart/|text/html\b|charset=)`)
+	previewResidualNoise     = regexp.MustCompile(`(?i)(?:@font-face|@media|@supports|@import|\b(?:border-collapse|border-spacing|font-family|font-size|font-weight|font-style|font-display|line-height|letter-spacing|cellpadding|cellspacing|mso-[\w-]*|mime-version|content-transfer-encoding|content-type|return-path|dkim-signature|authentication-results|multipart/|text/html|charset=|quoted-printable|unicode-range)\b|src\s*:)`)
 	messageIDTokenPattern    = regexp.MustCompile(`<[^>]+>|[^<>,\\s]+@[^<>,\\s]+`)
 )
 
@@ -154,6 +155,8 @@ func BuildPreviewFromBodySample(sample string, max int) string {
 		max = DefaultPreviewMaxChars
 	}
 	clean := strings.ReplaceAll(sample, "\x00", " ")
+	clean = strings.ReplaceAll(clean, "\r\n", "\n")
+	clean = strings.ReplaceAll(clean, "\r", "\n")
 	clean = previewHTMLNoisePattern.ReplaceAllString(clean, " ")
 	clean = html.UnescapeString(clean)
 	clean = previewHeaderLinePattern.ReplaceAllString(clean, " ")
@@ -172,8 +175,11 @@ func BuildPreviewFromBodySample(sample string, max int) string {
 		}
 		return " "
 	})
+	clean = filterPreviewNoiseLines(clean)
 	compact := strings.Join(strings.Fields(clean), " ")
+	compact = stripInlinePreviewNoise(compact)
 	compact = filterPreviewNoiseTokens(compact)
+	compact = stripInlinePreviewNoise(compact)
 	if compact == "" {
 		return ""
 	}
@@ -200,12 +206,51 @@ func previewAppearsUseful(sample string) bool {
 	if previewResidualNoise.MatchString(trimmed) {
 		return false
 	}
-	for _, r := range trimmed {
+	return previewContainsText(trimmed)
+}
+
+func previewContainsText(sample string) bool {
+	for _, r := range sample {
 		if unicode.IsLetter(r) || unicode.IsDigit(r) {
 			return true
 		}
 	}
 	return false
+}
+
+func stripInlinePreviewNoise(sample string) string {
+	trimmed := strings.TrimSpace(sample)
+	if trimmed == "" {
+		return ""
+	}
+	loc := previewInlineNoiseStart.FindStringIndex(trimmed)
+	if loc == nil {
+		return trimmed
+	}
+	prefix := strings.TrimSpace(trimmed[:loc[0]])
+	if previewContainsText(prefix) {
+		return prefix
+	}
+	return trimmed
+}
+
+func filterPreviewNoiseLines(sample string) string {
+	if strings.TrimSpace(sample) == "" {
+		return ""
+	}
+	lines := strings.Split(sample, "\n")
+	filtered := make([]string, 0, len(lines))
+	for _, line := range lines {
+		cleaned := strings.Join(strings.Fields(stripInlinePreviewNoise(line)), " ")
+		if cleaned == "" {
+			continue
+		}
+		if previewResidualNoise.MatchString(cleaned) {
+			continue
+		}
+		filtered = append(filtered, cleaned)
+	}
+	return strings.Join(filtered, "\n")
 }
 
 func filterPreviewNoiseTokens(input string) string {
@@ -226,7 +271,7 @@ func filterPreviewNoiseTokens(input string) string {
 			continue
 		case strings.ContainsAny(trimmed, "{}"):
 			continue
-		case strings.Contains(lower, "border-collapse") || strings.Contains(lower, "font-family") || strings.Contains(lower, "cellpadding") || strings.Contains(lower, "cellspacing"):
+		case previewResidualNoise.MatchString(lower):
 			continue
 		case previewBase64Token.MatchString(trimmed):
 			continue

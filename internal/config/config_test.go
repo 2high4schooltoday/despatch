@@ -103,6 +103,20 @@ func TestLoadPasskeyPasswordlessDefaultsTrue(t *testing.T) {
 	}
 }
 
+func TestLoadSessionTimeoutDefaults(t *testing.T) {
+	setValidEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.SessionIdleMinutes != 480 {
+		t.Fatalf("expected SESSION_IDLE_MINUTES default 480, got %d", cfg.SessionIdleMinutes)
+	}
+	if cfg.SessionAbsoluteHour != 168 {
+		t.Fatalf("expected SESSION_ABSOLUTE_HOURS default 168, got %d", cfg.SessionAbsoluteHour)
+	}
+}
+
 func TestLoadCookieSecureModeLegacyFallback(t *testing.T) {
 	setValidEnv(t)
 	t.Setenv("COOKIE_SECURE_MODE", "")

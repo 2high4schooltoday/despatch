@@ -945,6 +945,47 @@ async function mockIndexedAccountLockedScenario(page) {
     if (path === '/api/v2/security/mfa/webauthn') return ok({ items: [] });
     if (path === '/api/v2/security/mfa/trusted-devices') return ok({ items: [] });
     if (path === '/api/v2/security/sessions') return ok({ items: [] });
+    if (path === '/api/v2/mail/senders') {
+      return ok({
+        items: [
+          {
+            id: 'session-admin',
+            kind: 'primary',
+            name: 'Admin Session',
+            from_email: fixture.user.email,
+            reply_to: '',
+            signature_text: '',
+            signature_html: '',
+            account_id: '',
+            account_label: 'Session sender',
+            account_login: fixture.user.email,
+            is_default: false,
+            is_primary: true,
+            can_delete: false,
+            can_schedule: true,
+            status: 'ok',
+          },
+          {
+            id: 'ident-indexed',
+            kind: 'identity',
+            name: 'Indexed Sender',
+            from_email: 'indexed@example.com',
+            reply_to: '',
+            signature_text: '',
+            signature_html: '<p>Indexed Signature</p>',
+            account_id: fixture.account.id,
+            account_label: fixture.account.display_name,
+            account_login: fixture.account.login,
+            is_default: true,
+            is_primary: false,
+            account_is_default: true,
+            can_delete: false,
+            can_schedule: true,
+            status: 'ok',
+          },
+        ],
+      });
+    }
     if (path === '/api/v2/accounts') return ok({ items: [fixture.account] });
     if (path === '/api/v2/saved-searches') return ok({ items: [] });
     if (path === '/api/v1/compose/identities') {
@@ -1050,6 +1091,193 @@ async function mockIndexedAccountLockedScenario(page) {
   });
 
   return counters;
+}
+
+async function mockIndexedSentRefreshLagScenario(page) {
+  const fixture = {
+    user: {
+      email: 'admin@example.com',
+      role: 'admin',
+      recovery_email: 'recovery@example.net',
+      needs_recovery_email: false,
+      auth_stage: 'authenticated',
+      mail_secret_required: false,
+    },
+    account: {
+      id: 'acct-sent-lag',
+      user_id: 'user-admin',
+      display_name: 'Laggy Indexed Mail',
+      login: 'indexed@example.com',
+      is_default: true,
+      status: 'active',
+      last_sync_at: '2026-03-10T09:00:00.000Z',
+      last_error: '',
+    },
+    senders: [{
+      id: 'sender-indexed',
+      kind: 'primary',
+      name: 'Indexed Sender',
+      from_email: 'indexed@example.com',
+      reply_to: '',
+      signature_text: '',
+      signature_html: '',
+      account_id: 'acct-sent-lag',
+      account_label: 'Laggy Indexed Mail',
+      account_login: 'indexed@example.com',
+      is_default: true,
+      is_primary: true,
+      can_delete: false,
+      can_schedule: true,
+      status: 'ok',
+    }],
+    mailboxes: [
+      { name: 'INBOX', role: 'inbox', unread: 1, messages: 1 },
+      { name: 'Sent', role: 'sent', unread: 0, messages: 0 },
+    ],
+    inboxSummary: {
+      id: 'idx-lag-1',
+      mailbox: 'INBOX',
+      from: 'Sender <sender@example.com>',
+      subject: 'Laggy sent refresh target',
+      date: '2026-03-10T08:00:00.000Z',
+      seen: false,
+      answered: false,
+      flagged: false,
+      preview: 'Watch the Sent view while the index catches up.',
+      thread_id: 'idx-lag-thread-1',
+      account_id: 'acct-sent-lag',
+    },
+    inboxDetail: {
+      id: 'idx-lag-1',
+      account_id: 'acct-sent-lag',
+      mailbox: 'INBOX',
+      uid: 11,
+      thread_id: 'idx-lag-thread-1',
+      from: 'Sender <sender@example.com>',
+      to: 'indexed@example.com',
+      cc: '',
+      bcc: '',
+      subject: 'Laggy sent refresh target',
+      date: '2026-03-10T08:00:00.000Z',
+      seen: false,
+      flagged: false,
+      answered: false,
+      body: 'Watch the Sent view while the index catches up.',
+      body_html: '',
+    },
+  };
+  const drafts = new Map();
+  let draftSeq = 1;
+
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const ok = async (body, extra = {}) => {
+      await route.fulfill({
+        status: extra.status || 200,
+        contentType: extra.contentType || 'application/json',
+        body: extra.rawBody ?? JSON.stringify(body),
+      });
+    };
+
+    if (path === '/api/v1/public/captcha/config') return ok({ enabled: false });
+    if (path === '/api/v1/public/password-reset/capabilities') return ok({ enabled: false, reason: 'disabled' });
+    if (path === '/api/v1/public/auth/capabilities') {
+      return ok({
+        passkey_mfa_available: false,
+        passkey_passwordless_available: false,
+        passkey_usernameless_enabled: true,
+        reason: 'disabled',
+      });
+    }
+    if (path === '/api/v1/setup/status') {
+      return ok({
+        required: false,
+        base_domain: 'example.com',
+        default_admin_email: 'webmaster@example.com',
+        auth_mode: 'sql',
+        password_min_length: 12,
+        password_max_length: 128,
+        password_class_min: 3,
+        automatic_updates_enabled: true,
+        passkey_primary_sign_in_enabled: true,
+      });
+    }
+    if (path === '/api/v1/me') return ok(fixture.user);
+    if (path === '/api/v2/security/mfa/webauthn') return ok({ items: [] });
+    if (path === '/api/v2/security/mfa/trusted-devices') return ok({ items: [] });
+    if (path === '/api/v2/security/sessions') return ok({ items: [] });
+    if (path === '/api/v2/accounts') return ok({ items: [fixture.account] });
+    if (path === '/api/v2/saved-searches') return ok({ items: [] });
+    if (path === '/api/v2/accounts/health') return ok({ summary: null, items: [] });
+    if (path === '/api/v2/mail/senders') return ok({ items: fixture.senders });
+    if (path === `/api/v2/accounts/${fixture.account.id}/mailboxes`) return ok(fixture.mailboxes);
+    if (path === '/api/v2/messages') {
+      const mailbox = url.searchParams.get('mailbox') || 'INBOX';
+      if (mailbox === 'Sent') return ok({ items: [], total: 0 });
+      return ok({ items: [fixture.inboxSummary], total: 1 });
+    }
+    if (path === `/api/v2/messages/${fixture.inboxSummary.id}`) {
+      return ok({ message: fixture.inboxDetail, attachments: [] });
+    }
+    if (path === '/api/v2/drafts' && route.request().method() === 'GET') {
+      const items = Array.from(drafts.values()).filter((item) => String(item.status || '').toLowerCase() !== 'sent');
+      return ok({ items, page: 1, page_size: 100, total: items.length });
+    }
+    if (path === '/api/v2/drafts' && route.request().method() === 'POST') {
+      const payload = route.request().postDataJSON();
+      const draft = {
+        id: `draft-sent-lag-${draftSeq++}`,
+        account_id: payload.account_id || fixture.account.id,
+        identity_id: payload.identity_id || '',
+        sender_profile_id: payload.sender_profile_id || 'sender-indexed',
+        compose_mode: payload.compose_mode || 'send',
+        context_message_id: payload.context_message_id || '',
+        context_account_id: payload.context_account_id || '',
+        from_mode: payload.from_mode || 'sender',
+        from_manual: payload.from_manual || '',
+        client_state_json: payload.client_state_json || '',
+        to: payload.to || '',
+        cc: payload.cc || '',
+        bcc: payload.bcc || '',
+        subject: payload.subject || '',
+        body_text: payload.body_text || '',
+        body_html: payload.body_html || '',
+        attachments_json: '[]',
+        status: payload.status || 'active',
+        last_send_error: '',
+        created_at: '2026-03-10T09:00:00.000Z',
+        updated_at: new Date().toISOString(),
+      };
+      drafts.set(draft.id, draft);
+      return ok(draft, { status: 201 });
+    }
+    const draftMatch = path.match(/^\/api\/v2\/drafts\/([^/]+)$/);
+    if (draftMatch && route.request().method() === 'PATCH') {
+      const draftID = decodeURIComponent(draftMatch[1]);
+      const draft = drafts.get(draftID);
+      if (!draft) return ok({ error: 'draft_not_found' }, { status: 404 });
+      Object.assign(draft, route.request().postDataJSON(), { updated_at: new Date().toISOString() });
+      drafts.set(draftID, draft);
+      return ok(draft);
+    }
+    const draftSendMatch = path.match(/^\/api\/v2\/drafts\/([^/]+)\/send$/);
+    if (draftSendMatch) {
+      const draftID = decodeURIComponent(draftSendMatch[1]);
+      const draft = drafts.get(draftID);
+      if (!draft) return ok({ error: 'draft_not_found' }, { status: 404 });
+      draft.status = 'sent';
+      draft.updated_at = new Date().toISOString();
+      drafts.set(draftID, draft);
+      return ok({ status: 'sent', saved_copy: true, saved_copy_mailbox: 'Sent' });
+    }
+
+    await route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: path }),
+    });
+  });
 }
 
 async function mockMailIdentityScenario(page) {
@@ -4085,6 +4313,33 @@ test('indexed account mail opens and sends without unlocking session mail', asyn
   expect(counters.accountSpecialCalls).toBe(1);
 });
 
+test('indexed Sent view keeps optimistic rows visible while the mailbox index catches up', async ({ page }) => {
+  await mockIndexedSentRefreshLagScenario(page);
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await page.locator('#mailboxes .mailbox-row button', { hasText: /^Sent/i }).click();
+  await expect(page.locator('.message-row-btn')).toHaveCount(0);
+
+  await page.click('#btn-compose-open');
+  await page.fill('#compose-to-input', 'alice@example.com');
+  await page.keyboard.press('Enter');
+  await page.fill('#compose-subject-input', 'Laggy sent row');
+  await page.locator('#compose-editor').click();
+  await page.keyboard.type('This sent copy should stay visible while refresh is stale.');
+  await expect(page.locator('#btn-compose-send')).toBeEnabled();
+  await page.click('#btn-compose-send');
+
+  await expect(page.locator('#compose-overlay')).toHaveClass(/hidden/);
+  await expect(page.locator('.message-row-btn')).toHaveCount(1);
+  await expect(page.locator('.message-row-btn').first()).toContainText(/Laggy sent row/i);
+  await expect(page.locator('.message-row-btn').first()).toContainText(/Syncing/i);
+
+  await page.waitForTimeout(500);
+  await expect(page.locator('.message-row-btn')).toHaveCount(1);
+  await expect(page.locator('.message-row-btn').first()).toContainText(/Laggy sent row/i);
+});
+
 test('mail identities and signatures stay editable, replace untouched inserts, and reopen without duplication', async ({ page }) => {
   await mockMailIdentityScenario(page);
   await page.setViewportSize({ width: 1366, height: 900 });
@@ -4619,7 +4874,6 @@ test('desktop ux pass', async ({ page }) => {
 
   await expect(page.locator('#btn-compose-send')).toBeDisabled();
   await page.fill('#compose-to-input', 'alice@example.com');
-  await page.fill('#compose-subject-input', 'UX compose check');
   await page.setInputFiles('#compose-attachments-input', {
     name: 'notes.txt',
     mimeType: 'text/plain',
@@ -4640,6 +4894,8 @@ test('desktop ux pass', async ({ page }) => {
   await page.locator('#compose-editor').click();
   await page.keyboard.type('Hello from compose test.');
   await page.waitForTimeout(1100);
+  await expect(page.locator('#btn-compose-send')).toBeEnabled();
+  await page.fill('#compose-subject-input', 'UX compose check');
   await expect(page.locator('#compose-draft-state')).toContainText(/Saved|Saving|Unsaved/);
   await expect(page.locator('#btn-compose-send')).toBeEnabled();
 

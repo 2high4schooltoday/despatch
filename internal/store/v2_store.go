@@ -438,6 +438,38 @@ func (s *Store) DeleteMailboxMapping(ctx context.Context, accountID, id string) 
 	return nil
 }
 
+func (s *Store) RenameMailboxMappings(ctx context.Context, accountID, mailboxName, newMailboxName string) error {
+	mailboxName = strings.TrimSpace(mailboxName)
+	newMailboxName = strings.TrimSpace(newMailboxName)
+	if mailboxName == "" || newMailboxName == "" || strings.EqualFold(mailboxName, newMailboxName) {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE mailbox_mappings
+		 SET mailbox_name=?, updated_at=?
+		 WHERE account_id=? AND lower(trim(mailbox_name))=lower(trim(?))`,
+		newMailboxName,
+		time.Now().UTC(),
+		accountID,
+		mailboxName,
+	)
+	return err
+}
+
+func (s *Store) DeleteMailboxMappingsByMailbox(ctx context.Context, accountID, mailboxName string) error {
+	mailboxName = strings.TrimSpace(mailboxName)
+	if mailboxName == "" {
+		return nil
+	}
+	_, err := s.db.ExecContext(ctx,
+		`DELETE FROM mailbox_mappings
+		 WHERE account_id=? AND lower(trim(mailbox_name))=lower(trim(?))`,
+		accountID,
+		mailboxName,
+	)
+	return err
+}
+
 func (s *Store) ListIndexedMailboxCounts(ctx context.Context, accountID string) ([]mail.Mailbox, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT mailbox,
@@ -2458,6 +2490,44 @@ func (s *Store) FindIndexedThreadIDByMessageHeaders(ctx context.Context, account
 		return "", err
 	}
 	return threadID, nil
+}
+
+func (s *Store) HasIndexedMessagesReferencingThreadParent(ctx context.Context, accountID, messageID, expectedThreadID, excludeMessageID string) (bool, error) {
+	accountID = strings.TrimSpace(accountID)
+	messageID = mail.NormalizeMessageIDHeader(messageID)
+	expectedThreadID = mail.NormalizeIndexedThreadID(accountID, expectedThreadID)
+	excludeCandidates := indexedMessageIDCandidates(accountID, excludeMessageID)
+	if accountID == "" || messageID == "" || expectedThreadID == "" {
+		return false, nil
+	}
+
+	args := []any{
+		accountID,
+		expectedThreadID,
+		messageID,
+		messageID,
+		messageID + " %",
+		"% " + messageID,
+		"% " + messageID + " %",
+	}
+	where := `account_id=? AND thread_id<>? AND (
+		in_reply_to_header=?
+		OR references_header=?
+		OR references_header LIKE ?
+		OR references_header LIKE ?
+		OR references_header LIKE ?
+	)`
+	if len(excludeCandidates) > 0 {
+		args = append(args, any(excludeCandidates[0]))
+		where += ` AND id<>?`
+	}
+
+	row := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM message_index WHERE `+where+` LIMIT 1)`, args...)
+	var exists bool
+	if err := row.Scan(&exists); err != nil {
+		return false, err
+	}
+	return exists, nil
 }
 
 func (s *Store) ListSieveScripts(ctx context.Context, accountID string) ([]models.SieveScript, error) {

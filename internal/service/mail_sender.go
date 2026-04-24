@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	netmail "net/mail"
 	"strings"
 
 	"github.com/google/uuid"
@@ -21,11 +22,20 @@ type ResolvedComposeSender struct {
 	ReplyTo         string
 }
 
-func (s *Service) EnsureSessionMailProfile(ctx context.Context, u models.User) (models.SessionMailProfile, error) {
-	fromEmail := strings.TrimSpace(MailIdentity(u))
-	if fromEmail == "" {
-		return models.SessionMailProfile{}, fmt.Errorf("authenticated session mail identity is required")
+func sessionMailIdentityForUser(u models.User) string {
+	candidate := strings.TrimSpace(MailIdentity(u))
+	if candidate == "" {
+		return ""
 	}
+	parsed, err := netmail.ParseAddress(candidate)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Address)
+}
+
+func (s *Service) EnsureSessionMailProfile(ctx context.Context, u models.User) (models.SessionMailProfile, error) {
+	fromEmail := sessionMailIdentityForUser(u)
 	profile, err := s.st.GetSessionMailProfile(ctx, u.ID, fromEmail)
 	if err == nil {
 		return profile, nil
@@ -105,25 +115,31 @@ func (s *Service) ListSenderProfiles(ctx context.Context, u models.User) ([]mode
 	defaultAccount := chooseDefaultMailAccount(accounts)
 
 	items := make([]models.SenderProfile, 0, len(accounts)+1)
-	primary := models.SenderProfile{
-		ID:            sessionProfile.ID,
-		Kind:          "primary",
-		Name:          strings.TrimSpace(sessionProfile.DisplayName),
-		FromEmail:     strings.TrimSpace(sessionProfile.FromEmail),
-		ReplyTo:       strings.TrimSpace(sessionProfile.ReplyTo),
-		SignatureText: strings.TrimSpace(sessionProfile.SignatureText),
-		SignatureHTML: strings.TrimSpace(sessionProfile.SignatureHTML),
-		IsPrimary:     true,
-		CanDelete:     false,
+	primaryFromEmail := strings.TrimSpace(sessionProfile.FromEmail)
+	if primaryFromEmail == "" && defaultAccount != nil {
+		primaryFromEmail = strings.TrimSpace(defaultAccount.Login)
 	}
-	if defaultAccount != nil {
-		primary.AccountID = defaultAccount.ID
-		primary.AccountLabel = senderAccountLabel(*defaultAccount)
-		primary.AccountIsDefault = defaultAccount.IsDefault
-		primary.IsAccountDefault = defaultAccount.IsDefault
+	if primaryFromEmail != "" {
+		primary := models.SenderProfile{
+			ID:            sessionProfile.ID,
+			Kind:          "primary",
+			Name:          strings.TrimSpace(sessionProfile.DisplayName),
+			FromEmail:     primaryFromEmail,
+			ReplyTo:       strings.TrimSpace(sessionProfile.ReplyTo),
+			SignatureText: strings.TrimSpace(sessionProfile.SignatureText),
+			SignatureHTML: strings.TrimSpace(sessionProfile.SignatureHTML),
+			IsPrimary:     true,
+			CanDelete:     false,
+		}
+		if defaultAccount != nil {
+			primary.AccountID = defaultAccount.ID
+			primary.AccountLabel = senderAccountLabel(*defaultAccount)
+			primary.AccountIsDefault = defaultAccount.IsDefault
+			primary.IsAccountDefault = defaultAccount.IsDefault
+		}
+		primary.Status, primary.CanSchedule = senderStatusForAccount(defaultAccount)
+		items = append(items, primary)
 	}
-	primary.Status, primary.CanSchedule = senderStatusForAccount(defaultAccount)
-	items = append(items, primary)
 
 	defaultProfileID := strings.TrimSpace(prefs.DefaultSenderID)
 	defaultAccountID := ""
