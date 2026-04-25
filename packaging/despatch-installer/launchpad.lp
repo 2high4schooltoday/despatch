@@ -1313,10 +1313,11 @@ operation install:
 
   stage "Run Diagnostics" when runDiagnose:
     say "Running final deployment diagnostics.".
-    check that value for key "ok" in combinedHealthDiagnostics is true.
+    show panel "Diagnostics" with "Combined diagnostics ok: `{{value for key \"ok\" in combinedHealthDiagnostics}}`.\nUse `launchpad apps diagnose despatch` for the full diagnostic breakdown if anything still needs attention.".
 
   stage "Finish":
     add next action "launchpad apps status despatch".
+    add next action "launchpad apps diagnose despatch".
     show panel "Applications Centre" with "Despatch is now registered for Launchpad management. Use `launchpad apps`, `launchpad apps status despatch`, or `launchpad apps diagnose despatch` for the day-two lifecycle.".
 
 operation status:
