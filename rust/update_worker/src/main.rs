@@ -1868,6 +1868,14 @@ fn env_value_trimmed(values: &[(String, String)], key: &str) -> String {
         .unwrap_or_default()
 }
 
+fn install_deploy_mode(values: &[(String, String)]) -> String {
+    let mode = env_value_trimmed(values, "INSTALL_DEPLOY_MODE");
+    if !mode.is_empty() {
+        return mode;
+    }
+    env_value_trimmed(values, "DEPLOY_MODE")
+}
+
 fn env_file_set(lines: &mut Vec<String>, key: &str, value: &str) {
     let prefix = format!("{key}=");
     if let Some(idx) = lines.iter().position(|line| line.starts_with(&prefix)) {
@@ -1913,7 +1921,7 @@ fn is_loopback_reset_smtp_host(host: &str) -> bool {
 }
 
 fn preferred_public_reset_host(values: &[(String, String)]) -> String {
-    if env_value_trimmed(values, "DEPLOY_MODE").eq_ignore_ascii_case("proxy") {
+    if install_deploy_mode(values).eq_ignore_ascii_case("proxy") {
         let host = env_value_trimmed(values, "PROXY_SERVER_NAME");
         if !host.is_empty() {
             return host;
@@ -1952,7 +1960,7 @@ fn should_rewrite_password_reset_base_url(current: &str) -> bool {
 }
 
 fn derive_password_reset_base_url(values: &[(String, String)]) -> String {
-    if env_value_trimmed(values, "DEPLOY_MODE").eq_ignore_ascii_case("proxy") {
+    if install_deploy_mode(values).eq_ignore_ascii_case("proxy") {
         let mut host = env_value_trimmed(values, "PROXY_SERVER_NAME");
         if host.is_empty() {
             host = env_value_trimmed(values, "BASE_DOMAIN");
@@ -2441,7 +2449,7 @@ mod tests {
             &env_path,
             [
                 "BASE_DOMAIN=mail.2h4s2d.ru",
-                "DEPLOY_MODE=proxy",
+                "INSTALL_DEPLOY_MODE=proxy",
                 "PROXY_SERVER_NAME=mail.2h4s2d.ru",
                 "PROXY_TLS=1",
                 "LISTEN_ADDR=127.0.0.1:8080",
@@ -2470,6 +2478,46 @@ mod tests {
         assert!(updated.contains("PASSWORD_RESET_FROM=no-reply@2h4s2d.ru"));
         assert!(updated.contains("PASSWORD_RESET_BASE_URL=https://mail.2h4s2d.ru"));
         assert!(updated.contains("PASSWORD_RESET_EXTERNAL_SENDER_READY=true"));
+
+        let _ = fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn migrate_legacy_password_reset_env_accepts_legacy_deploy_mode_key() {
+        let unique = format!(
+            "despatch-update-worker-reset-env-legacy-{}-{}",
+            std::process::id(),
+            Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        );
+        let base = std::env::temp_dir().join(unique);
+        fs::create_dir_all(&base).expect("mkdir temp");
+        let env_path = base.join(".env");
+        fs::write(
+            &env_path,
+            [
+                "BASE_DOMAIN=mail.2h4s2d.ru",
+                "DEPLOY_MODE=proxy",
+                "PROXY_SERVER_NAME=mail.2h4s2d.ru",
+                "PROXY_TLS=1",
+                "LISTEN_ADDR=127.0.0.1:8080",
+                "SMTP_HOST=127.0.0.1",
+                "SMTP_PORT=587",
+                "SMTP_TLS=false",
+                "SMTP_STARTTLS=true",
+                "PASSWORD_RESET_SENDER=smtp",
+                "PASSWORD_RESET_FROM=no-reply@mail.2h4s2d.ru",
+                "PASSWORD_RESET_BASE_URL=",
+                "",
+            ]
+            .join("\n"),
+        )
+        .expect("write env");
+
+        let migrated = migrate_legacy_password_reset_env(&env_path).expect("migrate env");
+        assert!(migrated);
+
+        let updated = fs::read_to_string(&env_path).expect("read migrated env");
+        assert!(updated.contains("PASSWORD_RESET_BASE_URL=https://mail.2h4s2d.ru"));
 
         let _ = fs::remove_dir_all(base);
     }

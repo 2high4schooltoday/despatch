@@ -64,8 +64,8 @@ field release is a text:
   default is "latest".
 
 field baseDomain is a text:
-  label is "Primary domain".
-  help is "Used for Despatch setup defaults, reset links, and reverse-proxy hostnames.".
+  label is "Mailbox domain".
+  help is "Used for mailbox addresses and setup defaults. In reverse-proxy mode, the browser hostname is configured separately below.".
   default is defaultBaseDomain.
 
 field listenAddr is a text:
@@ -97,8 +97,8 @@ field proxyServer is a ProxyServer:
   it is advanced.
 
 field proxyServerName is a text:
-  label is "Proxy hostname".
-  help is "Public hostname served by the reverse proxy.".
+  label is "Public web hostname".
+  help is "Browser hostname served by the reverse proxy, such as `mail.example.com`. This must match your DNS record and TLS certificate.".
   default is baseDomain.
 
 fact detectedProxyCertPath:
@@ -633,7 +633,7 @@ fact apacheExtraConfig:
 fact directListenAddrSegments is split resolvedListenAddr by ":".
 fact directListenPort is last item in directListenAddrSegments.
 
-fact stagedEnvValues is { "LISTEN_ADDR": resolvedListenAddr, "BASE_DOMAIN": baseDomain, "INSTALL_DEPLOY_MODE": deployMode, "INSTALL_UFW_ENABLE": ufwEnable, "INSTALL_UFW_OPEN_PROXY_PORTS": ufwOpenProxyPorts, "INSTALL_UFW_OPEN_DIRECT_PORT": ufwOpenDirectPort, "APP_DB_PATH": "/var/lib/despatch/app.db", "SESSION_COOKIE_NAME": "despatch_session", "MFA_TRUSTED_COOKIE_NAME": "despatch_mfa_trusted", "SESSION_IDLE_MINUTES": "480", "SESSION_ABSOLUTE_HOURS": "168", "SESSION_ENCRYPT_KEY": generatedSessionSecret, "CSRF_COOKIE_NAME": "despatch_csrf", "COOKIE_SECURE_MODE": cookieSecureMode, "COOKIE_SECURE": cookieSecureLegacy, "TRUST_PROXY": trustProxyEnabled, "CORS_ALLOWED_ORIGINS": "", "CAPTCHA_ENABLED": capEnabled, "CAPTCHA_PROVIDER": resolvedCaptchaProvider, "CAPTCHA_SITE_KEY": resolvedCaptchaSiteKey, "CAPTCHA_WIDGET_API_URL": capWidgetApiUrl, "CAPTCHA_VERIFY_URL": capVerifyUrl, "CAPTCHA_SECRET": resolvedCaptchaSecret, "PASSWORD_MIN_LENGTH": "12", "PASSWORD_MAX_LENGTH": "128", "IMAP_HOST": "127.0.0.1", "IMAP_PORT": imapPort, "IMAP_TLS": imapTls, "IMAP_STARTTLS": imapStarttls, "IMAP_INSECURE_SKIP_VERIFY": imapSkipVerify, "MAIL_ALLOW_INSECURE_SKIP_VERIFY_NON_LOOPBACK": false, "SMTP_HOST": "127.0.0.1", "SMTP_PORT": smtpPort, "SMTP_TLS": smtpTls, "SMTP_STARTTLS": smtpStarttls, "SMTP_INSECURE_SKIP_VERIFY": smtpSkipVerify, "DOVECOT_AUTH_DB_DRIVER": resolvedDovecotSqlDriver, "DOVECOT_AUTH_DB_DSN": resolvedDovecotDsnText, "DOVECOT_AUTH_MODE": resolvedDovecotAuthMode, "DOVECOT_AUTH_TABLE": resolvedDovecotAuthTable, "DOVECOT_AUTH_EMAIL_COL": resolvedDovecotAuthEmailCol, "DOVECOT_AUTH_PASS_COL": resolvedDovecotAuthPassCol, "DOVECOT_AUTH_ACTIVE_COL": resolvedDovecotAuthActiveCol, "DOVECOT_AUTH_MAILDIR_COL": resolvedDovecotAuthMaildirCol, "DOVECOT_MAILDIR_BASE": "/var/mail/vhosts", "HTTP_READ_TIMEOUT_SEC": "10", "HTTP_READ_HEADER_TIMEOUT_SEC": "5", "HTTP_WRITE_TIMEOUT_SEC": "30", "HTTP_IDLE_TIMEOUT_SEC": "60", "PASSWORD_RESET_SENDER": "smtp", "PASSWORD_RESET_FROM": passwordResetFromAddr, "PASSWORD_RESET_BASE_URL": passwordResetBaseUrl, "PASSWORD_RESET_SMTP_USER": "", "PASSWORD_RESET_SMTP_PASS": "", "PASSWORD_RESET_TOKEN_TTL_MINUTES": "30", "PASSWORD_RESET_PUBLIC_ENABLED": true, "PASSWORD_RESET_EXTERNAL_SENDER_READY": passwordResetExternalSenderReady, "PASSWORD_RESET_REQUIRE_MAPPED_LOGIN": true, "PAM_RESET_HELPER_ENABLED": pamResetHelperEnabled, "PAM_RESET_HELPER_SOCKET": "/run/despatch/pam-reset-helper.sock", "PAM_RESET_HELPER_TIMEOUT_SEC": "5", "PAM_RESET_ALLOWED_UID": "-1", "PAM_RESET_ALLOWED_GID": "-1", "UPDATE_ENABLED": true, "UPDATE_REPO_OWNER": "2high4schooltoday", "UPDATE_REPO_NAME": "despatch", "UPDATE_CHECK_INTERVAL_MIN": "60", "UPDATE_HTTP_TIMEOUT_SEC": "10", "UPDATE_GITHUB_TOKEN": "", "UPDATE_BACKUP_KEEP": "3", "UPDATE_BASE_DIR": dataRoot / "update", "UPDATE_INSTALL_DIR": installRoot, "UPDATE_SERVICE_NAME": "despatch", "UPDATE_SYSTEMD_UNIT_DIR": "/etc/systemd/system", "UPDATE_REQUIRE_SIGNATURE": true, "UPDATE_SIGNATURE_ASSET": "checksums.txt.sig", "UPDATE_SIGNING_PUBLIC_KEYS": "NgWFCGvluSgGiR4KpQhrNGqK4UVDRcEb76RNBEproBw=", "MAILSEC_ENABLED": true, "MAILSEC_SOCKET": "/run/despatch/mailsec.sock", "MAILSEC_TIMEOUT_MS": "5000", "WEBAUTHN_RP_ID": resolvedWebauthnRpId, "WEBAUTHN_ALLOWED_ORIGINS": passwordResetBaseUrl, "PASSKEY_PASSWORDLESS_ENABLED": true, "PROXY_SERVER": resolvedProxyServer, "PROXY_SERVER_NAME": resolvedProxyServerName, "PROXY_TLS": resolvedProxyTls, "BOOTSTRAP_ADMIN_EMAIL": "", "BOOTSTRAP_ADMIN_PASSWORD": "" }.
+fact stagedEnvValues is { "LISTEN_ADDR": resolvedListenAddr, "BASE_DOMAIN": baseDomain, "DEPLOY_MODE": deployMode, "INSTALL_DEPLOY_MODE": deployMode, "INSTALL_UFW_ENABLE": ufwEnable, "INSTALL_UFW_OPEN_PROXY_PORTS": ufwOpenProxyPorts, "INSTALL_UFW_OPEN_DIRECT_PORT": ufwOpenDirectPort, "APP_DB_PATH": "/var/lib/despatch/app.db", "SESSION_COOKIE_NAME": "despatch_session", "MFA_TRUSTED_COOKIE_NAME": "despatch_mfa_trusted", "SESSION_IDLE_MINUTES": "480", "SESSION_ABSOLUTE_HOURS": "168", "SESSION_ENCRYPT_KEY": generatedSessionSecret, "CSRF_COOKIE_NAME": "despatch_csrf", "COOKIE_SECURE_MODE": cookieSecureMode, "COOKIE_SECURE": cookieSecureLegacy, "TRUST_PROXY": trustProxyEnabled, "CORS_ALLOWED_ORIGINS": "", "CAPTCHA_ENABLED": capEnabled, "CAPTCHA_PROVIDER": resolvedCaptchaProvider, "CAPTCHA_SITE_KEY": resolvedCaptchaSiteKey, "CAPTCHA_WIDGET_API_URL": capWidgetApiUrl, "CAPTCHA_VERIFY_URL": capVerifyUrl, "CAPTCHA_SECRET": resolvedCaptchaSecret, "PASSWORD_MIN_LENGTH": "12", "PASSWORD_MAX_LENGTH": "128", "IMAP_HOST": "127.0.0.1", "IMAP_PORT": imapPort, "IMAP_TLS": imapTls, "IMAP_STARTTLS": imapStarttls, "IMAP_INSECURE_SKIP_VERIFY": imapSkipVerify, "MAIL_ALLOW_INSECURE_SKIP_VERIFY_NON_LOOPBACK": false, "SMTP_HOST": "127.0.0.1", "SMTP_PORT": smtpPort, "SMTP_TLS": smtpTls, "SMTP_STARTTLS": smtpStarttls, "SMTP_INSECURE_SKIP_VERIFY": smtpSkipVerify, "DOVECOT_AUTH_DB_DRIVER": resolvedDovecotSqlDriver, "DOVECOT_AUTH_DB_DSN": resolvedDovecotDsnText, "DOVECOT_AUTH_MODE": resolvedDovecotAuthMode, "DOVECOT_AUTH_TABLE": resolvedDovecotAuthTable, "DOVECOT_AUTH_EMAIL_COL": resolvedDovecotAuthEmailCol, "DOVECOT_AUTH_PASS_COL": resolvedDovecotAuthPassCol, "DOVECOT_AUTH_ACTIVE_COL": resolvedDovecotAuthActiveCol, "DOVECOT_AUTH_MAILDIR_COL": resolvedDovecotAuthMaildirCol, "DOVECOT_MAILDIR_BASE": "/var/mail/vhosts", "HTTP_READ_TIMEOUT_SEC": "10", "HTTP_READ_HEADER_TIMEOUT_SEC": "5", "HTTP_WRITE_TIMEOUT_SEC": "30", "HTTP_IDLE_TIMEOUT_SEC": "60", "PASSWORD_RESET_SENDER": "smtp", "PASSWORD_RESET_FROM": passwordResetFromAddr, "PASSWORD_RESET_BASE_URL": passwordResetBaseUrl, "PASSWORD_RESET_SMTP_USER": "", "PASSWORD_RESET_SMTP_PASS": "", "PASSWORD_RESET_TOKEN_TTL_MINUTES": "30", "PASSWORD_RESET_PUBLIC_ENABLED": true, "PASSWORD_RESET_EXTERNAL_SENDER_READY": passwordResetExternalSenderReady, "PASSWORD_RESET_REQUIRE_MAPPED_LOGIN": true, "PAM_RESET_HELPER_ENABLED": pamResetHelperEnabled, "PAM_RESET_HELPER_SOCKET": "/run/despatch/pam-reset-helper.sock", "PAM_RESET_HELPER_TIMEOUT_SEC": "5", "PAM_RESET_ALLOWED_UID": "-1", "PAM_RESET_ALLOWED_GID": "-1", "UPDATE_ENABLED": true, "UPDATE_REPO_OWNER": "2high4schooltoday", "UPDATE_REPO_NAME": "despatch", "UPDATE_CHECK_INTERVAL_MIN": "60", "UPDATE_HTTP_TIMEOUT_SEC": "10", "UPDATE_GITHUB_TOKEN": "", "UPDATE_BACKUP_KEEP": "3", "UPDATE_BASE_DIR": dataRoot / "update", "UPDATE_INSTALL_DIR": installRoot, "UPDATE_SERVICE_NAME": "despatch", "UPDATE_SYSTEMD_UNIT_DIR": "/etc/systemd/system", "UPDATE_REQUIRE_SIGNATURE": true, "UPDATE_SIGNATURE_ASSET": "checksums.txt.sig", "UPDATE_SIGNING_PUBLIC_KEYS": "NgWFCGvluSgGiR4KpQhrNGqK4UVDRcEb76RNBEproBw=", "MAILSEC_ENABLED": true, "MAILSEC_SOCKET": "/run/despatch/mailsec.sock", "MAILSEC_TIMEOUT_MS": "5000", "WEBAUTHN_RP_ID": resolvedWebauthnRpId, "WEBAUTHN_ALLOWED_ORIGINS": passwordResetBaseUrl, "PASSKEY_PASSWORDLESS_ENABLED": true, "PROXY_SERVER": resolvedProxyServer, "PROXY_SERVER_NAME": resolvedProxyServerName, "PROXY_TLS": resolvedProxyTls, "BOOTSTRAP_ADMIN_EMAIL": "", "BOOTSTRAP_ADMIN_PASSWORD": "" }.
 
 config runtimeEnv:
   path is envPath.
@@ -909,7 +909,7 @@ fact proxyRoutingDiagnostics:
   otherwise: { ok: true, findings: [] }.
 
 fact tlsEndpointDiagnostics:
-  when commandPath exists and installedDeployMode is "proxy" and installedProxyTlsEnabled: tls diagnostics for { hostname: installedProxyServerName, validate_redirect: true }
+  when commandPath exists and installedDeployMode is "proxy" and installedProxyTlsEnabled: tls diagnostics for { hostname: installedProxyServerName, connect_target: installedProxyConnectTarget, validate_redirect: true }
   otherwise: { ok: true, findings: [] }.
 
 fact proxyConfigDiagnostics:
@@ -1100,6 +1100,7 @@ operation install:
     note "No reverse proxy was detected, so Despatch defaulted to direct mode on :8080." when deployMode is "direct" and detectedProxyServer is "".
     note "Detected reverse proxy: nginx." when detectedNginxInstall is true and detectedApacheInstall is false.
     note "Detected reverse proxy: apache2." when detectedApacheInstall is true and detectedNginxInstall is false.
+    note "Mailbox domain and public web hostname are separate. Use the public web hostname for the browser address, such as `mail.example.com`." when deployMode is "proxy".
     note "Detected Dovecot auth mode: `{{detectedDovecotAuthMode}}`.".
     note "Detected Dovecot SQL mailbox mapping: table `{{detectedDovecotSqlPrimaryTable}}`, login `{{detectedDovecotSqlLoginColumn}}`, password `{{detectedDovecotSqlPasswordHashColumn}}`." when detectedDovecotAuthMode is "sql" and trimmed detectedDovecotSqlPrimaryTable != "".
     warning "Direct mode exposes Despatch on the selected listen address without a Launchpad-managed reverse proxy." when deployMode is "direct".
@@ -1114,11 +1115,11 @@ operation install:
         shows "Archive" as archiveName
         shows "Download URL" as releaseUrl
       group "Deployment":
-        shows "Domain" as baseDomain
+        shows "Mailbox domain" as baseDomain
         shows "Listen address" as resolvedListenAddr
         shows "Mode" as deployMode
         shows "Proxy server" as resolvedProxyServer
-        shows "Proxy hostname" as resolvedProxyServerName
+        shows "Public web hostname" as resolvedProxyServerName
         shows "Proxy TLS" as resolvedProxyTls
       group "Auth And Ops":
         shows "Dovecot auth mode" as resolvedDovecotAuthMode
@@ -1313,6 +1314,12 @@ operation install:
 
   stage "Run Diagnostics" when runDiagnose:
     say "Running final deployment diagnostics.".
+    when deployMode is "proxy":
+      check that value for key "ok" in proxyHttpDiagnostics is true.
+      check that value for key "ok" in proxyRoutingDiagnostics is true.
+      check that value for key "ok" in proxyConfigDiagnostics is true.
+    when deployMode is "proxy" and resolvedProxyTls:
+      check that value for key "ok" in tlsEndpointDiagnostics is true.
     show panel "Diagnostics" with "Combined diagnostics ok: `{{value for key \"ok\" in combinedHealthDiagnostics}}`.\nUse `launchpad apps diagnose despatch` for the full diagnostic breakdown if anything still needs attention.".
 
   stage "Finish":
@@ -1344,7 +1351,7 @@ operation status:
     shows "despatch-cap.service" as detectedCapServiceState
 
   stage "Inspect":
-    show panel "Despatch" with "Install root: `{{installRoot}}`\nData root: `{{dataRoot}}`\nBinary: `{{commandPath}}`.\nBase domain: `{{installedBaseDomain}}`.".
+    show panel "Despatch" with "Install root: `{{installRoot}}`\nData root: `{{dataRoot}}`\nBinary: `{{commandPath}}`.\nMailbox domain: `{{installedBaseDomain}}`\nPublic web hostname: `{{installedProxyServerName}}`.".
 
 operation diagnose:
   presents as:

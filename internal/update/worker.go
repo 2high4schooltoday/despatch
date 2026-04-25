@@ -1422,6 +1422,13 @@ func envValueTrimmed(values map[string]string, key string) string {
 	return strings.TrimSpace(values[key])
 }
 
+func installDeployMode(values map[string]string) string {
+	if mode := envValueTrimmed(values, "INSTALL_DEPLOY_MODE"); mode != "" {
+		return mode
+	}
+	return envValueTrimmed(values, "DEPLOY_MODE")
+}
+
 func shouldMigrateLegacyPasswordResetEnv(values map[string]string) bool {
 	if strings.EqualFold(envValueTrimmed(values, "PASSWORD_RESET_SENDER"), "log") {
 		return false
@@ -1460,7 +1467,7 @@ func isLoopbackResetSMTPHost(host string) bool {
 }
 
 func preferredPublicResetHost(values map[string]string) string {
-	if strings.EqualFold(envValueTrimmed(values, "DEPLOY_MODE"), "proxy") {
+	if strings.EqualFold(installDeployMode(values), "proxy") {
 		if host := envValueTrimmed(values, "PROXY_SERVER_NAME"); host != "" {
 			return host
 		}
@@ -1500,7 +1507,7 @@ func shouldRewritePasswordResetBaseURL(current string) bool {
 }
 
 func derivePasswordResetBaseURL(values map[string]string) string {
-	if strings.EqualFold(envValueTrimmed(values, "DEPLOY_MODE"), "proxy") {
+	if strings.EqualFold(installDeployMode(values), "proxy") {
 		host := envValueTrimmed(values, "PROXY_SERVER_NAME")
 		if host == "" {
 			host = envValueTrimmed(values, "BASE_DOMAIN")

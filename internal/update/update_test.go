@@ -1280,7 +1280,7 @@ func TestMigrateLegacyPasswordResetEnvRewritesBrokenLoopbackResetSettings(t *tes
 	path := filepath.Join(t.TempDir(), ".env")
 	raw := strings.Join([]string{
 		"BASE_DOMAIN=mail.2h4s2d.ru",
-		"DEPLOY_MODE=proxy",
+		"INSTALL_DEPLOY_MODE=proxy",
 		"PROXY_SERVER_NAME=mail.2h4s2d.ru",
 		"PROXY_TLS=1",
 		"LISTEN_ADDR=127.0.0.1:8080",
@@ -1320,6 +1320,41 @@ func TestMigrateLegacyPasswordResetEnvRewritesBrokenLoopbackResetSettings(t *tes
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected updated env to contain %q, got:\n%s", want, text)
 		}
+	}
+}
+
+func TestMigrateLegacyPasswordResetEnvStillAcceptsLegacyDeployModeKey(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	raw := strings.Join([]string{
+		"BASE_DOMAIN=mail.2h4s2d.ru",
+		"DEPLOY_MODE=proxy",
+		"PROXY_SERVER_NAME=mail.2h4s2d.ru",
+		"PROXY_TLS=1",
+		"LISTEN_ADDR=127.0.0.1:8080",
+		"SMTP_HOST=127.0.0.1",
+		"SMTP_PORT=587",
+		"SMTP_TLS=false",
+		"SMTP_STARTTLS=true",
+		"PASSWORD_RESET_SENDER=smtp",
+		"PASSWORD_RESET_FROM=no-reply@mail.2h4s2d.ru",
+		"PASSWORD_RESET_BASE_URL=",
+	}, "\n") + "\n"
+	if err := os.WriteFile(path, []byte(raw), 0o640); err != nil {
+		t.Fatalf("write env: %v", err)
+	}
+	migrated, err := migrateLegacyPasswordResetEnv(path)
+	if err != nil {
+		t.Fatalf("migrate legacy env: %v", err)
+	}
+	if !migrated {
+		t.Fatalf("expected migration to run")
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read updated env: %v", err)
+	}
+	if !strings.Contains(string(updated), "PASSWORD_RESET_BASE_URL=https://mail.2h4s2d.ru") {
+		t.Fatalf("expected legacy DEPLOY_MODE fallback to keep proxy hostname, got:\n%s", string(updated))
 	}
 }
 
