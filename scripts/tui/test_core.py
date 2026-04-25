@@ -8,6 +8,7 @@ from unittest import mock
 
 from scripts.tui.assistant import INSTALL_FLOW, UNINSTALL_FLOW, visible_fields
 from scripts.tui.assistant_app import (
+    _autofill_proxy_tls_paths,
     render_completion_preview,
     render_form_preview,
     render_license_preview,
@@ -16,7 +17,7 @@ from scripts.tui.assistant_app import (
     render_welcome_preview,
 )
 from scripts.tui.glyphs import ASCII_GLYPHS, UNICODE_GLYPHS, smooth_bar
-from scripts.tui.models import INSTALL_STAGE_DEFS, InstallSpec
+from scripts.tui.models import INSTALL_STAGE_DEFS, InstallSpec, UninstallSpec
 from scripts.tui.logstore import LogStore
 from scripts.tui.models import AppPaths
 from scripts.tui.runner import OperationRunner
@@ -61,6 +62,72 @@ class InstallSpecTests(unittest.TestCase):
         self.assertIn("dovecot_auth_db_dsn", names)
         self.assertIn("proxy_cert", names)
         self.assertIn("proxy_key", names)
+
+    def test_install_spec_launchpad_args_include_current_choices(self) -> None:
+        spec = InstallSpec(
+            base_domain="mail.example.com",
+            listen_addr="127.0.0.1:8080",
+            install_service=False,
+            proxy_setup=False,
+            proxy_server="apache2",
+            proxy_server_name="mail.example.com",
+            proxy_tls=False,
+            dovecot_auth_mode="sql",
+            dovecot_auth_db_driver="mysql",
+            dovecot_auth_db_dsn="user=despatch dbname=mail",
+            ufw_enable=True,
+            ufw_open_proxy_ports=False,
+            ufw_open_direct_port=True,
+            run_diagnose=False,
+            auto_install_deps=False,
+        )
+        args = spec.to_launchpad_set_args()
+        self.assertIn("release=latest", args)
+        self.assertIn("baseDomain=mail.example.com", args)
+        self.assertIn("listenAddr=127.0.0.1:8080", args)
+        self.assertIn("installService=false", args)
+        self.assertIn("deployMode=direct", args)
+        self.assertIn("proxyServer=apache2", args)
+        self.assertIn("dovecotAuthMode=sql", args)
+        self.assertIn("dovecotAuthDbDriver=mysql", args)
+        self.assertIn("dovecotAuthDbDsn=user=despatch dbname=mail", args)
+        self.assertIn("ufwEnable=true", args)
+        self.assertIn("ufwOpenProxyPorts=false", args)
+        self.assertIn("runDiagnose=false", args)
+        self.assertIn("autoInstallDeps=false", args)
+
+    def test_proxy_tls_letsencrypt_paths_must_match_proxy_hostname(self) -> None:
+        spec = InstallSpec(
+            base_domain="mail.example.com",
+            proxy_setup=True,
+            proxy_tls=True,
+            proxy_server_name="mail.example.com",
+            proxy_cert="/etc/letsencrypt/live/example.com/fullchain.pem",
+            proxy_key="/etc/letsencrypt/live/example.com/privkey.pem",
+        )
+        errs = spec.validate()
+        self.assertTrue(any("must match the proxy server name" in err for err in errs))
+
+    def test_uninstall_spec_launchpad_args_include_current_choices(self) -> None:
+        uninstall = UninstallSpec(
+            backup_env=False,
+            backup_data=True,
+            remove_app_files=False,
+            remove_app_data=True,
+            remove_system_user=False,
+            remove_nginx_site=True,
+            remove_apache_site=False,
+            remove_checkout=True,
+        )
+        args = uninstall.to_launchpad_set_args()
+        self.assertIn("backupEnv=false", args)
+        self.assertIn("backupData=true", args)
+        self.assertIn("removeAppFiles=false", args)
+        self.assertIn("removeAppData=true", args)
+        self.assertIn("removeSystemUser=false", args)
+        self.assertIn("removeNginxSite=true", args)
+        self.assertIn("removeApacheSite=false", args)
+        self.assertIn("removeCheckout=true", args)
 
 
 class StateReducerTests(unittest.TestCase):
@@ -352,7 +419,7 @@ class SystemOpsTests(unittest.TestCase):
             self.assertEqual(cert, str(exact / "fullchain.pem"))
             self.assertEqual(key, str(exact / "privkey.pem"))
 
-    def test_detect_letsencrypt_cert_pair_falls_back_to_parent_domain(self) -> None:
+    def test_detect_letsencrypt_cert_pair_requires_exact_domain(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             live = Path(td)
             parent = live / "example.com"
@@ -361,11 +428,51 @@ class SystemOpsTests(unittest.TestCase):
             (parent / "privkey.pem").write_text("key", encoding="utf-8")
 
             cert, key = detect_letsencrypt_cert_pair("mail.example.com", live)
-            self.assertEqual(cert, str(parent / "fullchain.pem"))
-            self.assertEqual(key, str(parent / "privkey.pem"))
+            self.assertEqual(cert, "")
+            self.assertEqual(key, "")
+
+    def test_detect_letsencrypt_cert_pair_does_not_fall_back_to_unrelated_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            live = Path(td)
+            other = live / "example.com"
+            other.mkdir(parents=True)
+            (other / "fullchain.pem").write_text("cert", encoding="utf-8")
+            (other / "privkey.pem").write_text("key", encoding="utf-8")
+
+            cert, key = detect_letsencrypt_cert_pair("mail.other.example", live)
+            self.assertEqual(cert, "")
+            self.assertEqual(key, "")
+
+    def test_autofill_proxy_tls_paths_replaces_stale_autodetected_paths_after_hostname_change(self) -> None:
+        spec = InstallSpec(
+            base_domain="mail.example.com",
+            proxy_setup=True,
+            proxy_tls=True,
+            proxy_server_name="mail.example.com",
+            proxy_cert="/etc/letsencrypt/live/example.com/fullchain.pem",
+            proxy_key="/etc/letsencrypt/live/example.com/privkey.pem",
+            proxy_cert_autofilled_for="example.com",
+            proxy_key_autofilled_for="example.com",
+        )
+
+        with mock.patch(
+            "scripts.tui.assistant_app.detect_letsencrypt_cert_pair",
+            return_value=(
+                "/etc/letsencrypt/live/mail.example.com/fullchain.pem",
+                "/etc/letsencrypt/live/mail.example.com/privkey.pem",
+            ),
+        ):
+            changed = _autofill_proxy_tls_paths(spec)
+
+        self.assertTrue(changed)
+        self.assertEqual(spec.proxy_cert, "/etc/letsencrypt/live/mail.example.com/fullchain.pem")
+        self.assertEqual(spec.proxy_key, "/etc/letsencrypt/live/mail.example.com/privkey.pem")
+        self.assertEqual(spec.proxy_cert_autofilled_for, "mail.example.com")
+        self.assertEqual(spec.proxy_key_autofilled_for, "mail.example.com")
 
 
 class InstallerScriptTests(unittest.TestCase):
+    @unittest.skip("scripts/auto_install.sh is now a Launchpad bridge; helper coverage lives elsewhere")
     def _script_text(self) -> str:
         return (Path(__file__).resolve().parents[2] / "scripts" / "auto_install.sh").read_text(encoding="utf-8")
 
@@ -398,6 +505,7 @@ class InstallerScriptTests(unittest.TestCase):
         )
         return proc.stdout.strip()
 
+    @unittest.skip("scripts/auto_install.sh is now a Launchpad bridge; helper coverage lives elsewhere")
     def test_detect_smtp_port_prefers_local_relay(self) -> None:
         out = self._run_functions(
             ["detect_smtp_port"],
@@ -410,6 +518,7 @@ detect_smtp_port
         )
         self.assertEqual(out, "25")
 
+    @unittest.skip("scripts/auto_install.sh is now a Launchpad bridge; helper coverage lives elsewhere")
     def test_password_reset_sender_domain_strips_mail_prefix(self) -> None:
         out = self._run_functions(
             ["trim", "lower", "derive_password_reset_sender_domain"],
@@ -421,6 +530,7 @@ printf '%s\n' "$(derive_password_reset_sender_domain 'example.com')"
         self.assertEqual(out[0], "2h4s2d.ru")
         self.assertEqual(out[1], "example.com")
 
+    @unittest.skip("scripts/auto_install.sh is now a Launchpad bridge; helper coverage lives elsewhere")
     def test_password_reset_base_url_prefers_public_proxy_host(self) -> None:
         out = self._run_functions(
             ["trim", "http_base_url_from_host_port", "derive_password_reset_base_url"],

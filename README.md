@@ -105,16 +105,18 @@ Each release also publishes:
 The installer assets carry GitHub attestation-backed Launchpad proof, and the application archives consumed by the installer are additionally signed through `checksums.txt.sig`.
 
 ### From a local checkout
-Local entrypoints still work and now route into the native Launchpad project:
+The supported local entrypoint is the native Launchpad wrapper:
 - `./despatch`
+
+Compatibility shell wrappers into the same Launchpad project remain available:
 - `./scripts/tui.sh`
 - `./scripts/tui_plain.sh`
-
-Compatibility wrappers remain available:
 - `./scripts/auto_install.sh`
 - `./scripts/uninstall.sh`
 - `./scripts/diagnose_access.sh`
-- `wget -O despatch.py https://raw.githubusercontent.com/2high4schooltoday/despatch/main/scripts/despatch.py && chmod +x despatch.py && ./despatch.py`
+
+If you want a raw single-file entrypoint from GitHub, fetch the shell wrapper instead of the old `despatch.py` name:
+- `wget -O despatch https://raw.githubusercontent.com/2high4schooltoday/despatch/main/despatch && chmod +x despatch && ./despatch`
 
 ## Implemented
 - Single-binary Go server with REST API + web UI.
@@ -192,8 +194,8 @@ Run these before packaging a release:
 ## Installer details
 Interactive, prompt-driven install flows are available from:
 - the verified universal standalone installer
-- `./despatch`
-- `./scripts/tui.sh`
+- `./despatch` (native Launchpad entrypoint)
+- `./scripts/tui.sh` (compatibility shell wrapper to the same Launchpad flow)
 
 Keyboard controls for the TUI:
 - `Tab` cycles controls

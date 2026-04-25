@@ -10,3 +10,5 @@
 /data/*.db-wal
 /data/*.db-shm
 /packaging/despatch-installer/.launchpad/lext-index.json
+__pycache__/
+*.pyc

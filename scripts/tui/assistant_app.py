@@ -3,6 +3,7 @@ from __future__ import annotations
 import curses
 import os
 import queue
+import shlex
 import threading
 import time
 from dataclasses import dataclass
@@ -33,7 +34,7 @@ from .rendering import (
 from .runner import OperationRunner
 from .screens import FIELD_INDEX_INSTALL, FIELD_INDEX_UNINSTALL, INSTALL_FIELDS, UNINSTALL_FIELDS, FieldDef, build_review_rows, field_display_value
 from .state import UIState, apply_runner_event, new_run_state
-from .system_ops import AppPaths, CancelToken, detect_arch, detect_host, detect_letsencrypt_cert_pair, detect_paths, detect_proxy_candidates, detect_service_state, fetch_repo_text
+from .system_ops import AppPaths, CancelToken, detect_arch, detect_host, detect_letsencrypt_cert_pair, detect_paths, detect_proxy_candidates, detect_service_state, fetch_repo_text, run_attached_command
 from .theme import Theme
 from .views import clamp
 from .widgets import Rect
@@ -82,24 +83,34 @@ STAGE_META: dict[str, tuple[str, str]] = {
 def _autofill_proxy_tls_paths(spec: InstallSpec) -> bool:
     if not spec.proxy_setup or not spec.proxy_tls:
         return False
-    server_name = (spec.proxy_server_name or spec.base_domain or "").strip()
+    server_name = (spec.proxy_server_name or spec.base_domain or "").strip().lower()
     if not server_name:
         return False
-    if spec.proxy_cert and spec.proxy_key:
-        return False
-    cert, key = detect_letsencrypt_cert_pair(server_name)
     changed = False
+    if spec.proxy_cert_autofilled_for and spec.proxy_cert_autofilled_for != server_name:
+        spec.proxy_cert = ""
+        spec.proxy_cert_autofilled_for = ""
+        changed = True
+    if spec.proxy_key_autofilled_for and spec.proxy_key_autofilled_for != server_name:
+        spec.proxy_key = ""
+        spec.proxy_key_autofilled_for = ""
+        changed = True
+    if spec.proxy_cert and spec.proxy_key:
+        return changed
+    cert, key = detect_letsencrypt_cert_pair(server_name)
     if cert and not spec.proxy_cert:
         spec.proxy_cert = cert
+        spec.proxy_cert_autofilled_for = server_name
         changed = True
     if key and not spec.proxy_key:
         spec.proxy_key = key
+        spec.proxy_key_autofilled_for = server_name
         changed = True
     return changed
 
 
 def _seed_proxy_tls_defaults(spec: InstallSpec) -> bool:
-    server_name = (spec.proxy_server_name or spec.base_domain or "").strip()
+    server_name = (spec.proxy_server_name or spec.base_domain or "").strip().lower()
     if not server_name:
         return False
     cert, key = detect_letsencrypt_cert_pair(server_name)
@@ -108,9 +119,11 @@ def _seed_proxy_tls_defaults(spec: InstallSpec) -> bool:
     changed = False
     if not spec.proxy_cert:
         spec.proxy_cert = cert
+        spec.proxy_cert_autofilled_for = server_name
         changed = True
     if not spec.proxy_key:
         spec.proxy_key = key
+        spec.proxy_key_autofilled_for = server_name
         changed = True
     if spec.proxy_setup and not spec.proxy_tls:
         spec.proxy_tls = True
@@ -1218,13 +1231,22 @@ class DespatchTUI:
     def _after_install_mutation(self, field_name: str) -> None:
         if self.wizard.operation != "install":
             return
-        if field_name not in {"proxy_setup", "proxy_tls", "proxy_server_name", "base_domain", "proxy_cert", "proxy_key", "dovecot_auth_mode"}:
+        if field_name == "proxy_cert":
+            self.install_spec.proxy_cert_autofilled_for = ""
+            return
+        if field_name == "proxy_key":
+            self.install_spec.proxy_key_autofilled_for = ""
+            return
+        if field_name not in {"proxy_setup", "proxy_tls", "proxy_server_name", "base_domain"}:
             return
         before = (self.install_spec.proxy_cert, self.install_spec.proxy_key)
         if _autofill_proxy_tls_paths(self.install_spec):
             after = (self.install_spec.proxy_cert, self.install_spec.proxy_key)
             if after != before:
-                self.ui.status_line = "Auto-detected TLS cert/key from /etc/letsencrypt/live."
+                if all(after):
+                    self.ui.status_line = "Auto-detected exact TLS cert/key from /etc/letsencrypt/live."
+                else:
+                    self.ui.status_line = "Cleared stale TLS cert/key after hostname change; no exact LetsEncrypt pair was found."
 
     def _cancel_run(self) -> None:
         if self.run_thread and self.run_thread.is_alive() and self.cancel_token is not None:
@@ -1443,27 +1465,113 @@ class DespatchTUI:
                 self.ui.status_line = preflight_error.message
                 return
 
-        self.cancel_token = CancelToken()
-
-        def emit(evt: dict[str, Any]) -> None:
-            self.events.put(evt)
-
-        def worker() -> None:
-            if operation == "install":
-                result = self.runner.run_install(self.install_spec, self.logstore, self.cancel_token or CancelToken(), emit)
-            elif operation == "uninstall":
-                result = self.runner.run_uninstall(self.uninstall_spec, self.logstore, self.cancel_token or CancelToken(), emit)
-            else:
-                result = self.runner.run_diagnose(DiagnoseSpec(), self.logstore, self.cancel_token or CancelToken(), emit)
-            self.last_result = result
-            payload = self._build_summary_payload(operation, result)
-            self.last_summary_payload = payload
-            summary = self.logstore.export_summary(payload)
-            self.events.put({"type": "log", "level": "info", "category": "system", "stage_id": "summary", "message": f"Summary exported: {summary}"})
-
-        self.run_thread = threading.Thread(target=worker, daemon=True)
-        self.run_thread.start()
+        result = self._run_launchpad_passthrough(operation)
+        self.run_state = None
+        self.last_result = result
+        payload = self._build_summary_payload(operation, result)
+        self.last_summary_payload = payload
+        summary = self.logstore.export_summary(payload)
+        self.logstore.append("info", "summary", f"Summary exported: {summary}", category="system")
+        self.wizard.step_idx = _COMPLETION_STAGE_INDEX.get(operation, self.wizard.step_idx)
+        if result.status == "ok":
+            self.ui.status_line = "Launchpad completed successfully."
+        elif result.status == "cancelled":
+            self.ui.status_line = "Launchpad run cancelled."
+        else:
+            self.ui.status_line = "Launchpad reported a failure. Review the result and retry if needed."
         self.focus.set_items([], preferred=None)
+
+    def _launchpad_passthrough_command(self, operation: str) -> list[str]:
+        if operation == "install":
+            cmd = ["bash", str(self.paths.install_script)]
+            for item in self.install_spec.to_launchpad_set_args():
+                cmd.extend(["--set", item])
+            cmd.append("--yes")
+            return cmd
+        if operation == "uninstall":
+            cmd = ["bash", str(self.paths.uninstall_script)]
+            for item in self.uninstall_spec.to_launchpad_set_args():
+                cmd.extend(["--set", item])
+            cmd.append("--yes")
+            return cmd
+        return ["bash", str(self.paths.diagnose_script)]
+
+    def _launchpad_passthrough_next_actions(self, operation: str) -> list[str]:
+        if operation == "install":
+            return [
+                "Open the installed Despatch endpoint and confirm web access.",
+                "Use `launchpad apps status despatch` for the registered app view.",
+                "Use `launchpad apps diagnose despatch` if you still need deeper host checks.",
+            ]
+        if operation == "uninstall":
+            return [
+                "Verify any requested backups before removing them.",
+                "Use `launchpad apps` to confirm the app registry view matches the removal.",
+            ]
+        return [
+            "Review the diagnostics output that Launchpad showed in the terminal.",
+            "Re-run diagnostics after any host or DNS changes.",
+        ]
+
+    def _run_launchpad_passthrough(self, operation: str) -> OperationResult:
+        cmd = self._launchpad_passthrough_command(operation)
+        pretty_cmd = " ".join(shlex.quote(part) for part in cmd)
+        self.logstore.append("info", "launchpad", f"handoff command: {pretty_cmd}", category="system")
+        exit_code = self._handoff_to_launchpad(cmd)
+        self.logstore.append("info", "launchpad", f"launchpad exited with code {exit_code}", category="system")
+        artifacts = {"full_log": str(self.logstore.log_path)}
+        if exit_code == 0:
+            return OperationResult(
+                status="ok",
+                artifacts=artifacts,
+                next_actions=self._launchpad_passthrough_next_actions(operation),
+            )
+        if exit_code == 130:
+            return OperationResult(
+                status="cancelled",
+                artifacts=artifacts,
+                errors=[RunnerError("E_CANCELLED", "Launchpad run was interrupted.", "launchpad")],
+                next_actions=["Start the Launchpad run again when ready."],
+            )
+        return OperationResult(
+            status="failed",
+            artifacts=artifacts,
+            errors=[
+                RunnerError(
+                    code="E_LAUNCHPAD",
+                    message=f"Launchpad exited with code {exit_code}.",
+                    stage_id="launchpad",
+                    suggested_fix="Review the Launchpad output shown above, correct the reported issue, and run it again.",
+                )
+            ],
+            next_actions=self._launchpad_passthrough_next_actions(operation),
+        )
+
+    def _handoff_to_launchpad(self, cmd: list[str]) -> int:
+        env = os.environ.copy()
+        try:
+            curses.def_prog_mode()
+        except curses.error:
+            pass
+        try:
+            curses.endwin()
+        except curses.error:
+            pass
+        try:
+            return run_attached_command(cmd, self.paths.root_dir, env)
+        finally:
+            try:
+                curses.reset_prog_mode()
+            except curses.error:
+                pass
+            try:
+                self.stdscr.keypad(True)
+                self.stdscr.timeout(120)
+                curses.curs_set(0)
+                curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+                self.stdscr.refresh()
+            except curses.error:
+                pass
 
     def _drain_events(self) -> None:
         while True:
@@ -1518,7 +1626,7 @@ class DespatchTUI:
             code="E_PREFLIGHT",
             message="Installation needs administrator access before it can continue.",
             stage_id="preflight",
-            suggested_fix="Run 'sudo -v' first, or launch despatch.py as root.",
+            suggested_fix="Run 'sudo -v' first, or launch ./despatch as root.",
         )
 
     @staticmethod

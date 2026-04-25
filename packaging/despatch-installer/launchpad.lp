@@ -101,18 +101,12 @@ field proxyServerName is a text:
   help is "Public hostname served by the reverse proxy.".
   default is baseDomain.
 
-fact proxyServerNameParentCandidate:
-  when proxyServerName starts with "mail.": replace prefix "mail." with "" in proxyServerName
-  otherwise: "".
-
 fact detectedProxyCertPath:
   when letsencrypt certificate path for proxyServerName exists: letsencrypt certificate path for proxyServerName
-  when trimmed proxyServerNameParentCandidate != "" and letsencrypt certificate path for proxyServerNameParentCandidate exists: letsencrypt certificate path for proxyServerNameParentCandidate
   otherwise: "".
 
 fact detectedProxyKeyPath:
   when letsencrypt key path for proxyServerName exists: letsencrypt key path for proxyServerName
-  when trimmed proxyServerNameParentCandidate != "" and letsencrypt key path for proxyServerNameParentCandidate exists: letsencrypt key path for proxyServerNameParentCandidate
   otherwise: "".
 
 fact detectedProxyTlsDefault:
@@ -997,6 +991,14 @@ operation install:
     when deployMode is "proxy" and resolvedProxyTls is true and proxyKeyMissing != false.
     message is "TLS private key path is required when proxy TLS is enabled.".
 
+  validation proxyCertHostnameMatch:
+    when deployMode is "proxy" and resolvedProxyTls is true and proxyCert starts with "/etc/letsencrypt/live/" and not (proxyCert starts with text joined from ["/etc/letsencrypt/live/", proxyServerName, "/"]).
+    message is "LetsEncrypt certificate path must match the selected proxy hostname exactly. Re-detect or set the correct certificate for that host.".
+
+  validation proxyKeyHostnameMatch:
+    when deployMode is "proxy" and resolvedProxyTls is true and proxyKey starts with "/etc/letsencrypt/live/" and not (proxyKey starts with text joined from ["/etc/letsencrypt/live/", proxyServerName, "/"]).
+    message is "LetsEncrypt private key path must match the selected proxy hostname exactly. Re-detect or set the correct key for that host.".
+
   validation nginxPresentOrInstallable:
     when deployMode is "proxy" and proxyServer is "nginx" and autoInstallDeps is false and detectedNginxInstall is false.
     message is "Nginx is not currently installed on this host. Enable dependency installation or switch to direct mode/apache2.".
@@ -1144,6 +1146,7 @@ operation install:
     extract archivePath to extractDir.
 
   stage "Dependencies" when autoInstallDeps:
+    say "Refreshing package metadata and ensuring host dependencies are present.".
     refresh package metadata.
     ensure package caCertificatesPackage is installed.
     ensure package curlPackage is installed.
@@ -1156,7 +1159,8 @@ operation install:
     when capEnabled and capAutoProvision:
       ensure package dockerPackage is installed.
 
-  stage "Install Runtime":
+  stage "Prepare Host":
+    say "Preparing service account and managed directories.".
     ensure service account "despatch" exists.
     ensure directory installRoot:
       owner is "root".
@@ -1190,6 +1194,9 @@ operation install:
       owner is "root".
       group is "root".
       mode is "750".
+
+  stage "Install Files":
+    say "Installing Despatch runtime files.".
     install tree extractDir to installRoot:
       owner is "root".
       group is "root".
@@ -1203,6 +1210,9 @@ operation install:
     set permissions of installRoot / "despatch-pam-reset-helper" to "755".
     set permissions of installRoot / "despatch-update-worker" to "755".
     set permissions of installRoot / "despatch-mailsec-service" to "755".
+
+  stage "Write Configuration":
+    say "Writing environment and installation metadata.".
     write env file stagedEnvValues to envPath.
     when pamResetHelperEnabled:
       set runtime value pamResetAllowedUid to (value for key "uid" in user lookup for "despatch") as text.
@@ -1221,7 +1231,8 @@ operation install:
     record artifact "despatch-env" from envPath.
     record artifact "despatch-metadata" from installMetadataPath.
 
-  stage "Wire Services":
+  stage "Configure Services":
+    say "Installing and refreshing managed services.".
     install service unit despatchService.
     install service unit despatchUpdaterService.
     install service unit despatchUpdaterPath.
@@ -1249,7 +1260,8 @@ operation install:
     remove service unit legacyMailclientPamResetHelperService.
     remove service unit legacyMailclientPamResetHelperSocket.
 
-  stage "Wire Proxy":
+  stage "Configure Proxy":
+    say "Reconciling reverse-proxy configuration.".
     when deployMode is "proxy" and resolvedProxyServer is "nginx":
       delete legacyNginxEnabledSitePath.
       delete legacyNginxSitePath.
@@ -1278,28 +1290,33 @@ operation install:
       remove nginx site despatchNginx.
       remove apache site despatchApache.
 
-  stage "Wire Firewall" when ufwEnable:
+  stage "Configure Firewall" when ufwEnable:
+    say "Updating firewall rules.".
     ensure firewall is enabled.
     install firewall rule proxyHttpIngress.
     install firewall rule proxyHttpsIngress.
     install firewall rule directIngress.
 
-  stage "Verify":
+  stage "Verify Artifacts":
+    say "Verifying recorded installer artifacts.".
     verify artifacts.
-    when installService:
-      wait until service despatchService is ready within 45 seconds.
-      wait until service despatchUpdaterPath is ready within 20 seconds.
-      wait until service despatchMailsecService is ready within 20 seconds.
-      check that value for key "ready" in readinessReport is true.
-    when installService and resolvedDovecotAuthMode is "pam":
+
+  stage "Wait For Services" when installServiceEnabled:
+    say "Waiting for managed services to report ready.".
+    wait until service despatchService is ready within 45 seconds.
+    wait until service despatchUpdaterPath is ready within 20 seconds.
+    wait until service despatchMailsecService is ready within 20 seconds.
+    when resolvedDovecotAuthMode is "pam":
       wait until service despatchPamResetHelperSocket is ready within 20 seconds.
-    when installService and capEnabled and capAutoProvision:
+    when capEnabled and capAutoProvision:
       wait until service despatchCapService is ready within 45 seconds.
-    when runDiagnose:
-      check that value for key "ok" in combinedHealthDiagnostics is true.
-    add next action "launchpad apps status despatch".
+
+  stage "Run Diagnostics" when runDiagnose:
+    say "Running final deployment diagnostics.".
+    check that value for key "ok" in combinedHealthDiagnostics is true.
 
   stage "Finish":
+    add next action "launchpad apps status despatch".
     show panel "Applications Centre" with "Despatch is now registered for Launchpad management. Use `launchpad apps`, `launchpad apps status despatch`, or `launchpad apps diagnose despatch` for the day-two lifecycle.".
 
 operation status:
@@ -1345,7 +1362,6 @@ operation diagnose:
       check that state of system service "apache2" is "active".
     when installedCapEnabledFlag:
       wait until service despatchCapService is ready within 10 seconds.
-    check that value for key "ready" in readinessReport is true.
     check that value for key "ok" in localHttpDiagnostics is true.
     check that value for key "ok" in appListenDiagnostics is true.
     when installedDeployMode is "proxy":
@@ -1416,13 +1432,15 @@ operation uninstall:
         shows "Remove checkout" as removeCheckout
 
   stage "Backup":
+    say "Creating requested backups before removal.".
     ensure directory backupRoot.
     when backupEnv:
       rotate backup of envPath to backupRoot / "despatch.env" keeping source when true overwriting existing backup when true.
     when backupData:
       rotate backup of dataRoot to backupRoot / "despatch-data" keeping source when true overwriting existing backup when true.
 
-  stage "Remove":
+  stage "Remove Services":
+    say "Removing Launchpad-managed services.".
     remove container service despatchCapService.
     remove service unit despatchPamResetHelperSocket.
     remove service unit despatchPamResetHelperService.
@@ -1436,6 +1454,9 @@ operation uninstall:
     remove service unit legacyMailclientMailsecService.
     remove service unit legacyMailclientPamResetHelperService.
     remove service unit legacyMailclientPamResetHelperSocket.
+
+  stage "Remove Proxy":
+    say "Removing reverse-proxy configuration.".
     delete legacyNginxEnabledSitePath.
     delete legacyNginxSitePath.
     delete legacyApacheSslEnabledSitePath.
@@ -1446,18 +1467,25 @@ operation uninstall:
       remove nginx site despatchNginx.
     when removeApacheSite:
       remove apache site despatchApache.
-    when ufwEnable:
-      remove firewall rule proxyHttpIngress.
-      remove firewall rule proxyHttpsIngress.
-      remove firewall rule directIngress.
+
+  stage "Remove Firewall" when ufwEnable:
+    say "Removing firewall rules.".
+    remove firewall rule proxyHttpIngress.
+    remove firewall rule proxyHttpsIngress.
+    remove firewall rule directIngress.
+
+  stage "Delete Files":
+    say "Removing installed files and data.".
     when removeAppFiles:
       delete installRoot.
     when removeAppData:
       delete dataRoot.
     when removeCheckout:
       delete checkoutRoot.
-    when removeSystemUser:
-      remove service account "despatch".
+
+  stage "Remove Account" when removeSystemUser:
+    say "Removing the despatch service account.".
+    remove service account "despatch".
 
   stage "Finish":
     show panel "Applications Centre" with "Despatch uninstall has completed. Launchpad will update the registered application state after this run ends.".

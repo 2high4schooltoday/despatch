@@ -54,6 +54,8 @@ class InstallSpec:
     proxy_tls: bool = False
     proxy_cert: str = ""
     proxy_key: str = ""
+    proxy_cert_autofilled_for: str = field(default="", repr=False)
+    proxy_key_autofilled_for: str = field(default="", repr=False)
     dovecot_auth_mode: str = "pam"
     dovecot_auth_db_driver: str = ""
     dovecot_auth_db_dsn: str = ""
@@ -71,6 +73,7 @@ class InstallSpec:
 
     def validate(self) -> list[str]:
         errors: list[str] = []
+        proxy_server_name = self.proxy_server_name.strip().lower()
         if not self.base_domain or "." not in self.base_domain:
             errors.append("Base domain must be a valid FQDN.")
         if not self.listen_addr:
@@ -82,6 +85,12 @@ class InstallSpec:
                 errors.append("Proxy server name is required when proxy mode is enabled.")
             if self.proxy_tls and (not self.proxy_cert or not self.proxy_key):
                 errors.append("TLS cert and key are required when proxy TLS is enabled.")
+            cert_host = self._letsencrypt_live_host(self.proxy_cert)
+            key_host = self._letsencrypt_live_host(self.proxy_key)
+            if proxy_server_name and cert_host and cert_host != proxy_server_name:
+                errors.append("TLS certificate path must match the proxy server name when using /etc/letsencrypt/live.")
+            if proxy_server_name and key_host and key_host != proxy_server_name:
+                errors.append("TLS private key path must match the proxy server name when using /etc/letsencrypt/live.")
         if self.dovecot_auth_mode not in {"pam", "sql"}:
             errors.append("Dovecot auth mode must be pam or sql.")
         if self.dovecot_auth_mode == "sql":
@@ -90,6 +99,22 @@ class InstallSpec:
             if not self.dovecot_auth_db_dsn:
                 errors.append("SQL auth DSN is required for SQL mode.")
         return errors
+
+    @staticmethod
+    def _letsencrypt_live_host(path: str) -> str:
+        candidate = Path(path.strip())
+        parts = candidate.parts
+        try:
+            live_idx = parts.index("live")
+        except ValueError:
+            return ""
+        if live_idx < 3:
+            return ""
+        if parts[live_idx - 3 : live_idx] != ("/", "etc", "letsencrypt"):
+            return ""
+        if live_idx + 1 >= len(parts):
+            return ""
+        return parts[live_idx + 1].strip().lower()
 
     def to_env(self) -> dict[str, str]:
         return {
@@ -129,6 +154,49 @@ class InstallSpec:
             "DESPATCH_CHECKOUT_DIR": "",
         }
 
+    @staticmethod
+    def _launchpad_scalar(value: object) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return str(value)
+
+    def to_launchpad_set_args(self) -> list[str]:
+        values: list[tuple[str, object]] = [
+            ("release", "latest"),
+            ("baseDomain", self.base_domain),
+            ("listenAddr", self.listen_addr),
+            ("installService", self.install_service),
+            ("deployMode", "proxy" if self.proxy_setup else "direct"),
+            ("proxyServer", self.proxy_server),
+            ("proxyServerName", self.proxy_server_name),
+            ("proxyTls", self.proxy_tls),
+            ("proxyCert", self.proxy_cert),
+            ("proxyKey", self.proxy_key),
+            ("dovecotAuthMode", self.dovecot_auth_mode),
+            ("dovecotAuthDbDriver", self.dovecot_auth_db_driver),
+            ("dovecotAuthDbDsn", self.dovecot_auth_db_dsn),
+            ("dovecotAuthTable", self.dovecot_auth_table),
+            ("dovecotAuthEmailCol", self.dovecot_auth_email_col),
+            ("dovecotAuthPassCol", self.dovecot_auth_pass_col),
+            ("dovecotAuthActiveCol", self.dovecot_auth_active_col),
+            ("dovecotAuthMaildirCol", self.dovecot_auth_maildir_col),
+            ("autoInstallDeps", self.auto_install_deps),
+            ("ufwEnable", self.ufw_enable),
+            ("ufwOpenProxyPorts", self.ufw_open_proxy_ports),
+            ("ufwOpenDirectPort", self.ufw_open_direct_port),
+            ("enableCapCaptcha", False),
+            ("capSiteKey", ""),
+            ("capSecret", ""),
+            ("capUpstream", ""),
+            ("capAutoProvision", False),
+            ("capImage", ""),
+            ("capAdminKey", ""),
+            ("capWidgetVersion", ""),
+            ("capWasmVersion", ""),
+            ("runDiagnose", self.run_diagnose),
+        ]
+        return [f"{key}={self._launchpad_scalar(value)}" for key, value in values]
+
 
 @dataclass
 class UninstallSpec:
@@ -154,6 +222,19 @@ class UninstallSpec:
             "DESPATCH_REMOVE_APACHE_SITE": "1" if self.remove_apache_site else "0",
             "DESPATCH_REMOVE_CHECKOUT": "1" if self.remove_checkout else "0",
         }
+
+    def to_launchpad_set_args(self) -> list[str]:
+        values: list[tuple[str, object]] = [
+            ("backupEnv", self.backup_env),
+            ("backupData", self.backup_data),
+            ("removeAppFiles", self.remove_app_files),
+            ("removeAppData", self.remove_app_data),
+            ("removeSystemUser", self.remove_system_user),
+            ("removeNginxSite", self.remove_nginx_site),
+            ("removeApacheSite", self.remove_apache_site),
+            ("removeCheckout", self.remove_checkout),
+        ]
+        return [f"{key}={InstallSpec._launchpad_scalar(value)}" for key, value in values]
 
 
 @dataclass

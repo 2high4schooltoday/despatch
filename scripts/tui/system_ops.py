@@ -159,29 +159,12 @@ def detect_letsencrypt_cert_pair(server_name: str, live_dir: Path | None = None)
     if not live_dir.is_dir():
         return "", ""
 
-    candidates: list[str] = []
     if server.startswith("*."):
         server = server[2:]
-    candidates.append(server)
-    walk = server
-    while "." in walk:
-        walk = walk.split(".", 1)[1]
-        if walk not in candidates:
-            candidates.append(walk)
-
-    for name in candidates:
-        cert = live_dir / name / "fullchain.pem"
-        key = live_dir / name / "privkey.pem"
-        if cert.is_file() and key.is_file():
-            return str(cert), str(key)
-
-    for entry in sorted(live_dir.iterdir()):
-        if not entry.is_dir():
-            continue
-        cert = entry / "fullchain.pem"
-        key = entry / "privkey.pem"
-        if cert.is_file() and key.is_file():
-            return str(cert), str(key)
+    cert = live_dir / server / "fullchain.pem"
+    key = live_dir / server / "privkey.pem"
+    if cert.is_file() and key.is_file():
+        return str(cert), str(key)
     return "", ""
 
 
@@ -240,6 +223,21 @@ def command_output(cmd: list[str], timeout: float = 2.0) -> str:
         return (proc.stdout or proc.stderr).strip()
     except Exception:
         return ""
+
+
+def run_attached_command(cmd: list[str], cwd: Path, env: dict[str, str]) -> int:
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            env=env,
+            check=False,
+        )
+        return int(proc.returncode or 0)
+    except KeyboardInterrupt:
+        return 130
+    except Exception:
+        return 1
 
 
 def now_ms() -> int:
