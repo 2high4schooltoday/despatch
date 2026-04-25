@@ -379,6 +379,12 @@ path backupRoot is "/var/backups/despatch".
 path nginxSitePath is "/etc/nginx/sites-available/despatch.conf".
 path nginxEnabledSitePath is "/etc/nginx/sites-enabled/despatch.conf".
 path apacheSitePath is "/etc/apache2/sites-available/despatch.conf".
+path legacyNginxSitePath is "/etc/nginx/sites-available/mailclient.conf".
+path legacyNginxEnabledSitePath is "/etc/nginx/sites-enabled/mailclient.conf".
+path legacyApacheSitePath is "/etc/apache2/sites-available/mailclient.conf".
+path legacyApacheEnabledSitePath is "/etc/apache2/sites-enabled/mailclient.conf".
+path legacyApacheSslSitePath is "/etc/apache2/sites-available/mailclient-ssl.conf".
+path legacyApacheSslEnabledSitePath is "/etc/apache2/sites-enabled/mailclient-ssl.conf".
 
 fact generatedSecretSeedA:
   when "/proc/sys/kernel/random/uuid" exists: replace "-" with "" in trimmed (read config from "/proc/sys/kernel/random/uuid" as plainText)
@@ -496,6 +502,10 @@ fact trustProxyEnabled:
 
 fact imapTlsPortDiagnostics is listening port diagnostics for { port: 993, role: "app", failure_category: "app_down" }.
 fact imapStarttlsPortDiagnostics is listening port diagnostics for { port: 143, role: "app", failure_category: "app_down" }.
+fact detectedImapListener:
+  when value for key "ok" in imapTlsPortDiagnostics is true: true
+  when value for key "ok" in imapStarttlsPortDiagnostics is true: true
+  otherwise: false.
 
 fact imapPort:
   when value for key "ok" in imapTlsPortDiagnostics is true: "993"
@@ -517,6 +527,14 @@ fact imapSkipVerify:
 fact smtpPort25Diagnostics is listening port diagnostics for { port: 25, role: "app", failure_category: "app_down" }.
 fact smtpPort587Diagnostics is listening port diagnostics for { port: 587, role: "app", failure_category: "app_down" }.
 fact smtpPort465Diagnostics is listening port diagnostics for { port: 465, role: "app", failure_category: "app_down" }.
+fact detectedSmtpListener:
+  when value for key "ok" in smtpPort25Diagnostics is true: true
+  when value for key "ok" in smtpPort587Diagnostics is true: true
+  when value for key "ok" in smtpPort465Diagnostics is true: true
+  otherwise: false.
+fact detectedLocalSmtpRelay:
+  when value for key "ok" in smtpPort25Diagnostics is true: true
+  otherwise: false.
 
 fact smtpPort:
   when value for key "ok" in smtpPort25Diagnostics is true: "25"
@@ -1003,6 +1021,18 @@ operation install:
     when resolvedDovecotAuthMode is "sql" and resolvedDovecotDsnMissing is true.
     message is "Launchpad could not derive a Dovecot SQL DSN. Set one explicitly or fix the Dovecot SQL config.".
 
+  validation imapListenerRequired:
+    when installService is true and detectedImapListener is false.
+    message is "No local IMAP listener was detected on 127.0.0.1:993 or 127.0.0.1:143. Despatch expects an existing Dovecot/IMAP service before install.".
+
+  validation smtpListenerRequired:
+    when installService is true and detectedSmtpListener is false.
+    message is "No local SMTP listener was detected on 127.0.0.1:25, 127.0.0.1:587, or 127.0.0.1:465. Despatch expects an existing Postfix/SMTP service before install.".
+
+  validation pamResetRelayRequired:
+    when installService is true and resolvedDovecotAuthMode is "pam" and detectedLocalSmtpRelay is false.
+    message is "PAM mode currently requires a local SMTP relay on 127.0.0.1:25 so password-reset sender readiness can be confirmed during install.".
+
   preflight noSudo:
     when system is not root and host does not have sudo.
     code is "E_NO_SUDO".
@@ -1221,12 +1251,30 @@ operation install:
 
   stage "Wire Proxy":
     when deployMode is "proxy" and resolvedProxyServer is "nginx":
+      delete legacyNginxEnabledSitePath.
+      delete legacyNginxSitePath.
+      delete legacyApacheSslEnabledSitePath.
+      delete legacyApacheSslSitePath.
+      delete legacyApacheEnabledSitePath.
+      delete legacyApacheSitePath.
       install nginx site despatchNginx.
       remove apache site despatchApache.
     when deployMode is "proxy" and resolvedProxyServer is "apache2":
+      delete legacyNginxEnabledSitePath.
+      delete legacyNginxSitePath.
+      delete legacyApacheSslEnabledSitePath.
+      delete legacyApacheSslSitePath.
+      delete legacyApacheEnabledSitePath.
+      delete legacyApacheSitePath.
       install apache site despatchApache.
       remove nginx site despatchNginx.
     when deployMode is "direct":
+      delete legacyNginxEnabledSitePath.
+      delete legacyNginxSitePath.
+      delete legacyApacheSslEnabledSitePath.
+      delete legacyApacheSslSitePath.
+      delete legacyApacheEnabledSitePath.
+      delete legacyApacheSitePath.
       remove nginx site despatchNginx.
       remove apache site despatchApache.
 
@@ -1388,6 +1436,12 @@ operation uninstall:
     remove service unit legacyMailclientMailsecService.
     remove service unit legacyMailclientPamResetHelperService.
     remove service unit legacyMailclientPamResetHelperSocket.
+    delete legacyNginxEnabledSitePath.
+    delete legacyNginxSitePath.
+    delete legacyApacheSslEnabledSitePath.
+    delete legacyApacheSslSitePath.
+    delete legacyApacheEnabledSitePath.
+    delete legacyApacheSitePath.
     when removeNginxSite:
       remove nginx site despatchNginx.
     when removeApacheSite:
