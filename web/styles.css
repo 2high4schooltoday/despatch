@@ -2387,7 +2387,8 @@ a:focus-visible {
 }
 
 .mail-pane-splitter:focus-visible {
-  box-shadow: inset 0 0 0 var(--focus-ring) var(--line-0);
+  outline: 1px solid var(--line-0);
+  outline-offset: -1px;
 }
 
 .mail-pane--mailboxes {
