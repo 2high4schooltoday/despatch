@@ -631,7 +631,17 @@ func (w *MailWorkers) resolveIndexedThreadID(ctx context.Context, accountID stri
 	if threadID, err := w.st.FindIndexedThreadIDByMessageHeaders(ctx, accountID, lookupHeaders); err == nil && strings.TrimSpace(threadID) != "" {
 		return threadID
 	}
-	return mail.DeriveIndexedThreadID(msg.MessageID, msg.InReplyTo, normalizedRefs, subject, from)
+	participants := append([]string{from}, msg.To...)
+	participants = append(participants, msg.CC...)
+	participants = append(participants, msg.BCC...)
+	threadTopic := strings.TrimSpace(msg.ThreadTopic)
+	listID := strings.TrimSpace(msg.ListID)
+	if (mail.ThreadSubjectLooksReply(subject) || threadTopic != "" || listID != "") && len(lookupHeaders) == 0 {
+		if threadID, err := w.st.FindIndexedThreadIDBySubjectParticipants(ctx, accountID, firstNonEmptyString(threadTopic, subject), participants, msg.Date); err == nil && strings.TrimSpace(threadID) != "" {
+			return threadID
+		}
+	}
+	return mail.DeriveIndexedThreadIDWithHints(msg.MessageID, msg.InReplyTo, normalizedRefs, subject, from, participants, threadTopic, msg.ThreadIndex, listID)
 }
 
 func (w *MailWorkers) tryBeginAccountAction(accountID string) bool {

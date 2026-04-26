@@ -103,6 +103,9 @@ func newV2RouterWithMailClientStoreAndHook(t *testing.T, despatch mail.Client, m
 		filepath.Join("..", "..", "migrations", "027_sender_profiles.sql"),
 		filepath.Join("..", "..", "migrations", "028_contacts.sql"),
 		filepath.Join("..", "..", "migrations", "029_mail_rules.sql"),
+		filepath.Join("..", "..", "migrations", "030_mail_triage.sql"),
+		filepath.Join("..", "..", "migrations", "031_reply_funnels.sql"),
+		filepath.Join("..", "..", "migrations", "032_mail_account_providers.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)

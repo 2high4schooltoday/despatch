@@ -2,26 +2,74 @@ package models
 
 import "time"
 
+type MailProviderDefaults struct {
+	IMAPHost     string `json:"imap_host,omitempty"`
+	IMAPPort     int    `json:"imap_port,omitempty"`
+	IMAPSecurity string `json:"imap_security,omitempty"`
+	SMTPHost     string `json:"smtp_host,omitempty"`
+	SMTPPort     int    `json:"smtp_port,omitempty"`
+	SMTPSecurity string `json:"smtp_security,omitempty"`
+}
+
+type MailProviderCapabilities struct {
+	ReceiveMail         bool   `json:"receive_mail"`
+	SendMail            bool   `json:"send_mail"`
+	RemoteFolders       bool   `json:"remote_folders"`
+	ServerRulesAPI      bool   `json:"server_rules_api"`
+	ServerRulesAssisted bool   `json:"server_rules_assisted"`
+	ForwardingAPI       bool   `json:"forwarding_api"`
+	ForwardingAssisted  bool   `json:"forwarding_assisted"`
+	BulkAccountImport   bool   `json:"bulk_account_import"`
+	ReplyFunnels        bool   `json:"reply_funnels"`
+	OAuth               bool   `json:"oauth"`
+	AppPassword         bool   `json:"app_password"`
+	MultiaccountRead    bool   `json:"multiaccount_read"`
+	MultiaccountWrite   bool   `json:"multiaccount_write"`
+	ProviderStatusProbe string `json:"provider_status_probe,omitempty"`
+}
+
+type MailProvider struct {
+	ID             string                   `json:"id"`
+	Label          string                   `json:"label"`
+	SourceKind     string                   `json:"source_kind"`
+	AuthKinds      []string                 `json:"auth_kinds,omitempty"`
+	ConnectionMode string                   `json:"connection_mode,omitempty"`
+	Defaults       MailProviderDefaults     `json:"defaults,omitempty"`
+	Capabilities   MailProviderCapabilities `json:"capabilities,omitempty"`
+	HelperLinks    map[string]string        `json:"helper_links,omitempty"`
+}
+
 type MailAccount struct {
-	ID           string    `json:"id"`
-	UserID       string    `json:"user_id"`
-	DisplayName  string    `json:"display_name"`
-	Login        string    `json:"login"`
-	SecretEnc    string    `json:"-"`
-	IMAPHost     string    `json:"imap_host"`
-	IMAPPort     int       `json:"imap_port"`
-	IMAPTLS      bool      `json:"imap_tls"`
-	IMAPStartTLS bool      `json:"imap_starttls"`
-	SMTPHost     string    `json:"smtp_host"`
-	SMTPPort     int       `json:"smtp_port"`
-	SMTPTLS      bool      `json:"smtp_tls"`
-	SMTPStartTLS bool      `json:"smtp_starttls"`
-	IsDefault    bool      `json:"is_default"`
-	Status       string    `json:"status"`
-	LastSyncAt   time.Time `json:"last_sync_at,omitempty"`
-	LastError    string    `json:"last_error,omitempty"`
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                            string                   `json:"id"`
+	UserID                        string                   `json:"user_id"`
+	DisplayName                   string                   `json:"display_name"`
+	Login                         string                   `json:"login"`
+	SecretEnc                     string                   `json:"-"`
+	IMAPHost                      string                   `json:"imap_host"`
+	IMAPPort                      int                      `json:"imap_port"`
+	IMAPTLS                       bool                     `json:"imap_tls"`
+	IMAPStartTLS                  bool                     `json:"imap_starttls"`
+	SMTPHost                      string                   `json:"smtp_host"`
+	SMTPPort                      int                      `json:"smtp_port"`
+	SMTPTLS                       bool                     `json:"smtp_tls"`
+	SMTPStartTLS                  bool                     `json:"smtp_starttls"`
+	IsDefault                     bool                     `json:"is_default"`
+	Status                        string                   `json:"status"`
+	LastSyncAt                    time.Time                `json:"last_sync_at,omitempty"`
+	LastError                     string                   `json:"last_error,omitempty"`
+	ProviderType                  string                   `json:"provider_type,omitempty"`
+	ProviderLabel                 string                   `json:"provider_label,omitempty"`
+	AuthKind                      string                   `json:"auth_kind,omitempty"`
+	ConnectionMode                string                   `json:"connection_mode,omitempty"`
+	ValidationIMAPReady           bool                     `json:"imap_ready,omitempty"`
+	ValidationSMTPReady           bool                     `json:"smtp_ready,omitempty"`
+	ValidationAppPasswordRequired bool                     `json:"app_password_required,omitempty"`
+	ValidationError               string                   `json:"validation_error,omitempty"`
+	LastValidatedAt               time.Time                `json:"last_validated_at,omitempty"`
+	Capabilities                  MailProviderCapabilities `json:"capabilities,omitempty"`
+	HelperLinks                   map[string]string        `json:"helper_links,omitempty"`
+	CreatedAt                     time.Time                `json:"created_at"`
+	UpdatedAt                     time.Time                `json:"updated_at"`
 }
 
 type MailIdentity struct {
@@ -48,6 +96,48 @@ type MailboxMapping struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
+type ReplyFunnel struct {
+	ID                 string               `json:"id"`
+	UserID             string               `json:"user_id,omitempty"`
+	Name               string               `json:"name"`
+	SenderName         string               `json:"sender_name"`
+	CollectorAccountID string               `json:"collector_account_id"`
+	ReplyMode          string               `json:"reply_mode"`
+	RoutingMode        string               `json:"routing_mode"`
+	IncludeCollector   bool                 `json:"include_collector"`
+	TargetReplyCount   int                  `json:"target_reply_count"`
+	SavedSearchID      string               `json:"saved_search_id,omitempty"`
+	CreatedAt          time.Time            `json:"created_at"`
+	UpdatedAt          time.Time            `json:"updated_at"`
+	CollectorLabel     string               `json:"collector_label,omitempty"`
+	CollectorLogin     string               `json:"collector_login,omitempty"`
+	Accounts           []ReplyFunnelAccount `json:"accounts,omitempty"`
+	SourceAccountIDs   []string             `json:"source_account_ids,omitempty"`
+}
+
+type ReplyFunnelAccount struct {
+	ID                          string    `json:"id"`
+	FunnelID                    string    `json:"funnel_id"`
+	AccountID                   string    `json:"account_id"`
+	Role                        string    `json:"role"`
+	Position                    int       `json:"position"`
+	SenderIdentityID            string    `json:"sender_identity_id,omitempty"`
+	RedirectRuleID              string    `json:"redirect_rule_id,omitempty"`
+	LastApplyError              string    `json:"last_apply_error,omitempty"`
+	AssistedForwardingState     string    `json:"assisted_forwarding_state,omitempty"`
+	AssistedForwardingNotes     string    `json:"assisted_forwarding_notes,omitempty"`
+	AssistedForwardingCheckedAt time.Time `json:"assisted_forwarding_checked_at,omitempty"`
+	AssistedForwardingConfirmed time.Time `json:"assisted_forwarding_confirmed_at,omitempty"`
+	CreatedAt                   time.Time `json:"created_at"`
+	UpdatedAt                   time.Time `json:"updated_at"`
+	AccountLabel                string    `json:"account_label,omitempty"`
+	AccountLogin                string    `json:"account_login,omitempty"`
+	ProviderType                string    `json:"provider_type,omitempty"`
+	ProviderLabel               string    `json:"provider_label,omitempty"`
+	AssistedForwardingURL       string    `json:"assisted_forwarding_url,omitempty"`
+	AssistedForwardingWarning   string    `json:"assisted_forwarding_warning,omitempty"`
+}
+
 type ThreadSummary struct {
 	ID             string    `json:"id"`
 	AccountID      string    `json:"account_id"`
@@ -64,39 +154,39 @@ type ThreadSummary struct {
 }
 
 type IndexedMessage struct {
-	ID                  string    `json:"id"`
-	AccountID           string    `json:"account_id"`
-	Source              string    `json:"source,omitempty"`
-	Mailbox             string    `json:"mailbox"`
-	UID                 uint32    `json:"uid"`
-	ThreadID            string    `json:"thread_id"`
-	MessageIDHeader     string    `json:"message_id_header,omitempty"`
-	InReplyToHeader     string    `json:"in_reply_to_header,omitempty"`
-	ReferencesHeader    string    `json:"references_header,omitempty"`
-	FromValue           string    `json:"from"`
-	ToValue             string    `json:"to"`
-	CCValue             string    `json:"cc,omitempty"`
-	BCCValue            string    `json:"bcc,omitempty"`
-	Subject             string    `json:"subject"`
-	Snippet             string    `json:"snippet"`
-	BodyText            string    `json:"body"`
-	BodyHTMLSanitized   string    `json:"body_html"`
-	RawSource           string    `json:"raw_source"`
-	Seen                bool      `json:"seen"`
-	Flagged             bool      `json:"flagged"`
-	Answered            bool      `json:"answered"`
-	Draft               bool      `json:"draft"`
-	HasAttachments      bool      `json:"has_attachments"`
-	Importance          int       `json:"importance"`
-	DKIMStatus          string    `json:"dkim_status"`
-	SPFStatus           string    `json:"spf_status"`
-	DMARCStatus         string    `json:"dmarc_status"`
-	PhishingScore       float64   `json:"phishing_score"`
-	RemoteImagesBlocked bool      `json:"remote_images_blocked"`
-	RemoteImagesAllowed bool      `json:"remote_images_allowed"`
-	DateHeader          time.Time `json:"date"`
-	InternalDate        time.Time `json:"internal_date"`
-	TriageKey           string    `json:"triage_key,omitempty"`
+	ID                  string          `json:"id"`
+	AccountID           string          `json:"account_id"`
+	Source              string          `json:"source,omitempty"`
+	Mailbox             string          `json:"mailbox"`
+	UID                 uint32          `json:"uid"`
+	ThreadID            string          `json:"thread_id"`
+	MessageIDHeader     string          `json:"message_id_header,omitempty"`
+	InReplyToHeader     string          `json:"in_reply_to_header,omitempty"`
+	ReferencesHeader    string          `json:"references_header,omitempty"`
+	FromValue           string          `json:"from"`
+	ToValue             string          `json:"to"`
+	CCValue             string          `json:"cc,omitempty"`
+	BCCValue            string          `json:"bcc,omitempty"`
+	Subject             string          `json:"subject"`
+	Snippet             string          `json:"snippet"`
+	BodyText            string          `json:"body"`
+	BodyHTMLSanitized   string          `json:"body_html"`
+	RawSource           string          `json:"raw_source"`
+	Seen                bool            `json:"seen"`
+	Flagged             bool            `json:"flagged"`
+	Answered            bool            `json:"answered"`
+	Draft               bool            `json:"draft"`
+	HasAttachments      bool            `json:"has_attachments"`
+	Importance          int             `json:"importance"`
+	DKIMStatus          string          `json:"dkim_status"`
+	SPFStatus           string          `json:"spf_status"`
+	DMARCStatus         string          `json:"dmarc_status"`
+	PhishingScore       float64         `json:"phishing_score"`
+	RemoteImagesBlocked bool            `json:"remote_images_blocked"`
+	RemoteImagesAllowed bool            `json:"remote_images_allowed"`
+	DateHeader          time.Time       `json:"date"`
+	InternalDate        time.Time       `json:"internal_date"`
+	TriageKey           string          `json:"triage_key,omitempty"`
 	Triage              MailTriageState `json:"triage"`
 }
 

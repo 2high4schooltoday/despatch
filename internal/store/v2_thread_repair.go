@@ -16,8 +16,13 @@ const settingIndexedThreadHeadersRepaired = "mail_index_thread_headers_v2"
 type repairThreadRow struct {
 	accountID         string
 	id                string
+	internalDate      time.Time
 	subject           string
 	fromValue         string
+	threadTopic       string
+	threadIndex       string
+	listID            string
+	participants      []string
 	originalThreadID  string
 	threadID          string
 	originalMessageID string
@@ -168,8 +173,8 @@ func (s *Store) RepairIndexedThreadHeadersByAccountWithTouchedThreads(ctx contex
 }
 
 func repairIndexedThreadHeadersOnConn(ctx context.Context, conn *sql.Conn, accountFilter string, now time.Time) (map[string][]string, error) {
-	query := `SELECT account_id,id,mailbox,uid,thread_id,message_id_header,in_reply_to_header,references_header,subject,from_value,raw_source
-		 FROM message_index`
+	query := `SELECT account_id,id,mailbox,uid,thread_id,message_id_header,in_reply_to_header,references_header,subject,from_value,raw_source,internal_date
+			 FROM message_index`
 	args := make([]any, 0, 1)
 	if strings.TrimSpace(accountFilter) != "" {
 		query += ` WHERE account_id=?`
@@ -197,6 +202,7 @@ func repairIndexedThreadHeadersOnConn(ctx context.Context, conn *sql.Conn, accou
 			subject          string
 			fromValue        string
 			rawSource        string
+			internalDate     time.Time
 		)
 		if err := rows.Scan(
 			&accountID,
@@ -210,6 +216,7 @@ func repairIndexedThreadHeadersOnConn(ctx context.Context, conn *sql.Conn, accou
 			&subject,
 			&fromValue,
 			&rawSource,
+			&internalDate,
 		); err != nil {
 			return nil, err
 		}
@@ -217,17 +224,31 @@ func repairIndexedThreadHeadersOnConn(ctx context.Context, conn *sql.Conn, accou
 		normalizedMessageID := mail.NormalizeMessageIDHeader(messageIDHeader)
 		normalizedInReplyTo := mail.NormalizeMessageIDHeader(inReplyToHeader)
 		normalizedReferences := mail.ParseMessageIDList(referencesHeader)
+		threadTopic := ""
+		threadIndex := ""
+		listID := ""
+		participants := mail.NormalizeThreadParticipants(fromValue)
 
-		if (normalizedMessageID == "" || (normalizedInReplyTo == "" && len(normalizedReferences) == 0)) && strings.TrimSpace(rawSource) != "" {
-			if parsed, parseErr := mail.ParseRawMessage([]byte(rawSource), mailbox, uid); parseErr == nil {
+		if strings.TrimSpace(rawSource) != "" {
+			if header, parseErr := mail.ParseThreadingHeaderFields([]byte(rawSource)); parseErr == nil {
+				threadTopic = firstNonEmptyString(strings.TrimSpace(header.Get("Thread-Topic")), strings.TrimSpace(header.Get("Conversation-Topic")))
+				threadIndex = mail.NormalizeConversationIndexRoot(firstNonEmptyString(header.Get("Thread-Index"), header.Get("Conversation-Index")))
+				listID = strings.TrimSpace(header.Get("List-Id"))
+				participants = mail.NormalizeThreadParticipants(fromValue, header.Get("To"), header.Get("Cc"), header.Get("Bcc"))
 				if normalizedMessageID == "" {
-					normalizedMessageID = mail.NormalizeMessageIDHeader(parsed.MessageID)
+					normalizedMessageID = mail.NormalizeMessageIDHeader(header.Get("Message-Id"))
 				}
 				if normalizedInReplyTo == "" {
-					normalizedInReplyTo = mail.NormalizeMessageIDHeader(parsed.InReplyTo)
+					replyRefs := mail.ParseMessageIDList(header.Get("In-Reply-To"))
+					if len(replyRefs) > 0 {
+						normalizedInReplyTo = replyRefs[0]
+						if len(normalizedReferences) == 0 {
+							normalizedReferences = mail.NormalizeMessageIDHeaders(append(normalizedReferences, replyRefs...))
+						}
+					}
 				}
 				if len(normalizedReferences) == 0 {
-					normalizedReferences = mail.NormalizeMessageIDHeaders(parsed.References)
+					normalizedReferences = mail.ParseMessageIDList(header.Get("References"))
 				}
 			}
 		}
@@ -235,8 +256,13 @@ func repairIndexedThreadHeadersOnConn(ctx context.Context, conn *sql.Conn, accou
 		items = append(items, repairThreadRow{
 			accountID:         accountID,
 			id:                id,
+			internalDate:      internalDate,
 			subject:           subject,
 			fromValue:         fromValue,
+			threadTopic:       threadTopic,
+			threadIndex:       threadIndex,
+			listID:            listID,
+			participants:      participants,
 			originalThreadID:  mail.NormalizeIndexedThreadID(accountID, threadID),
 			threadID:          mail.NormalizeIndexedThreadID(accountID, threadID),
 			originalMessageID: mail.NormalizeMessageIDHeader(messageIDHeader),
@@ -278,6 +304,7 @@ func repairIndexedThreadHeadersOnConn(ctx context.Context, conn *sql.Conn, accou
 		}
 		item.threadID = resolveRepairedIndexedThreadID(index, item)
 	}
+	applyRepairThreadHints(items)
 
 	touchedAccounts := map[string]struct{}{}
 	touchedThreadsByAccount := map[string]map[string]struct{}{}
@@ -394,7 +421,84 @@ func fallbackRepairedThreadID(item *repairThreadRow) string {
 	if item == nil {
 		return ""
 	}
-	return mail.NormalizeIndexedThreadID(item.accountID, mail.DeriveIndexedThreadID(item.messageIDHeader, item.inReplyToHeader, item.references, item.subject, item.fromValue))
+	return mail.NormalizeIndexedThreadID(item.accountID, mail.DeriveIndexedThreadIDWithHints(
+		item.messageIDHeader,
+		item.inReplyToHeader,
+		item.references,
+		item.subject,
+		item.fromValue,
+		item.participants,
+		item.threadTopic,
+		item.threadIndex,
+		item.listID,
+	))
+}
+
+func applyRepairThreadHints(items []repairThreadRow) {
+	type subjectBucket struct {
+		bySubject map[string][]*repairThreadRow
+	}
+	buckets := map[string]*subjectBucket{}
+	for i := range items {
+		item := &items[i]
+		accountKey := strings.TrimSpace(item.accountID)
+		bucket := buckets[accountKey]
+		if bucket == nil {
+			bucket = &subjectBucket{bySubject: map[string][]*repairThreadRow{}}
+			buckets[accountKey] = bucket
+		}
+		subjectKey := threadSummarySubject(firstNonEmptyString(item.threadTopic, item.subject))
+		if repairThreadHintEligible(item) {
+			candidates := bucket.bySubject[subjectKey]
+			best := repairThreadHintCandidate(item, candidates)
+			if best != nil {
+				item.threadID = best.threadID
+			}
+		}
+		bucket.bySubject[subjectKey] = append(bucket.bySubject[subjectKey], item)
+	}
+}
+
+func repairThreadHintEligible(item *repairThreadRow) bool {
+	if item == nil {
+		return false
+	}
+	if strings.TrimSpace(item.threadIndex) != "" {
+		return false
+	}
+	if len(item.references) > 0 || strings.TrimSpace(item.inReplyToHeader) != "" {
+		return false
+	}
+	if !mail.ThreadSubjectLooksReply(item.subject) && strings.TrimSpace(item.threadTopic) == "" && strings.TrimSpace(item.listID) == "" {
+		return false
+	}
+	return len(item.participants) > 0
+}
+
+func repairThreadHintCandidate(item *repairThreadRow, candidates []*repairThreadRow) *repairThreadRow {
+	if item == nil || len(candidates) == 0 {
+		return nil
+	}
+	best := (*repairThreadRow)(nil)
+	bestScore := 0
+	for i := len(candidates) - 1; i >= 0; i-- {
+		candidate := candidates[i]
+		if candidate == nil || candidate.id == item.id || strings.TrimSpace(candidate.threadID) == "" {
+			continue
+		}
+		if !candidate.internalDate.IsZero() && !item.internalDate.IsZero() && candidate.internalDate.Before(item.internalDate.Add(-30*24*time.Hour)) {
+			break
+		}
+		score := mail.ThreadParticipantsOverlap(candidate.participants, item.participants)
+		if score == 0 {
+			continue
+		}
+		if score > bestScore {
+			best = candidate
+			bestScore = score
+		}
+	}
+	return best
 }
 
 func rebuildThreadIndexOnConn(ctx context.Context, conn *sql.Conn, accountID string, now time.Time) error {
@@ -448,7 +552,7 @@ func rebuildThreadIndexOnConn(ctx context.Context, conn *sql.Conn, accountID str
 			agg = &threadAgg{
 				ID:           scopedThreadID,
 				Mailbox:      mailbox,
-				SubjectNorm:  firstNonEmptyString(strings.TrimSpace(subject), "(no subject)"),
+				SubjectNorm:  threadSummarySubject(subject),
 				Participants: map[string]struct{}{},
 			}
 			threads[scopedThreadID] = agg

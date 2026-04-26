@@ -1,13 +1,18 @@
 package mail
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"html"
 	"io"
+	stdmail "net/mail"
+	"net/textproto"
 	"net/url"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 
@@ -20,7 +25,10 @@ const (
 )
 
 var (
-	threadPrefixPattern      = regexp.MustCompile(`(?i)^(re|fw|fwd)\s*:\s*`)
+	threadPrefixPattern      = regexp.MustCompile(`(?i)^(?:(?:re|aw|sv|wg|fw|fwd)\s*(?:\[[0-9]+\])?\s*:|(?:回复|答复|转发)\s*:)\s*`)
+	threadListTagPattern     = regexp.MustCompile(`^(?:\[[^\[\]]{1,40}\]\s*)+`)
+	threadTrailerPattern     = regexp.MustCompile(`(?i)\s*\((?:fwd|fw)\)\s*$`)
+	threadReplyLikePattern   = regexp.MustCompile(`(?i)^\s*(?:\[[^\[\]]{1,40}\]\s*)*(?:(?:re|aw|sv|wg|fw|fwd)\s*(?:\[[0-9]+\])?\s*:|(?:回复|答复|转发)\s*:)|\((?:fwd|fw)\)\s*$`)
 	previewHTMLTagPattern    = regexp.MustCompile(`(?is)<[^>]+>`)
 	previewHTMLNoisePattern  = regexp.MustCompile(`(?is)<(?:style|script|head|svg|noscript)[^>]*>.*?</(?:style|script|head|svg|noscript)>`)
 	previewHeaderLinePattern = regexp.MustCompile(`(?im)^(?:content-[\w-]+|mime-version|content-transfer-encoding|return-path|dkim-signature|received|authentication-results|x-[\w-]+)\s*:[^\n]*$`)
@@ -30,7 +38,7 @@ var (
 	previewHexToken          = regexp.MustCompile(`(?i)^[a-f0-9]{24,}$`)
 	previewInlineNoiseStart  = regexp.MustCompile(`(?i)\s+(?:@(?:font-face|media|supports|import|page|keyframes|charset|viewport|counter-style|property|layer)\b|(?:font-family|font-size|font-weight|font-style|font-display|line-height|letter-spacing|border-collapse|border-spacing|background(?:-color|-image)?|color|display|src|unicode-range|cellpadding|cellspacing|mso-[\w-]+)\b\s*[:=]|mime-version\s*:|content-type\s*:|content-transfer-encoding\s*:|quoted-printable\b|multipart/|text/html\b|charset=)`)
 	previewResidualNoise     = regexp.MustCompile(`(?i)(?:@font-face|@media|@supports|@import|\b(?:border-collapse|border-spacing|font-family|font-size|font-weight|font-style|font-display|line-height|letter-spacing|cellpadding|cellspacing|mso-[\w-]*|mime-version|content-transfer-encoding|content-type|return-path|dkim-signature|authentication-results|multipart/|text/html|charset=|quoted-printable|unicode-range)\b|src\s*:)`)
-	messageIDTokenPattern    = regexp.MustCompile(`<[^>]+>|[^<>,\\s]+@[^<>,\\s]+`)
+	messageIDTokenPattern    = regexp.MustCompile(`<[^>]+>|[^<>,[:space:]]+@[^<>,[:space:]]+`)
 )
 
 // NormalizeThreadSubject strips repeated reply/forward prefixes and lowercases
@@ -38,14 +46,194 @@ var (
 func NormalizeThreadSubject(subject string) string {
 	normalized := strings.TrimSpace(strings.ToLower(subject))
 	for normalized != "" {
-		next := threadPrefixPattern.ReplaceAllString(normalized, "")
-		next = strings.TrimSpace(next)
+		next := strings.TrimSpace(threadListTagPattern.ReplaceAllString(normalized, ""))
+		next = strings.TrimSpace(threadPrefixPattern.ReplaceAllString(next, ""))
+		next = strings.TrimSpace(threadTrailerPattern.ReplaceAllString(next, ""))
 		if next == normalized {
 			break
 		}
 		normalized = next
 	}
+	normalized = strings.Join(strings.Fields(normalized), " ")
 	return normalized
+}
+
+func ThreadSubjectLooksReply(subject string) bool {
+	return threadReplyLikePattern.MatchString(strings.TrimSpace(subject))
+}
+
+func NormalizeThreadParticipants(values ...string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	add := func(raw string) {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return
+		}
+		if parsed, err := stdmail.ParseAddressList(raw); err == nil && len(parsed) > 0 {
+			for _, addr := range parsed {
+				if addr == nil {
+					continue
+				}
+				email := strings.ToLower(strings.TrimSpace(addr.Address))
+				if email == "" {
+					continue
+				}
+				if _, ok := seen[email]; ok {
+					continue
+				}
+				seen[email] = struct{}{}
+				out = append(out, email)
+			}
+			return
+		}
+		if parsed, err := stdmail.ParseAddress(raw); err == nil && parsed != nil {
+			email := strings.ToLower(strings.TrimSpace(parsed.Address))
+			if email != "" {
+				if _, ok := seen[email]; !ok {
+					seen[email] = struct{}{}
+					out = append(out, email)
+				}
+			}
+			return
+		}
+		for _, token := range strings.FieldsFunc(raw, func(r rune) bool {
+			switch r {
+			case ',', ';':
+				return true
+			default:
+				return false
+			}
+		}) {
+			email := strings.ToLower(strings.TrimSpace(strings.Trim(token, ` <>"'`)))
+			if email == "" || !strings.Contains(email, "@") {
+				continue
+			}
+			if _, ok := seen[email]; ok {
+				continue
+			}
+			seen[email] = struct{}{}
+			out = append(out, email)
+		}
+	}
+	for _, value := range values {
+		add(value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func ThreadParticipantsOverlap(a, b []string) int {
+	if len(a) == 0 || len(b) == 0 {
+		return 0
+	}
+	seen := make(map[string]struct{}, len(a))
+	for _, item := range NormalizeThreadParticipants(strings.Join(a, ", ")) {
+		seen[item] = struct{}{}
+	}
+	count := 0
+	for _, item := range NormalizeThreadParticipants(strings.Join(b, ", ")) {
+		if _, ok := seen[item]; ok {
+			count++
+		}
+	}
+	return count
+}
+
+func NormalizeConversationIndexRoot(raw string) string {
+	value := strings.Join(strings.Fields(strings.TrimSpace(raw)), "")
+	if value == "" {
+		return ""
+	}
+	if decoded, err := hex.DecodeString(value); err == nil && len(decoded) >= 22 {
+		return hex.EncodeToString(decoded[:22])
+	}
+	for _, encoding := range []*base64.Encoding{
+		base64.StdEncoding,
+		base64.RawStdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	} {
+		decoded, err := encoding.DecodeString(value)
+		if err != nil || len(decoded) < 22 {
+			continue
+		}
+		return hex.EncodeToString(decoded[:22])
+	}
+	return ""
+}
+
+func ParseThreadingHeaderFields(raw []byte) (textproto.MIMEHeader, error) {
+	header, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(raw))).ReadMIMEHeader()
+	if err != nil {
+		return nil, err
+	}
+	return header, nil
+}
+
+func normalizeMessageIDToken(value string) string {
+	normalized := strings.TrimSpace(strings.ToLower(value))
+	normalized = strings.TrimPrefix(normalized, "<")
+	normalized = strings.TrimSuffix(normalized, ">")
+	return strings.TrimSpace(normalized)
+}
+
+func NormalizeThreadTopic(value string) string {
+	return NormalizeThreadSubject(DecodeHeaderText(value))
+}
+
+func deriveHintThreadID(subject string, participants []string, listID string) string {
+	baseSubject := NormalizeThreadSubject(subject)
+	if baseSubject == "" {
+		baseSubject = "untitled"
+	}
+	normalizedParticipants := NormalizeThreadParticipants(strings.Join(participants, ", "))
+	payload := "hint:" + baseSubject
+	if len(normalizedParticipants) > 0 {
+		payload += "|" + strings.Join(normalizedParticipants, ",")
+	}
+	listID = strings.ToLower(strings.TrimSpace(listID))
+	if listID != "" {
+		payload += "|list:" + listID
+	}
+	sum := sha256.Sum256([]byte(payload))
+	return "hint:" + hex.EncodeToString(sum[:10])
+}
+
+func DeriveIndexedThreadIDWithHints(messageID, inReplyTo string, references []string, subject, from string, participants []string, threadTopic, conversationIndexRoot, listID string) string {
+	if root := NormalizeConversationIndexRoot(conversationIndexRoot); root != "" {
+		sum := sha256.Sum256([]byte("cidx:" + root))
+		return "cidx:" + hex.EncodeToString(sum[:10])
+	}
+	normalizedRefs := NormalizeMessageIDHeaders(references)
+	normalizedInReplyTo := NormalizeMessageIDHeader(inReplyTo)
+	normalizedMessageID := NormalizeMessageIDHeader(messageID)
+	switch {
+	case len(normalizedRefs) > 0:
+		sum := sha256.Sum256([]byte("hdr:" + normalizedRefs[0]))
+		return "hdr:" + hex.EncodeToString(sum[:10])
+	case normalizedInReplyTo != "":
+		sum := sha256.Sum256([]byte("hdr:" + normalizedInReplyTo))
+		return "hdr:" + hex.EncodeToString(sum[:10])
+	}
+	hintSubject := firstNonEmptyThreadValue(NormalizeThreadTopic(threadTopic), NormalizeThreadSubject(subject))
+	if hintSubject != "" && (ThreadSubjectLooksReply(subject) || strings.TrimSpace(threadTopic) != "" || strings.TrimSpace(listID) != "") {
+		return deriveHintThreadID(hintSubject, append([]string{from}, participants...), listID)
+	}
+	if normalizedMessageID != "" {
+		sum := sha256.Sum256([]byte("hdr:" + normalizedMessageID))
+		return "hdr:" + hex.EncodeToString(sum[:10])
+	}
+	return deriveHintThreadID(subject, append([]string{from}, participants...), listID)
+}
+
+func firstNonEmptyThreadValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // DeriveThreadID builds a stable conversation-scoped thread ID from normalized
@@ -63,10 +251,10 @@ func DeriveThreadID(mailbox, subject, from string) string {
 }
 
 func NormalizeMessageIDHeader(value string) string {
-	normalized := strings.TrimSpace(strings.ToLower(value))
-	normalized = strings.TrimPrefix(normalized, "<")
-	normalized = strings.TrimSuffix(normalized, ">")
-	return strings.TrimSpace(normalized)
+	if token := strings.TrimSpace(messageIDTokenPattern.FindString(strings.TrimSpace(value))); token != "" {
+		return normalizeMessageIDToken(token)
+	}
+	return normalizeMessageIDToken(value)
 }
 
 func NormalizeMessageIDHeaders(values []string) []string {
@@ -117,25 +305,13 @@ func BuildReplyHeaders(parentMessageID, parentInReplyTo string, parentReferences
 }
 
 func DeriveIndexedThreadID(messageID, inReplyTo string, references []string, subject, from string) string {
-	root := ""
-	normalizedRefs := NormalizeMessageIDHeaders(references)
-	switch {
-	case len(normalizedRefs) > 0:
-		root = normalizedRefs[0]
-	case NormalizeMessageIDHeader(inReplyTo) != "":
-		root = NormalizeMessageIDHeader(inReplyTo)
-	case NormalizeMessageIDHeader(messageID) != "":
-		root = NormalizeMessageIDHeader(messageID)
-	}
-	if root != "" {
-		sum := sha256.Sum256([]byte("hdr:" + root))
-		return "hdr:" + hex.EncodeToString(sum[:10])
-	}
-	return DeriveThreadID("", subject, from)
+	return DeriveIndexedThreadIDWithHints(messageID, inReplyTo, references, subject, from, nil, "", "", "")
 }
 
 func DeriveLiveThreadID(mailbox, messageID, inReplyTo string, references []string, subject, from string) string {
-	if NormalizeMessageIDHeader(messageID) == "" && NormalizeMessageIDHeader(inReplyTo) == "" && len(NormalizeMessageIDHeaders(references)) == 0 {
+	if NormalizeMessageIDHeader(messageID) == "" &&
+		NormalizeMessageIDHeader(inReplyTo) == "" &&
+		len(NormalizeMessageIDHeaders(references)) == 0 {
 		return DeriveThreadID(mailbox, subject, from)
 	}
 	return DeriveIndexedThreadID(messageID, inReplyTo, references, subject, from)
@@ -145,7 +321,17 @@ func PopulateLiveMessageThreadID(msg *Message) {
 	if msg == nil {
 		return
 	}
-	msg.ThreadID = DeriveLiveThreadID(msg.Mailbox, msg.MessageID, msg.InReplyTo, msg.References, msg.Subject, msg.From)
+	msg.ThreadID = DeriveIndexedThreadIDWithHints(
+		msg.MessageID,
+		msg.InReplyTo,
+		msg.References,
+		msg.Subject,
+		msg.From,
+		append(append([]string{}, msg.To...), append(msg.CC, msg.BCC...)...),
+		msg.ThreadTopic,
+		msg.ThreadIndex,
+		msg.ListID,
+	)
 }
 
 // BuildPreviewFromBodySample creates a compact, plain-text snippet from sampled

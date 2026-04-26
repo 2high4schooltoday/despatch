@@ -1127,27 +1127,16 @@ func (h *Handlers) V2ListAccounts(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 500, "internal_error", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
-	for i := range items {
-		items[i].SecretEnc = ""
-	}
+	items = updateAccountListForResponse(items, h.decorateMailAccount)
 	util.WriteJSON(w, 200, map[string]any{"items": items})
 }
 
 func (h *Handlers) V2CreateAccount(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
 	var req struct {
-		DisplayName  string `json:"display_name"`
-		Login        string `json:"login"`
-		Password     string `json:"password"`
-		IMAPHost     string `json:"imap_host"`
-		IMAPPort     int    `json:"imap_port"`
-		IMAPTLS      *bool  `json:"imap_tls"`
-		IMAPStartTLS *bool  `json:"imap_starttls"`
-		SMTPHost     string `json:"smtp_host"`
-		SMTPPort     int    `json:"smtp_port"`
-		SMTPTLS      *bool  `json:"smtp_tls"`
-		SMTPStartTLS *bool  `json:"smtp_starttls"`
-		IsDefault    bool   `json:"is_default"`
+		mailProviderValidateRequest
+		IsDefault          bool  `json:"is_default"`
+		ValidateConnection *bool `json:"validate_connection"`
 	}
 	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
 		writeJSONDecodeError(w, r, err)
@@ -1162,49 +1151,66 @@ func (h *Handlers) V2CreateAccount(w http.ResponseWriter, r *http.Request) {
 		util.WriteError(w, 400, "bad_request", "password is required", middleware.RequestID(r.Context()))
 		return
 	}
+	account := copyMailAccountTransport(models.MailAccount{
+		ID:             uuid.NewString(),
+		UserID:         u.ID,
+		Status:         "active",
+		IsDefault:      req.IsDefault,
+		ProviderType:   service.MailProviderTypeGeneric,
+		ProviderLabel:  service.MailProviderByID(service.MailProviderTypeGeneric).Label,
+		AuthKind:       service.MailAccountAuthKindPassword,
+		ConnectionMode: service.MailConnectionModeIMAPSMTP,
+	}, req.mailProviderValidateRequest)
+	if account.ProviderType == service.MailProviderTypeGeneric {
+		if strings.TrimSpace(account.IMAPHost) == "" && account.IMAPPort <= 0 {
+			account.IMAPHost = h.cfg.IMAPHost
+			account.IMAPPort = h.cfg.IMAPPort
+			account.IMAPTLS = h.cfg.IMAPTLS
+			account.IMAPStartTLS = h.cfg.IMAPStartTLS
+		} else {
+			if strings.TrimSpace(account.IMAPHost) == "" {
+				account.IMAPHost = h.cfg.IMAPHost
+			}
+			if account.IMAPPort <= 0 {
+				account.IMAPPort = h.cfg.IMAPPort
+			}
+		}
+		if strings.TrimSpace(account.SMTPHost) == "" && account.SMTPPort <= 0 {
+			account.SMTPHost = h.cfg.SMTPHost
+			account.SMTPPort = h.cfg.SMTPPort
+			account.SMTPTLS = h.cfg.SMTPTLS
+			account.SMTPStartTLS = h.cfg.SMTPStartTLS
+		} else {
+			if strings.TrimSpace(account.SMTPHost) == "" {
+				account.SMTPHost = h.cfg.SMTPHost
+			}
+			if account.SMTPPort <= 0 {
+				account.SMTPPort = h.cfg.SMTPPort
+			}
+		}
+	}
+	account.Login = login
+	account.IsDefault = req.IsDefault
 	secretEnc, err := util.EncryptString(util.Derive32ByteKey(h.cfg.SessionEncryptKey), req.Password)
 	if err != nil {
 		util.WriteError(w, 500, "internal_error", "cannot encrypt account secret", middleware.RequestID(r.Context()))
 		return
 	}
-	imapTLS := true
-	if req.IMAPTLS != nil {
-		imapTLS = *req.IMAPTLS
-	}
-	imapStartTLS := false
-	if req.IMAPStartTLS != nil {
-		imapStartTLS = *req.IMAPStartTLS
-	}
-	smtpTLS := false
-	if req.SMTPTLS != nil {
-		smtpTLS = *req.SMTPTLS
-	}
-	smtpStartTLS := true
-	if req.SMTPStartTLS != nil {
-		smtpStartTLS = *req.SMTPStartTLS
-	}
-	account := models.MailAccount{
-		ID:           uuid.NewString(),
-		UserID:       u.ID,
-		DisplayName:  strings.TrimSpace(req.DisplayName),
-		Login:        login,
-		SecretEnc:    secretEnc,
-		IMAPHost:     firstNonEmpty(req.IMAPHost, h.cfg.IMAPHost),
-		IMAPPort:     firstPositive(req.IMAPPort, h.cfg.IMAPPort),
-		IMAPTLS:      imapTLS,
-		IMAPStartTLS: imapStartTLS,
-		SMTPHost:     firstNonEmpty(req.SMTPHost, h.cfg.SMTPHost),
-		SMTPPort:     firstPositive(req.SMTPPort, h.cfg.SMTPPort),
-		SMTPTLS:      smtpTLS,
-		SMTPStartTLS: smtpStartTLS,
-		IsDefault:    req.IsDefault,
-		Status:       "active",
+	account.SecretEnc = secretEnc
+	if shouldValidateMailAccount(account.ProviderType, req.ValidateConnection) {
+		validation, validationErr := h.validateMailAccountConnection(r.Context(), account, req.Password)
+		applyMailAccountValidation(&account, validation, validationErr)
+		if validationErr != nil {
+			util.WriteError(w, http.StatusBadRequest, providerValidationErrorCode(account, validation), validation.Message, middleware.RequestID(r.Context()))
+			return
+		}
 	}
 	out, err := h.svc.Store().CreateMailAccount(r.Context(), account)
 	if err != nil {
 		util.WriteError(w, 400, "create_account_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	out = h.decorateMailAccount(out)
 	out.SecretEnc = ""
 	util.WriteJSON(w, 201, out)
 }
@@ -1222,19 +1228,23 @@ func (h *Handlers) V2UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		DisplayName  *string `json:"display_name"`
-		Login        *string `json:"login"`
-		Password     *string `json:"password"`
-		IMAPHost     *string `json:"imap_host"`
-		IMAPPort     *int    `json:"imap_port"`
-		IMAPTLS      *bool   `json:"imap_tls"`
-		IMAPStartTLS *bool   `json:"imap_starttls"`
-		SMTPHost     *string `json:"smtp_host"`
-		SMTPPort     *int    `json:"smtp_port"`
-		SMTPTLS      *bool   `json:"smtp_tls"`
-		SMTPStartTLS *bool   `json:"smtp_starttls"`
-		IsDefault    *bool   `json:"is_default"`
-		Status       *string `json:"status"`
+		DisplayName        *string `json:"display_name"`
+		Login              *string `json:"login"`
+		Password           *string `json:"password"`
+		ProviderType       *string `json:"provider_type"`
+		AuthKind           *string `json:"auth_kind"`
+		ConnectionMode     *string `json:"connection_mode"`
+		IMAPHost           *string `json:"imap_host"`
+		IMAPPort           *int    `json:"imap_port"`
+		IMAPTLS            *bool   `json:"imap_tls"`
+		IMAPStartTLS       *bool   `json:"imap_starttls"`
+		SMTPHost           *string `json:"smtp_host"`
+		SMTPPort           *int    `json:"smtp_port"`
+		SMTPTLS            *bool   `json:"smtp_tls"`
+		SMTPStartTLS       *bool   `json:"smtp_starttls"`
+		IsDefault          *bool   `json:"is_default"`
+		Status             *string `json:"status"`
+		ValidateConnection *bool   `json:"validate_connection"`
 	}
 	if err := decodeJSON(w, r, &req, jsonLimitMutation, false); err != nil {
 		writeJSONDecodeError(w, r, err)
@@ -1246,6 +1256,7 @@ func (h *Handlers) V2UpdateAccount(w http.ResponseWriter, r *http.Request) {
 	if req.Login != nil {
 		current.Login = strings.TrimSpace(*req.Login)
 	}
+	transportChanged := false
 	if req.Password != nil && strings.TrimSpace(*req.Password) != "" {
 		enc, err := util.EncryptString(util.Derive32ByteKey(h.cfg.SessionEncryptKey), strings.TrimSpace(*req.Password))
 		if err != nil {
@@ -1254,29 +1265,49 @@ func (h *Handlers) V2UpdateAccount(w http.ResponseWriter, r *http.Request) {
 		}
 		current.SecretEnc = enc
 	}
+	if req.ProviderType != nil {
+		current.ProviderType = service.NormalizeMailProviderType(*req.ProviderType)
+		transportChanged = true
+	}
+	if req.AuthKind != nil {
+		current.AuthKind = service.NormalizeMailAccountAuthKind(*req.AuthKind)
+		transportChanged = true
+	}
+	if req.ConnectionMode != nil {
+		current.ConnectionMode = service.NormalizeMailConnectionMode(*req.ConnectionMode)
+		transportChanged = true
+	}
 	if req.IMAPHost != nil {
 		current.IMAPHost = strings.TrimSpace(*req.IMAPHost)
+		transportChanged = true
 	}
 	if req.IMAPPort != nil && *req.IMAPPort > 0 {
 		current.IMAPPort = *req.IMAPPort
+		transportChanged = true
 	}
 	if req.IMAPTLS != nil {
 		current.IMAPTLS = *req.IMAPTLS
+		transportChanged = true
 	}
 	if req.IMAPStartTLS != nil {
 		current.IMAPStartTLS = *req.IMAPStartTLS
+		transportChanged = true
 	}
 	if req.SMTPHost != nil {
 		current.SMTPHost = strings.TrimSpace(*req.SMTPHost)
+		transportChanged = true
 	}
 	if req.SMTPPort != nil && *req.SMTPPort > 0 {
 		current.SMTPPort = *req.SMTPPort
+		transportChanged = true
 	}
 	if req.SMTPTLS != nil {
 		current.SMTPTLS = *req.SMTPTLS
+		transportChanged = true
 	}
 	if req.SMTPStartTLS != nil {
 		current.SMTPStartTLS = *req.SMTPStartTLS
+		transportChanged = true
 	}
 	if req.IsDefault != nil {
 		current.IsDefault = *req.IsDefault
@@ -1284,11 +1315,30 @@ func (h *Handlers) V2UpdateAccount(w http.ResponseWriter, r *http.Request) {
 	if req.Status != nil {
 		current.Status = strings.TrimSpace(*req.Status)
 	}
+	service.ApplyMailProviderDefaults(&current)
+	validationPassword := ""
+	if req.Password != nil {
+		validationPassword = strings.TrimSpace(*req.Password)
+	}
+	mustValidateNow := (req.ValidateConnection != nil && *req.ValidateConnection) || (shouldValidateMailAccount(current.ProviderType, req.ValidateConnection) && transportChanged)
+	if mustValidateNow {
+		if validationPassword == "" {
+			util.WriteError(w, http.StatusBadRequest, "password_required_for_validation", "password is required to validate this account", middleware.RequestID(r.Context()))
+			return
+		}
+		validation, validationErr := h.validateMailAccountConnection(r.Context(), current, validationPassword)
+		applyMailAccountValidation(&current, validation, validationErr)
+		if validationErr != nil {
+			util.WriteError(w, http.StatusBadRequest, providerValidationErrorCode(current, validation), validation.Message, middleware.RequestID(r.Context()))
+			return
+		}
+	}
 	out, err := h.svc.Store().UpdateMailAccount(r.Context(), current)
 	if err != nil {
 		util.WriteError(w, 400, "update_account_failed", err.Error(), middleware.RequestID(r.Context()))
 		return
 	}
+	out = h.decorateMailAccount(out)
 	out.SecretEnc = ""
 	util.WriteJSON(w, 200, out)
 }
@@ -2317,6 +2367,10 @@ func ensureIndexedPresentedThreadID(item models.IndexedMessage) string {
 	messageID := mail.NormalizeMessageIDHeader(item.MessageIDHeader)
 	inReplyTo := mail.NormalizeMessageIDHeader(item.InReplyToHeader)
 	references := mail.ParseMessageIDList(item.ReferencesHeader)
+	threadTopic := ""
+	threadIndex := ""
+	listID := ""
+	participants := []string{item.FromValue, item.ToValue, item.CCValue, item.BCCValue}
 	if (messageID == "" || (inReplyTo == "" && len(references) == 0)) && strings.TrimSpace(item.RawSource) != "" {
 		if parsed, err := mail.ParseRawMessage([]byte(item.RawSource), item.Mailbox, item.UID); err == nil {
 			if messageID == "" {
@@ -2328,11 +2382,18 @@ func ensureIndexedPresentedThreadID(item models.IndexedMessage) string {
 			if len(references) == 0 {
 				references = mail.NormalizeMessageIDHeaders(parsed.References)
 			}
+			threadTopic = parsed.ThreadTopic
+			threadIndex = parsed.ThreadIndex
+			listID = parsed.ListID
+			participants = []string{parsed.From}
+			participants = append(participants, parsed.To...)
+			participants = append(participants, parsed.CC...)
+			participants = append(participants, parsed.BCC...)
 		}
 	}
 	return mail.UnscopeIndexedThreadID(mail.NormalizeIndexedThreadID(
 		item.AccountID,
-		mail.DeriveIndexedThreadID(messageID, inReplyTo, references, item.Subject, item.FromValue),
+		mail.DeriveIndexedThreadIDWithHints(messageID, inReplyTo, references, item.Subject, item.FromValue, participants, threadTopic, threadIndex, listID),
 	))
 }
 

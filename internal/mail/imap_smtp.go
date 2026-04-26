@@ -1,7 +1,6 @@
 package mail
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -352,7 +351,7 @@ func fetchLiveMessageSummariesByUIDs(cli *imapclient.Client, mailbox string, sel
 		Peek: true,
 		BodyPartName: imap.BodyPartName{
 			Specifier: imap.HeaderSpecifier,
-			Fields:    []string{"Message-Id", "In-Reply-To", "References"},
+			Fields:    []string{"Message-Id", "In-Reply-To", "References", "Thread-Topic", "Thread-Index", "List-Id"},
 		},
 	}
 	items := []imap.FetchItem{
@@ -1134,6 +1133,15 @@ func parseMessage(raw []byte, messageID, mailbox string, uid uint32) (Message, e
 	if messageIDHeader, err := mr.Header.MessageID(); err == nil {
 		msg.MessageID = strings.TrimSpace(messageIDHeader)
 	}
+	msg.ThreadTopic = strings.TrimSpace(mr.Header.Get("Thread-Topic"))
+	if msg.ThreadTopic == "" {
+		msg.ThreadTopic = strings.TrimSpace(mr.Header.Get("Conversation-Topic"))
+	}
+	msg.ThreadIndex = NormalizeConversationIndexRoot(firstNonEmptyTrimmed(
+		mr.Header.Get("Thread-Index"),
+		mr.Header.Get("Conversation-Index"),
+	))
+	msg.ListID = strings.TrimSpace(mr.Header.Get("List-Id"))
 	if rawReferences := mr.Header.Get("References"); strings.TrimSpace(rawReferences) != "" {
 		msg.References = ParseMessageIDList(rawReferences)
 	}
@@ -1292,11 +1300,19 @@ func deriveLiveThreadID(msg *imap.Message, mailbox, subject, from string, thread
 		messageID = msg.Envelope.MessageId
 		inReplyTo = msg.Envelope.InReplyTo
 	}
-	references := liveThreadReferences(msg, threadHeaderSection)
-	return DeriveLiveThreadID(mailbox, messageID, inReplyTo, references, subject, from)
+	header := liveThreadHeader(msg, threadHeaderSection)
+	references := ParseMessageIDList(header.Get("References"))
+	threadTopic := firstNonEmptyTrimmed(header.Get("Thread-Topic"), header.Get("Conversation-Topic"))
+	threadIndex := NormalizeConversationIndexRoot(firstNonEmptyTrimmed(header.Get("Thread-Index"), header.Get("Conversation-Index")))
+	listID := strings.TrimSpace(header.Get("List-Id"))
+	participants := NormalizeThreadParticipants(from)
+	if threadIndex != "" {
+		return DeriveIndexedThreadIDWithHints(messageID, inReplyTo, references, subject, from, participants, threadTopic, threadIndex, listID)
+	}
+	return DeriveLiveThreadID(mailbox, messageID, inReplyTo, references, firstNonEmptyTrimmed(threadTopic, subject), from)
 }
 
-func liveThreadReferences(msg *imap.Message, threadHeaderSection *imap.BodySectionName) []string {
+func liveThreadHeader(msg *imap.Message, threadHeaderSection *imap.BodySectionName) textproto.MIMEHeader {
 	if msg == nil || threadHeaderSection == nil {
 		return nil
 	}
@@ -1308,11 +1324,11 @@ func liveThreadReferences(msg *imap.Message, threadHeaderSection *imap.BodySecti
 	if err != nil || len(raw) == 0 {
 		return nil
 	}
-	header, err := textproto.NewReader(bufio.NewReader(bytes.NewReader(raw))).ReadMIMEHeader()
+	header, err := ParseThreadingHeaderFields(raw)
 	if err != nil {
 		return nil
 	}
-	return ParseMessageIDList(header.Get("References"))
+	return header
 }
 
 func hasFlag(flags []string, flag string) bool {

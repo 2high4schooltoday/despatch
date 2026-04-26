@@ -5067,9 +5067,61 @@ button.setting-list-item {
   border-top: var(--border-w) solid var(--line-1);
 }
 
+.mail-settings-form .contacts-checklist {
+  display: grid;
+  gap: var(--space-2);
+  max-height: 260px;
+  overflow: auto;
+  padding: var(--space-2);
+  border: var(--border-w) solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-1) 82%, transparent);
+}
+
 .mail-settings-form-section-head {
   display: grid;
   gap: 3px;
+}
+
+.mail-provider-choice-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.mail-provider-validation-card,
+.mail-provider-assistance-card {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: var(--border-w) solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-2) 72%, transparent);
+}
+
+.mail-provider-validation-card[data-tone="ok"] {
+  border-color: color-mix(in srgb, var(--ok) 48%, var(--line-1));
+}
+
+.mail-provider-validation-card[data-tone="warning"] {
+  border-color: color-mix(in srgb, var(--warn) 48%, var(--line-1));
+}
+
+.mail-provider-validation-card[data-tone="error"] {
+  border-color: color-mix(in srgb, var(--danger) 48%, var(--line-1));
+}
+
+.mail-provider-validation-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.mail-provider-assistance-row {
+  display: grid;
+  gap: var(--space-1);
+  padding-top: var(--space-2);
+  border-top: var(--border-w) solid var(--line-1);
+}
+
+.mail-provider-assistance-row:first-of-type {
+  border-top: 0;
+  padding-top: 0;
 }
 
 .mail-settings-form-grid--rules-top {

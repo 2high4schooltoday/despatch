@@ -275,6 +275,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireMFAStageAuthenticated(h.svc))
 				r.Get("/accounts", h.V2ListAccounts)
+				r.Get("/mail/providers", h.V2ListMailProviders)
 				r.Get("/accounts/health", h.V2ListAccountHealth)
 				r.Get("/accounts/{id}/mailboxes", h.V2ListAccountMailboxes)
 				r.Get("/accounts/{id}/identities", h.V2ListIdentities)
@@ -299,6 +300,8 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Get("/recipients/suggest", h.V2SuggestRecipients)
 				r.Get("/search", h.V2Search)
 				r.Get("/saved-searches", h.V2ListSavedSearches)
+				r.Get("/funnels", h.V2ListReplyFunnels)
+				r.Get("/funnels/{id}", h.V2GetReplyFunnel)
 				r.Get("/drafts", h.V2ListDrafts)
 				r.Get("/drafts/{id}", h.V2GetDraft)
 				r.Get("/drafts/{id}/attachments/{attachment_id}", h.V2GetDraftAttachment)
@@ -315,6 +318,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.CSRFFromCookie(h.cfg.CSRFCookieName))
+					r.Post("/mail/providers/validate", h.V2ValidateMailProvider)
 					r.Post("/accounts", h.V2CreateAccount)
 					r.Patch("/accounts/{id}", h.V2UpdateAccount)
 					r.Delete("/accounts/{id}", h.V2DeleteAccount)
@@ -365,6 +369,10 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Post("/saved-searches", h.V2CreateSavedSearch)
 					r.Patch("/saved-searches/{id}", h.V2UpdateSavedSearch)
 					r.Delete("/saved-searches/{id}", h.V2DeleteSavedSearch)
+					r.Post("/funnels", h.V2CreateReplyFunnel)
+					r.Patch("/funnels/{id}", h.V2UpdateReplyFunnel)
+					r.Patch("/funnels/{id}/assisted-forwarding/{account_id}", h.V2UpdateReplyFunnelAssistedForwarding)
+					r.Delete("/funnels/{id}", h.V2DeleteReplyFunnel)
 
 					r.Post("/drafts", h.V2CreateDraft)
 					r.Patch("/drafts/{id}", h.V2UpdateDraft)

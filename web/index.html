@@ -216,57 +216,116 @@
                   <div class="mail-settings-detail-shell">
                     <article id="settings-mail-account-detail" class="settings-detail hidden"></article>
                     <form id="settings-mail-account-form" class="mail-settings-form hidden" novalidate>
-                      <div class="mail-settings-form-grid">
-                        <label class="mail-settings-field">
-                          <span>Display Name</span>
-                          <input id="settings-mail-account-display-name" type="text" autocomplete="organization" placeholder="Work Mail">
-                        </label>
-                        <label class="mail-settings-field">
-                          <span>Login</span>
-                          <input id="settings-mail-account-login" type="email" autocomplete="email" placeholder="mailbox@example.com">
-                        </label>
-                        <label class="mail-settings-field">
-                          <span>Password</span>
-                          <input id="settings-mail-account-password" type="password" autocomplete="new-password" placeholder="Leave blank to keep current password">
-                        </label>
-                        <label class="mail-settings-field mail-settings-field--toggle">
-                          <span>Default Account</span>
-                          <input id="settings-mail-account-default" type="checkbox">
-                        </label>
-                        <label class="mail-settings-field">
-                          <span>IMAP Host</span>
-                          <input id="settings-mail-account-imap-host" type="text" placeholder="imap.example.com">
-                        </label>
-                        <label class="mail-settings-field">
-                          <span>IMAP Port</span>
-                          <input id="settings-mail-account-imap-port" type="number" min="1" step="1" placeholder="993">
-                        </label>
-                        <label class="mail-settings-field mail-settings-field--toggle">
-                          <span>IMAP TLS</span>
-                          <input id="settings-mail-account-imap-tls" type="checkbox" checked>
-                        </label>
-                        <label class="mail-settings-field mail-settings-field--toggle">
-                          <span>IMAP STARTTLS</span>
-                          <input id="settings-mail-account-imap-starttls" type="checkbox">
-                        </label>
-                        <label class="mail-settings-field">
-                          <span>SMTP Host</span>
-                          <input id="settings-mail-account-smtp-host" type="text" placeholder="smtp.example.com">
-                        </label>
-                        <label class="mail-settings-field">
-                          <span>SMTP Port</span>
-                          <input id="settings-mail-account-smtp-port" type="number" min="1" step="1" placeholder="587">
-                        </label>
-                        <label class="mail-settings-field mail-settings-field--toggle">
-                          <span>SMTP TLS</span>
-                          <input id="settings-mail-account-smtp-tls" type="checkbox">
-                        </label>
-                        <label class="mail-settings-field mail-settings-field--toggle">
-                          <span>SMTP STARTTLS</span>
-                          <input id="settings-mail-account-smtp-starttls" type="checkbox" checked>
-                        </label>
-                      </div>
+                      <section class="mail-settings-form-section">
+                        <div class="mail-settings-form-section-head">
+                          <strong>Provider</strong>
+                          <p class="hint">Choose the provider first. Gmail and Libero get focused setup paths with documented transport presets and provider-specific sign-in guidance.</p>
+                        </div>
+                        <div class="setup-choice-grid mail-provider-choice-grid" role="radiogroup" aria-label="Mail provider">
+                          <button id="settings-mail-account-provider-gmail" class="setup-choice-card" type="button" data-provider-type="gmail" aria-pressed="false">
+                            <span class="setup-choice-copy">
+                              <strong>Gmail / Google Workspace</strong>
+                              <span class="hint">Prefills Gmail IMAP/SMTP, explains Google App Passwords, and unlocks guided forwarding for funnels.</span>
+                            </span>
+                          </button>
+                          <button id="settings-mail-account-provider-libero" class="setup-choice-card" type="button" data-provider-type="libero" aria-pressed="false">
+                            <span class="setup-choice-copy">
+                              <strong>Libero Mail</strong>
+                              <span class="hint">Prefills Libero IMAP/SMTP, checks for app-password issues, and unlocks assisted forwarding inside funnels.</span>
+                            </span>
+                          </button>
+                          <button id="settings-mail-account-provider-generic" class="setup-choice-card" type="button" data-provider-type="generic" aria-pressed="false">
+                            <span class="setup-choice-copy">
+                              <strong>Generic IMAP/SMTP</strong>
+                              <span class="hint">Use your own server settings when the provider is not pre-profiled yet.</span>
+                            </span>
+                          </button>
+                        </div>
+                        <p id="settings-mail-account-provider-hint" class="hint">Choose a provider to tailor the transport and connection checks.</p>
+                      </section>
+                      <section class="mail-settings-form-section">
+                        <div class="mail-settings-form-section-head">
+                          <strong>Credentials</strong>
+                          <p class="hint">Despatch stores the sign-in secret securely and can validate the connection before saving.</p>
+                        </div>
+                        <div class="mail-settings-form-grid">
+                          <label class="mail-settings-field">
+                            <span>Display Name</span>
+                            <input id="settings-mail-account-display-name" type="text" autocomplete="organization" placeholder="Work Mail">
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Login</span>
+                            <input id="settings-mail-account-login" type="text" autocomplete="email" placeholder="mailbox@example.com">
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Secret</span>
+                            <input id="settings-mail-account-password" type="password" autocomplete="new-password" placeholder="Leave blank to keep the current secret">
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Secret Type</span>
+                            <select id="settings-mail-account-auth-kind" autocomplete="off">
+                              <option value="password">Password</option>
+                              <option value="app_password">App Password</option>
+                            </select>
+                          </label>
+                          <label class="mail-settings-field mail-settings-field--toggle">
+                            <span>Default Account</span>
+                            <input id="settings-mail-account-default" type="checkbox">
+                          </label>
+                        </div>
+                      </section>
+                      <section class="mail-settings-form-section">
+                        <div class="mail-settings-form-section-head">
+                          <strong>Connection</strong>
+                          <p class="hint">Provider presets stay tucked away unless you need them. Generic accounts can edit server settings directly.</p>
+                        </div>
+                        <details id="settings-mail-account-advanced" class="oobe-inline-details">
+                          <summary>Server settings</summary>
+                          <div class="mail-settings-form-grid">
+                            <label class="mail-settings-field">
+                              <span>IMAP Host</span>
+                              <input id="settings-mail-account-imap-host" type="text" placeholder="imap.example.com">
+                            </label>
+                            <label class="mail-settings-field">
+                              <span>IMAP Port</span>
+                              <input id="settings-mail-account-imap-port" type="number" min="1" step="1" placeholder="993">
+                            </label>
+                            <label class="mail-settings-field mail-settings-field--toggle">
+                              <span>IMAP TLS</span>
+                              <input id="settings-mail-account-imap-tls" type="checkbox" checked>
+                            </label>
+                            <label class="mail-settings-field mail-settings-field--toggle">
+                              <span>IMAP STARTTLS</span>
+                              <input id="settings-mail-account-imap-starttls" type="checkbox">
+                            </label>
+                            <label class="mail-settings-field">
+                              <span>SMTP Host</span>
+                              <input id="settings-mail-account-smtp-host" type="text" placeholder="smtp.example.com">
+                            </label>
+                            <label class="mail-settings-field">
+                              <span>SMTP Port</span>
+                              <input id="settings-mail-account-smtp-port" type="number" min="1" step="1" placeholder="587">
+                            </label>
+                            <label class="mail-settings-field mail-settings-field--toggle">
+                              <span>SMTP TLS</span>
+                              <input id="settings-mail-account-smtp-tls" type="checkbox">
+                            </label>
+                            <label class="mail-settings-field mail-settings-field--toggle">
+                              <span>SMTP STARTTLS</span>
+                              <input id="settings-mail-account-smtp-starttls" type="checkbox" checked>
+                            </label>
+                          </div>
+                        </details>
+                        <article id="settings-mail-account-validation" class="mail-provider-validation-card">
+                          <div class="mail-provider-validation-copy">
+                            <strong>Connection check</strong>
+                            <p id="settings-mail-account-validation-note" class="hint">Run a connection check before saving to confirm IMAP access, SMTP submission, and any provider-specific sign-in requirements.</p>
+                          </div>
+                          <div id="settings-mail-account-validation-actions" class="actions setting-actions"></div>
+                        </article>
+                      </section>
                       <div class="actions setting-actions">
+                        <button id="btn-settings-mail-account-check" class="cmd-btn cmd-btn--dense" type="button">Check Connection</button>
                         <button id="btn-settings-mail-account-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Account</button>
                         <button id="btn-settings-mail-account-cancel" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Cancel</button>
                         <button id="btn-settings-mail-account-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Account</button>
@@ -330,6 +389,82 @@
                         <button id="btn-settings-mail-identity-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Sender</button>
                         <button id="btn-settings-mail-identity-cancel" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Cancel</button>
                         <button id="btn-settings-mail-identity-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Sender</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              </section>
+
+              <section class="setting-section">
+                <header class="setting-section-head">
+                  <h4>Funnels</h4>
+                  <p class="hint">Collect replies from many accounts into one fast operator inbox, with the right sender chosen automatically.</p>
+                </header>
+                <div class="mail-settings-columns">
+                  <div class="mail-settings-column">
+                    <div class="actions setting-actions">
+                      <button id="btn-settings-mail-funnel-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Funnel</button>
+                    </div>
+                    <div id="settings-mail-funnel-list" class="settings-list"></div>
+                  </div>
+                  <div class="mail-settings-detail-shell">
+                    <article id="settings-mail-funnel-detail" class="settings-detail hidden"></article>
+                    <form id="settings-mail-funnel-form" class="mail-settings-form hidden" novalidate>
+                      <section class="mail-settings-form-section">
+                        <div class="mail-settings-form-section-head">
+                          <strong>Funnel</strong>
+                          <p class="hint">Choose the collector inbox, the visible sender name, and how Despatch should gather replies from as many source accounts as you need.</p>
+                        </div>
+                        <div class="mail-settings-form-grid">
+                          <label class="mail-settings-field">
+                            <span>Funnel Name</span>
+                            <input id="settings-mail-funnel-name" type="text" autocomplete="off" placeholder="Reply Funnel">
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Collector Account</span>
+                            <select id="settings-mail-funnel-collector" autocomplete="off"></select>
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Visible Sender Name</span>
+                            <input id="settings-mail-funnel-sender-name" type="text" autocomplete="name" placeholder="John">
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Replies Send From</span>
+                            <select id="settings-mail-funnel-reply-mode" autocomplete="off">
+                              <option value="collector">Collector inbox</option>
+                              <option value="smart">Best matched source, then collector</option>
+                              <option value="source">Matched source account</option>
+                            </select>
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Routing</span>
+                            <select id="settings-mail-funnel-routing-mode" autocomplete="off">
+                              <option value="virtual_inbox">Despatch-only shared inbox</option>
+                              <option value="managed_rules">Also create Despatch redirect rules</option>
+                              <option value="assisted_forwarding">Guided provider forwarding</option>
+                            </select>
+                          </label>
+                          <label class="mail-settings-field">
+                            <span>Reply Goal</span>
+                            <input id="settings-mail-funnel-target-reply-count" type="number" min="1" step="1" placeholder="100">
+                          </label>
+                          <label class="mail-settings-field mail-settings-field--toggle mail-settings-field--full">
+                            <span>Show collector account inside the funnel inbox</span>
+                            <input id="settings-mail-funnel-include-collector" type="checkbox" checked>
+                          </label>
+                        </div>
+                      </section>
+                      <section class="mail-settings-form-section">
+                        <div class="mail-settings-form-section-head">
+                          <strong>Source Accounts</strong>
+                          <p class="hint">Pick the accounts whose replies should be grouped under this funnel. The collector account is excluded automatically, and there is no source-account cap.</p>
+                        </div>
+                        <div id="settings-mail-funnel-source-list" class="contacts-checklist"></div>
+                      </section>
+                      <div class="actions setting-actions">
+                        <button id="btn-settings-mail-funnel-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Funnel</button>
+                        <button id="btn-settings-mail-funnel-cancel" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Cancel</button>
+                        <button id="btn-settings-mail-funnel-delete" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Delete Funnel</button>
                       </div>
                     </form>
                   </div>
@@ -893,6 +1028,7 @@
           <div id="mail-selection-bar" class="mail-selection-bar hidden" aria-label="Selected message actions">
             <div id="mail-selection-tools" class="mail-commandbar-group mail-commandbar-group--selection" role="status" aria-live="polite">
               <span id="mail-selection-count" class="mail-selection-count">0 selected</span>
+              <button id="btn-compose-selected" class="cmd-btn cmd-btn--dense" type="button">Email Selected</button>
               <div id="mail-selection-triage" class="mail-triage-inline hidden"></div>
             </div>
             <div class="mail-commandbar-group" role="group" aria-label="Message state actions">

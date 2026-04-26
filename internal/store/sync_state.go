@@ -285,7 +285,7 @@ func (s *Store) RefreshThreadIndex(ctx context.Context, accountID string, thread
 				ID:           scopedThreadID,
 				AccountID:    accountID,
 				Mailbox:      mailbox,
-				SubjectNorm:  firstNonEmptyString(strings.TrimSpace(subject), "(no subject)"),
+				SubjectNorm:  threadSummarySubject(subject),
 				Participants: map[string]struct{}{},
 			}
 			aggs[scopedThreadID] = agg

@@ -128,6 +128,9 @@ func newPAMTestService(t *testing.T, acceptedPass string, acceptedUsers ...strin
 	if err := db.ApplyMigrationFile(sqdb, filepath.Join("..", "..", "migrations", "007_mail_accounts.sql")); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
+	if err := db.ApplyMigrationFile(sqdb, filepath.Join("..", "..", "migrations", "032_mail_account_providers.sql")); err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
 	if err := db.ApplyMigrationFile(sqdb, filepath.Join("..", "..", "migrations", "021_password_reset_token_reservations.sql")); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}

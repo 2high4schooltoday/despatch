@@ -60,7 +60,7 @@ fact detectedProxyServer:
 
 field release is a text:
   label is "Release".
-  help is "Use `latest` for the newest GitHub release or pin a specific tag such as `v1.1.3-alpha.1`.".
+  help is "Use `latest` for the newest GitHub release or pin a specific tag such as `v1.1.4-alpha.1`.".
   default is "latest".
 
 field baseDomain is a text:
@@ -96,10 +96,29 @@ field proxyServer is a ProxyServer:
     otherwise: "nginx".
   it is advanced.
 
+fact proxyHostnameBaseDomain:
+  when baseDomain starts with "mail.": replace prefix "mail." with "" in baseDomain
+  otherwise: baseDomain.
+
+fact mailProxyServerNameCandidate is text joined from ["mail.", proxyHostnameBaseDomain].
+
+fact detectedMailProxyCertPath:
+  when letsencrypt certificate path for mailProxyServerNameCandidate exists: letsencrypt certificate path for mailProxyServerNameCandidate
+  otherwise: "".
+
+fact detectedMailProxyKeyPath:
+  when letsencrypt key path for mailProxyServerNameCandidate exists: letsencrypt key path for mailProxyServerNameCandidate
+  otherwise: "".
+
+fact defaultProxyServerName:
+  when baseDomain starts with "mail.": baseDomain
+  when trimmed detectedMailProxyCertPath != "" and trimmed detectedMailProxyKeyPath != "": mailProxyServerNameCandidate
+  otherwise: baseDomain.
+
 field proxyServerName is a text:
   label is "Public web hostname".
   help is "Browser hostname served by the reverse proxy, such as `mail.example.com`. This must match your DNS record and TLS certificate.".
-  default is baseDomain.
+  default is defaultProxyServerName.
 
 fact detectedProxyCertPath:
   when letsencrypt certificate path for proxyServerName exists: letsencrypt certificate path for proxyServerName
@@ -373,6 +392,8 @@ path backupRoot is "/var/backups/despatch".
 path nginxSitePath is "/etc/nginx/sites-available/despatch.conf".
 path nginxEnabledSitePath is "/etc/nginx/sites-enabled/despatch.conf".
 path apacheSitePath is "/etc/apache2/sites-available/despatch.conf".
+path apacheEnabledSitePath is "/etc/apache2/sites-enabled/despatch.conf".
+path legacyApacheEnabledDuplicateSitePath is "/etc/apache2/sites-enabled/despatch.conf.conf".
 path legacyNginxSitePath is "/etc/nginx/sites-available/mailclient.conf".
 path legacyNginxEnabledSitePath is "/etc/nginx/sites-enabled/mailclient.conf".
 path legacyApacheSitePath is "/etc/apache2/sites-available/mailclient.conf".
@@ -595,13 +616,13 @@ fact resolvedWebauthnRpId:
   when proxyModeSelected: resolvedProxyServerName
   otherwise: baseDomain.
 
-fact proxyUpstreamUrl is text joined from ["http://", resolvedListenAddr].
+fact proxyUpstreamUrl is text joined from ["http://", resolvedListenAddr, "/"].
 fact capContainerPortBinding is text joined from [capUpstream, ":80/tcp"].
 
 fact capAutoProvisionSelected is capEnabled and capAutoProvisionEnabled.
 
 fact capProxyRoutes:
-  when capEnabled: [{ path: "/cap/", proxy_to: text joined from ["http://", capUpstream] }]
+  when capEnabled: [{ path: "/cap/", proxy_to: text joined from ["http://", capUpstream, "/"] }]
   otherwise: [].
 
 fact apacheProxyModules:
@@ -621,11 +642,17 @@ fact nginxExtraConfig:
 
 fact apacheExtraConfig:
   when resolvedProxyTls is true: """
+    ProxyPreserveHost On
+    ProxyRequests Off
+    AllowEncodedSlashes NoDecode
     Header always set X-Frame-Options "DENY"
     Header always set X-Content-Type-Options "nosniff"
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains"
     """
   otherwise: """
+    ProxyPreserveHost On
+    ProxyRequests Off
+    AllowEncodedSlashes NoDecode
     Header always set X-Frame-Options "DENY"
     Header always set X-Content-Type-Options "nosniff"
     """.
@@ -764,10 +791,11 @@ nginx site despatchNginx:
   present is proxyModeSelected and nginxProxyServerSelected.
 
 apache site despatchApache:
-  site name is "despatch.conf".
+  site name is "despatch".
   path is apacheSitePath.
   server names are [resolvedProxyServerName].
   proxy to is proxyUpstreamUrl.
+  proxy headers are { "X-Forwarded-Host": "expr=%{HTTP_HOST}", "X-Forwarded-Proto": "expr=%{REQUEST_SCHEME}" }.
   modules are apacheProxyModules.
   request body limit is "31457280".
   tls cert is resolvedProxyCert.
@@ -1101,6 +1129,7 @@ operation install:
     note "Detected reverse proxy: nginx." when detectedNginxInstall is true and detectedApacheInstall is false.
     note "Detected reverse proxy: apache2." when detectedApacheInstall is true and detectedNginxInstall is false.
     note "Mailbox domain and public web hostname are separate. Use the public web hostname for the browser address, such as `mail.example.com`." when deployMode is "proxy".
+    note "Detected a dedicated LetsEncrypt certificate for `{{mailProxyServerNameCandidate}}`, so Despatch will prefer that as the public web hostname by default." when deployMode is "proxy" and mailProxyServerNameCandidate is not baseDomain and trimmed detectedMailProxyCertPath != "" and trimmed detectedMailProxyKeyPath != "".
     note "Detected Dovecot auth mode: `{{detectedDovecotAuthMode}}`.".
     note "Detected Dovecot SQL mailbox mapping: table `{{detectedDovecotSqlPrimaryTable}}`, login `{{detectedDovecotSqlLoginColumn}}`, password `{{detectedDovecotSqlPasswordHashColumn}}`." when detectedDovecotAuthMode is "sql" and trimmed detectedDovecotSqlPrimaryTable != "".
     warning "Direct mode exposes Despatch on the selected listen address without a Launchpad-managed reverse proxy." when deployMode is "direct".
@@ -1266,6 +1295,7 @@ operation install:
     when deployMode is "proxy" and resolvedProxyServer is "nginx":
       delete legacyNginxEnabledSitePath.
       delete legacyNginxSitePath.
+      delete legacyApacheEnabledDuplicateSitePath.
       delete legacyApacheSslEnabledSitePath.
       delete legacyApacheSslSitePath.
       delete legacyApacheEnabledSitePath.
@@ -1275,6 +1305,7 @@ operation install:
     when deployMode is "proxy" and resolvedProxyServer is "apache2":
       delete legacyNginxEnabledSitePath.
       delete legacyNginxSitePath.
+      delete legacyApacheEnabledDuplicateSitePath.
       delete legacyApacheSslEnabledSitePath.
       delete legacyApacheSslSitePath.
       delete legacyApacheEnabledSitePath.
@@ -1284,6 +1315,7 @@ operation install:
     when deployMode is "direct":
       delete legacyNginxEnabledSitePath.
       delete legacyNginxSitePath.
+      delete legacyApacheEnabledDuplicateSitePath.
       delete legacyApacheSslEnabledSitePath.
       delete legacyApacheSslSitePath.
       delete legacyApacheEnabledSitePath.

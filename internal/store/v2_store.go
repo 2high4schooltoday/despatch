@@ -21,6 +21,38 @@ const indexedMessageSelectColumns = `id,account_id,mailbox,uid,thread_id,message
 
 var indexedSearchTokenPattern = regexp.MustCompile(`[\pL\pN]+`)
 
+func threadSummarySubject(subject string) string {
+	if normalized := mail.NormalizeThreadSubject(subject); normalized != "" {
+		return normalized
+	}
+	return "(no subject)"
+}
+
+func normalizeStoredMailProviderType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "gmail":
+		return "gmail"
+	case "libero":
+		return "libero"
+	default:
+		return "generic"
+	}
+}
+
+func normalizeStoredMailAuthKind(raw string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), "app_password") {
+		return "app_password"
+	}
+	return "password"
+}
+
+func normalizeStoredMailConnectionMode(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return "imap_smtp"
+	}
+	return strings.TrimSpace(raw)
+}
+
 type recipientScore struct {
 	models.RecipientSuggestion
 	Score  int
@@ -59,7 +91,7 @@ func indexedThreadIDCandidates(accountID, id string) []string {
 
 func (s *Store) ListMailAccounts(ctx context.Context, userID string) ([]models.MailAccount, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,user_id,display_name,login,secret_enc,imap_host,imap_port,imap_tls,imap_starttls,smtp_host,smtp_port,smtp_tls,smtp_starttls,is_default,status,last_sync_at,last_error,created_at,updated_at
+		`SELECT id,user_id,display_name,login,secret_enc,imap_host,imap_port,imap_tls,imap_starttls,smtp_host,smtp_port,smtp_tls,smtp_starttls,is_default,status,last_sync_at,last_error,provider_type,provider_label,auth_kind,connection_mode,validation_imap_ready,validation_smtp_ready,validation_app_password_required,validation_error,last_validated_at,created_at,updated_at
 		 FROM mail_accounts
 		 WHERE user_id=?
 		 ORDER BY is_default DESC, created_at ASC`,
@@ -86,7 +118,7 @@ func (s *Store) ListMailAccounts(ctx context.Context, userID string) ([]models.M
 
 func (s *Store) ListAllMailAccounts(ctx context.Context) ([]models.MailAccount, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id,user_id,display_name,login,secret_enc,imap_host,imap_port,imap_tls,imap_starttls,smtp_host,smtp_port,smtp_tls,smtp_starttls,is_default,status,last_sync_at,last_error,created_at,updated_at
+		`SELECT id,user_id,display_name,login,secret_enc,imap_host,imap_port,imap_tls,imap_starttls,smtp_host,smtp_port,smtp_tls,smtp_starttls,is_default,status,last_sync_at,last_error,provider_type,provider_label,auth_kind,connection_mode,validation_imap_ready,validation_smtp_ready,validation_app_password_required,validation_error,last_validated_at,created_at,updated_at
 		 FROM mail_accounts
 		 ORDER BY updated_at DESC`,
 	)
@@ -108,7 +140,7 @@ func (s *Store) ListAllMailAccounts(ctx context.Context) ([]models.MailAccount, 
 
 func (s *Store) GetMailAccountByID(ctx context.Context, userID, id string) (models.MailAccount, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id,user_id,display_name,login,secret_enc,imap_host,imap_port,imap_tls,imap_starttls,smtp_host,smtp_port,smtp_tls,smtp_starttls,is_default,status,last_sync_at,last_error,created_at,updated_at
+		`SELECT id,user_id,display_name,login,secret_enc,imap_host,imap_port,imap_tls,imap_starttls,smtp_host,smtp_port,smtp_tls,smtp_starttls,is_default,status,last_sync_at,last_error,provider_type,provider_label,auth_kind,connection_mode,validation_imap_ready,validation_smtp_ready,validation_app_password_required,validation_error,last_validated_at,created_at,updated_at
 		 FROM mail_accounts
 		 WHERE user_id=? AND id=?`,
 		userID, id,
@@ -136,10 +168,13 @@ func (s *Store) CreateMailAccount(ctx context.Context, in models.MailAccount) (m
 	if strings.TrimSpace(in.Status) == "" {
 		in.Status = "active"
 	}
+	in.ProviderType = normalizeStoredMailProviderType(in.ProviderType)
+	in.AuthKind = normalizeStoredMailAuthKind(in.AuthKind)
+	in.ConnectionMode = normalizeStoredMailConnectionMode(in.ConnectionMode)
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO mail_accounts(
-			id,user_id,display_name,login,secret_enc,imap_host,imap_port,imap_tls,imap_starttls,smtp_host,smtp_port,smtp_tls,smtp_starttls,is_default,status,last_sync_at,last_error,created_at,updated_at
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			id,user_id,display_name,login,secret_enc,imap_host,imap_port,imap_tls,imap_starttls,smtp_host,smtp_port,smtp_tls,smtp_starttls,is_default,status,last_sync_at,last_error,provider_type,provider_label,auth_kind,connection_mode,validation_imap_ready,validation_smtp_ready,validation_app_password_required,validation_error,last_validated_at,created_at,updated_at
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		in.ID,
 		in.UserID,
 		in.DisplayName,
@@ -157,6 +192,15 @@ func (s *Store) CreateMailAccount(ctx context.Context, in models.MailAccount) (m
 		in.Status,
 		nullTimeValue(in.LastSyncAt),
 		nullStringValue(in.LastError),
+		strings.TrimSpace(in.ProviderType),
+		strings.TrimSpace(in.ProviderLabel),
+		strings.TrimSpace(in.AuthKind),
+		strings.TrimSpace(in.ConnectionMode),
+		boolToInt(in.ValidationIMAPReady),
+		boolToInt(in.ValidationSMTPReady),
+		boolToInt(in.ValidationAppPasswordRequired),
+		strings.TrimSpace(in.ValidationError),
+		nullTimeValue(in.LastValidatedAt),
 		in.CreatedAt,
 		in.UpdatedAt,
 	); err != nil {
@@ -187,10 +231,14 @@ func (s *Store) UpdateMailAccountSyncStatus(ctx context.Context, accountID strin
 
 func (s *Store) UpdateMailAccount(ctx context.Context, in models.MailAccount) (models.MailAccount, error) {
 	in.UpdatedAt = time.Now().UTC()
+	in.ProviderType = normalizeStoredMailProviderType(in.ProviderType)
+	in.AuthKind = normalizeStoredMailAuthKind(in.AuthKind)
+	in.ConnectionMode = normalizeStoredMailConnectionMode(in.ConnectionMode)
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE mail_accounts SET
 		 display_name=?,login=?,secret_enc=?,imap_host=?,imap_port=?,imap_tls=?,imap_starttls=?,
-		 smtp_host=?,smtp_port=?,smtp_tls=?,smtp_starttls=?,is_default=?,status=?,last_sync_at=?,last_error=?,updated_at=?
+		 smtp_host=?,smtp_port=?,smtp_tls=?,smtp_starttls=?,is_default=?,status=?,last_sync_at=?,last_error=?,
+		 provider_type=?,provider_label=?,auth_kind=?,connection_mode=?,validation_imap_ready=?,validation_smtp_ready=?,validation_app_password_required=?,validation_error=?,last_validated_at=?,updated_at=?
 		 WHERE user_id=? AND id=?`,
 		in.DisplayName,
 		in.Login,
@@ -207,6 +255,15 @@ func (s *Store) UpdateMailAccount(ctx context.Context, in models.MailAccount) (m
 		in.Status,
 		nullTimeValue(in.LastSyncAt),
 		nullStringValue(in.LastError),
+		strings.TrimSpace(in.ProviderType),
+		strings.TrimSpace(in.ProviderLabel),
+		strings.TrimSpace(in.AuthKind),
+		strings.TrimSpace(in.ConnectionMode),
+		boolToInt(in.ValidationIMAPReady),
+		boolToInt(in.ValidationSMTPReady),
+		boolToInt(in.ValidationAppPasswordRequired),
+		strings.TrimSpace(in.ValidationError),
+		nullTimeValue(in.LastValidatedAt),
 		in.UpdatedAt,
 		in.UserID,
 		in.ID,
@@ -1237,7 +1294,7 @@ func (s *Store) UpsertIndexedMessage(ctx context.Context, in models.IndexedMessa
 		in.ThreadID,
 		in.AccountID,
 		in.Mailbox,
-		firstNonEmptyString(strings.TrimSpace(in.Subject), "(no subject)"),
+		threadSummarySubject(in.Subject),
 		string(participantsJSON),
 		1,
 		boolToInt(!in.Seen),
@@ -1419,7 +1476,7 @@ func (s *Store) RebuildThreadIndex(ctx context.Context, accountID string) error 
 				ID:           scopedThreadID,
 				AccountID:    accountID,
 				Mailbox:      mailbox,
-				SubjectNorm:  firstNonEmptyString(strings.TrimSpace(subject), "(no subject)"),
+				SubjectNorm:  threadSummarySubject(subject),
 				Participants: map[string]struct{}{},
 			}
 			threads[scopedThreadID] = agg
@@ -2492,6 +2549,65 @@ func (s *Store) FindIndexedThreadIDByMessageHeaders(ctx context.Context, account
 	return threadID, nil
 }
 
+func (s *Store) FindIndexedThreadIDBySubjectParticipants(ctx context.Context, accountID, subject string, participants []string, latestAt time.Time) (string, error) {
+	accountID = strings.TrimSpace(accountID)
+	subject = threadSummarySubject(subject)
+	participants = mail.NormalizeThreadParticipants(strings.Join(participants, ", "))
+	if accountID == "" || subject == "(no subject)" || len(participants) == 0 {
+		return "", ErrNotFound
+	}
+	if latestAt.IsZero() {
+		latestAt = time.Now().UTC()
+	}
+	windowStart := latestAt.Add(-30 * 24 * time.Hour)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id,participants_json,latest_at
+		 FROM thread_index
+		 WHERE account_id=? AND subject_norm=? AND latest_at BETWEEN ? AND ?
+		 ORDER BY latest_at DESC
+		 LIMIT 25`,
+		accountID,
+		subject,
+		windowStart,
+		latestAt,
+	)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	bestThreadID := ""
+	bestScore := 0
+	bestAt := time.Time{}
+	for rows.Next() {
+		var (
+			threadID         string
+			participantsJSON string
+			candidateAt      time.Time
+		)
+		if err := rows.Scan(&threadID, &participantsJSON, &candidateAt); err != nil {
+			return "", err
+		}
+		candidateParticipants := []string{}
+		_ = json.Unmarshal([]byte(participantsJSON), &candidateParticipants)
+		score := mail.ThreadParticipantsOverlap(candidateParticipants, participants)
+		if score == 0 {
+			continue
+		}
+		if score > bestScore || (score == bestScore && (bestAt.IsZero() || candidateAt.After(bestAt))) {
+			bestThreadID = strings.TrimSpace(threadID)
+			bestScore = score
+			bestAt = candidateAt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	if bestThreadID == "" {
+		return "", ErrNotFound
+	}
+	return bestThreadID, nil
+}
+
 func (s *Store) HasIndexedMessagesReferencingThreadParent(ctx context.Context, accountID, messageID, expectedThreadID, excludeMessageID string) (bool, error) {
 	accountID = strings.TrimSpace(accountID)
 	messageID = mail.NormalizeMessageIDHeader(messageID)
@@ -3513,8 +3629,12 @@ func accumulateRecipientSuggestion(items map[string]recipientScore, selfSet map[
 func scanMailAccount(scanner interface{ Scan(dest ...any) error }) (models.MailAccount, error) {
 	var item models.MailAccount
 	var imapTLS, imapStartTLS, smtpTLS, smtpStartTLS, isDefault int
+	var validationIMAPReady, validationSMTPReady, validationAppPasswordRequired int
 	var lastSyncAt sql.NullTime
 	var lastError sql.NullString
+	var providerLabel sql.NullString
+	var validationError sql.NullString
+	var lastValidatedAt sql.NullTime
 	err := scanner.Scan(
 		&item.ID,
 		&item.UserID,
@@ -3533,6 +3653,15 @@ func scanMailAccount(scanner interface{ Scan(dest ...any) error }) (models.MailA
 		&item.Status,
 		&lastSyncAt,
 		&lastError,
+		&item.ProviderType,
+		&providerLabel,
+		&item.AuthKind,
+		&item.ConnectionMode,
+		&validationIMAPReady,
+		&validationSMTPReady,
+		&validationAppPasswordRequired,
+		&validationError,
+		&lastValidatedAt,
 		&item.CreatedAt,
 		&item.UpdatedAt,
 	)
@@ -3549,6 +3678,19 @@ func scanMailAccount(scanner interface{ Scan(dest ...any) error }) (models.MailA
 	}
 	if lastError.Valid {
 		item.LastError = lastError.String
+	}
+	item.ProviderType = normalizeStoredMailProviderType(item.ProviderType)
+	item.ProviderLabel = strings.TrimSpace(providerLabel.String)
+	item.AuthKind = normalizeStoredMailAuthKind(item.AuthKind)
+	item.ConnectionMode = normalizeStoredMailConnectionMode(item.ConnectionMode)
+	item.ValidationIMAPReady = validationIMAPReady == 1
+	item.ValidationSMTPReady = validationSMTPReady == 1
+	item.ValidationAppPasswordRequired = validationAppPasswordRequired == 1
+	if validationError.Valid {
+		item.ValidationError = validationError.String
+	}
+	if lastValidatedAt.Valid {
+		item.LastValidatedAt = lastValidatedAt.Time
 	}
 	return item, nil
 }

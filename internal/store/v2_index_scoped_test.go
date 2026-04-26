@@ -50,6 +50,8 @@ func newV2ScopedStore(t *testing.T) *Store {
 		filepath.Join("..", "..", "migrations", "028_contacts.sql"),
 		filepath.Join("..", "..", "migrations", "029_mail_rules.sql"),
 		filepath.Join("..", "..", "migrations", "030_mail_triage.sql"),
+		filepath.Join("..", "..", "migrations", "031_reply_funnels.sql"),
+		filepath.Join("..", "..", "migrations", "032_mail_account_providers.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -392,6 +394,163 @@ func TestRepairIndexedThreadHeadersByAccountRepairsBlankThreadIDsFromRawSource(t
 	}
 	if total != 1 || len(threads) != 1 {
 		t.Fatalf("expected one rebuilt thread, got total=%d threads=%+v", total, threads)
+	}
+}
+
+func TestRepairIndexedThreadHeadersByAccountMergesReplyLikeMessagesWithoutReplyHeaders(t *testing.T) {
+	st := newV2ScopedStore(t)
+	ctx := context.Background()
+	user, err := st.CreateUser(ctx, "thread-hints@example.com", "hash", "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	createMailAccountForTest(t, st, user.ID, "acct-thread-hints", "thread-hints-login")
+
+	rootThreadID := mail.NormalizeIndexedThreadID("acct-thread-hints", mail.DeriveIndexedThreadID("<root-hint@example.com>", "", nil, "Topic", "alice@example.com"))
+	replyThreadID := mail.NormalizeIndexedThreadID("acct-thread-hints", mail.DeriveIndexedThreadID("<reply-hint@example.com>", "", nil, "Re: Topic", "user@example.com"))
+	if _, err := st.UpsertIndexedMessage(ctx, models.IndexedMessage{
+		ID:              mail.EncodeMessageID("INBOX", 1),
+		AccountID:       "acct-thread-hints",
+		Mailbox:         "INBOX",
+		UID:             1,
+		ThreadID:        rootThreadID,
+		MessageIDHeader: "root-hint@example.com",
+		FromValue:       "Alice <alice@example.com>",
+		ToValue:         "user@example.com",
+		Subject:         "Topic",
+		Snippet:         "root",
+		BodyText:        "root",
+		RawSource:       "From: Alice <alice@example.com>\r\nTo: user@example.com\r\nSubject: Topic\r\nMessage-ID: <root-hint@example.com>\r\n\r\nroot",
+		DateHeader:      time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+		InternalDate:    time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("insert root indexed message: %v", err)
+	}
+	if _, err := st.UpsertIndexedMessage(ctx, models.IndexedMessage{
+		ID:              mail.EncodeMessageID("Sent Messages", 2),
+		AccountID:       "acct-thread-hints",
+		Mailbox:         "Sent Messages",
+		UID:             2,
+		ThreadID:        replyThreadID,
+		MessageIDHeader: "reply-hint@example.com",
+		FromValue:       "User <user@example.com>",
+		ToValue:         "alice@example.com",
+		Subject:         "Re: Topic",
+		Snippet:         "reply",
+		BodyText:        "reply",
+		RawSource:       "From: User <user@example.com>\r\nTo: Alice <alice@example.com>\r\nSubject: Re: Topic\r\nMessage-ID: <reply-hint@example.com>\r\n\r\nreply",
+		DateHeader:      time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+		InternalDate:    time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("insert reply indexed message: %v", err)
+	}
+
+	if err := st.RepairIndexedThreadHeadersByAccount(ctx, "acct-thread-hints"); err != nil {
+		t.Fatalf("RepairIndexedThreadHeadersByAccount: %v", err)
+	}
+
+	root, err := st.GetIndexedMessageByID(ctx, "acct-thread-hints", mail.EncodeMessageID("INBOX", 1))
+	if err != nil {
+		t.Fatalf("load root indexed message: %v", err)
+	}
+	reply, err := st.GetIndexedMessageByID(ctx, "acct-thread-hints", mail.EncodeMessageID("Sent Messages", 2))
+	if err != nil {
+		t.Fatalf("load reply indexed message: %v", err)
+	}
+	if root.ThreadID == "" || reply.ThreadID == "" || root.ThreadID != reply.ThreadID {
+		t.Fatalf("expected hint-based repair to merge split reply, got root=%q reply=%q", root.ThreadID, reply.ThreadID)
+	}
+}
+
+func TestRepairIndexedThreadHeadersByAccountDoesNotMergeSameSubjectAcrossDifferentParticipants(t *testing.T) {
+	st := newV2ScopedStore(t)
+	ctx := context.Background()
+	user, err := st.CreateUser(ctx, "thread-hints-guard@example.com", "hash", "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	createMailAccountForTest(t, st, user.ID, "acct-thread-hints-guard", "thread-hints-guard-login")
+
+	rootAThreadID := mail.NormalizeIndexedThreadID("acct-thread-hints-guard", mail.DeriveIndexedThreadID("<root-a@example.com>", "", nil, "Topic", "alice@example.com"))
+	rootBThreadID := mail.NormalizeIndexedThreadID("acct-thread-hints-guard", mail.DeriveIndexedThreadID("<root-b@example.com>", "", nil, "Topic", "dana@example.com"))
+	replyThreadID := mail.NormalizeIndexedThreadID("acct-thread-hints-guard", mail.DeriveIndexedThreadID("<reply-a@example.com>", "", nil, "Re: Topic", "user@example.com"))
+	seed := []models.IndexedMessage{
+		{
+			ID:              mail.EncodeMessageID("INBOX", 1),
+			AccountID:       "acct-thread-hints-guard",
+			Mailbox:         "INBOX",
+			UID:             1,
+			ThreadID:        rootAThreadID,
+			MessageIDHeader: "root-a@example.com",
+			FromValue:       "Alice <alice@example.com>",
+			ToValue:         "user@example.com",
+			Subject:         "Topic",
+			Snippet:         "root a",
+			BodyText:        "root a",
+			RawSource:       "From: Alice <alice@example.com>\r\nTo: user@example.com\r\nSubject: Topic\r\nMessage-ID: <root-a@example.com>\r\n\r\nroot a",
+			DateHeader:      time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+			InternalDate:    time.Date(2026, 3, 10, 10, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:              mail.EncodeMessageID("Archive", 2),
+			AccountID:       "acct-thread-hints-guard",
+			Mailbox:         "Archive",
+			UID:             2,
+			ThreadID:        rootBThreadID,
+			MessageIDHeader: "root-b@example.com",
+			FromValue:       "Dana <dana@example.com>",
+			ToValue:         "other@example.com",
+			Subject:         "Topic",
+			Snippet:         "root b",
+			BodyText:        "root b",
+			RawSource:       "From: Dana <dana@example.com>\r\nTo: other@example.com\r\nSubject: Topic\r\nMessage-ID: <root-b@example.com>\r\n\r\nroot b",
+			DateHeader:      time.Date(2026, 3, 10, 10, 30, 0, 0, time.UTC),
+			InternalDate:    time.Date(2026, 3, 10, 10, 30, 0, 0, time.UTC),
+		},
+		{
+			ID:              mail.EncodeMessageID("Sent Messages", 3),
+			AccountID:       "acct-thread-hints-guard",
+			Mailbox:         "Sent Messages",
+			UID:             3,
+			ThreadID:        replyThreadID,
+			MessageIDHeader: "reply-a@example.com",
+			FromValue:       "User <user@example.com>",
+			ToValue:         "alice@example.com",
+			Subject:         "Re: Topic",
+			Snippet:         "reply a",
+			BodyText:        "reply a",
+			RawSource:       "From: User <user@example.com>\r\nTo: Alice <alice@example.com>\r\nSubject: Re: Topic\r\nMessage-ID: <reply-a@example.com>\r\n\r\nreply a",
+			DateHeader:      time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+			InternalDate:    time.Date(2026, 3, 10, 11, 0, 0, 0, time.UTC),
+		},
+	}
+	for _, item := range seed {
+		if _, err := st.UpsertIndexedMessage(ctx, item); err != nil {
+			t.Fatalf("seed indexed message %s: %v", item.ID, err)
+		}
+	}
+
+	if err := st.RepairIndexedThreadHeadersByAccount(ctx, "acct-thread-hints-guard"); err != nil {
+		t.Fatalf("RepairIndexedThreadHeadersByAccount: %v", err)
+	}
+
+	rootA, err := st.GetIndexedMessageByID(ctx, "acct-thread-hints-guard", mail.EncodeMessageID("INBOX", 1))
+	if err != nil {
+		t.Fatalf("load root a: %v", err)
+	}
+	rootB, err := st.GetIndexedMessageByID(ctx, "acct-thread-hints-guard", mail.EncodeMessageID("Archive", 2))
+	if err != nil {
+		t.Fatalf("load root b: %v", err)
+	}
+	reply, err := st.GetIndexedMessageByID(ctx, "acct-thread-hints-guard", mail.EncodeMessageID("Sent Messages", 3))
+	if err != nil {
+		t.Fatalf("load reply: %v", err)
+	}
+	if reply.ThreadID != rootA.ThreadID {
+		t.Fatalf("expected reply to merge with matching participants root, got reply=%q rootA=%q rootB=%q", reply.ThreadID, rootA.ThreadID, rootB.ThreadID)
+	}
+	if rootA.ThreadID == rootB.ThreadID {
+		t.Fatalf("expected separate same-subject roots to stay split, got rootA=%q rootB=%q", rootA.ThreadID, rootB.ThreadID)
 	}
 }
 

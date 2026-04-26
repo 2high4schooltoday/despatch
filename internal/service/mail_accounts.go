@@ -71,20 +71,24 @@ func (s *Service) EnsureAuthenticatedMailAccount(ctx context.Context, u models.U
 	}
 
 	_, err = s.st.CreateMailAccount(ctx, models.MailAccount{
-		ID:           uuid.NewString(),
-		UserID:       u.ID,
-		Login:        login,
-		SecretEnc:    secretEnc,
-		IMAPHost:     s.cfg.IMAPHost,
-		IMAPPort:     s.cfg.IMAPPort,
-		IMAPTLS:      s.cfg.IMAPTLS,
-		IMAPStartTLS: s.cfg.IMAPStartTLS,
-		SMTPHost:     s.cfg.SMTPHost,
-		SMTPPort:     s.cfg.SMTPPort,
-		SMTPTLS:      s.cfg.SMTPTLS,
-		SMTPStartTLS: s.cfg.SMTPStartTLS,
-		IsDefault:    !hasDefault,
-		Status:       "active",
+		ID:             uuid.NewString(),
+		UserID:         u.ID,
+		Login:          login,
+		SecretEnc:      secretEnc,
+		IMAPHost:       s.cfg.IMAPHost,
+		IMAPPort:       s.cfg.IMAPPort,
+		IMAPTLS:        s.cfg.IMAPTLS,
+		IMAPStartTLS:   s.cfg.IMAPStartTLS,
+		SMTPHost:       s.cfg.SMTPHost,
+		SMTPPort:       s.cfg.SMTPPort,
+		SMTPTLS:        s.cfg.SMTPTLS,
+		SMTPStartTLS:   s.cfg.SMTPStartTLS,
+		ProviderType:   MailProviderTypeGeneric,
+		ProviderLabel:  MailProviderByID(MailProviderTypeGeneric).Label,
+		AuthKind:       MailAccountAuthKindPassword,
+		ConnectionMode: MailConnectionModeIMAPSMTP,
+		IsDefault:      !hasDefault,
+		Status:         "active",
 	})
 	return err
 }

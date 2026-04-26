@@ -2,6 +2,7 @@ package mail
 
 import (
 	"bytes"
+	"encoding/base64"
 	"reflect"
 	"strings"
 	"testing"
@@ -179,6 +180,52 @@ func TestParseRawMessageCarriesThreadIDMatchingLiveSummary(t *testing.T) {
 				t.Fatalf("expected normalized references %#v, got %#v", tt.expectedRef, msg.References)
 			}
 		})
+	}
+}
+
+func TestParseRawMessageUsesOutlookThreadHintsWhenReplyHeadersAreMissing(t *testing.T) {
+	rootBytes := make([]byte, 22)
+	for i := range rootBytes {
+		rootBytes[i] = byte(i + 1)
+	}
+	replyBytes := append(append([]byte{}, rootBytes...), []byte{23, 24, 25, 26, 27}...)
+	rootIndex := base64.StdEncoding.EncodeToString(rootBytes)
+	replyIndex := base64.StdEncoding.EncodeToString(replyBytes)
+
+	rootRaw := []byte(strings.Join([]string{
+		"From: Alice <alice@example.com>",
+		"To: User <user@example.com>",
+		"Subject: Topic",
+		"Message-ID: <root@example.com>",
+		"Thread-Topic: Topic",
+		"Thread-Index: " + rootIndex,
+		"",
+		"Root body",
+	}, "\r\n"))
+	replyRaw := []byte(strings.Join([]string{
+		"From: User <user@example.com>",
+		"To: Alice <alice@example.com>",
+		"Subject: Re: Topic",
+		"Message-ID: <reply@example.com>",
+		"Thread-Topic: Topic",
+		"Thread-Index: " + replyIndex,
+		"",
+		"Reply body",
+	}, "\r\n"))
+
+	root, err := ParseRawMessage(rootRaw, "INBOX", 1)
+	if err != nil {
+		t.Fatalf("ParseRawMessage root: %v", err)
+	}
+	reply, err := ParseRawMessage(replyRaw, "Sent Messages", 2)
+	if err != nil {
+		t.Fatalf("ParseRawMessage reply: %v", err)
+	}
+	if root.ThreadIndex == "" || reply.ThreadIndex == "" {
+		t.Fatalf("expected normalized conversation index roots, got root=%q reply=%q", root.ThreadIndex, reply.ThreadIndex)
+	}
+	if root.ThreadID == "" || reply.ThreadID == "" || root.ThreadID != reply.ThreadID {
+		t.Fatalf("expected outlook hints to keep both messages in one thread, got root=%q reply=%q", root.ThreadID, reply.ThreadID)
 	}
 }
 

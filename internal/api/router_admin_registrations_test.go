@@ -58,6 +58,7 @@ func newAdminRegistrationRouterWithOptions(t *testing.T, configure func(*config.
 		filepath.Join("..", "..", "migrations", "017_mfa_onboarding_flags.sql"),
 		filepath.Join("..", "..", "migrations", "018_mfa_usability_trusted_devices.sql"),
 		filepath.Join("..", "..", "migrations", "019_users_mail_secret.sql"),
+		filepath.Join("..", "..", "migrations", "032_mail_account_providers.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)

@@ -51,6 +51,7 @@ const state = {
     drafts: [],
     optimisticSentSummaries: [],
     indexedAccounts: [],
+    funnels: [],
     indexedAccountID: "",
     selectedIndexedAccountID: "",
     lastConcreteIndexedAccountID: "",
@@ -233,12 +234,19 @@ const state = {
     },
     mail: {
       sessionProfile: null,
+      providers: [],
       accounts: [],
       selectedAccountID: "",
       accountEditorOpen: false,
+      accountProviderType: "generic",
+      accountValidation: null,
+      accountValidationPending: false,
       senders: [],
       selectedSenderID: "",
       senderEditorOpen: false,
+      funnels: [],
+      selectedFunnelID: "",
+      funnelEditorOpen: false,
       defaultSenderID: "",
       rulesAccountID: "",
       rules: [],
@@ -471,6 +479,7 @@ const el = {
   mailSelectionBar: document.getElementById("mail-selection-bar"),
   mailSelectionTools: document.getElementById("mail-selection-tools"),
   mailSelectionCount: document.getElementById("mail-selection-count"),
+  btnComposeSelected: document.getElementById("btn-compose-selected"),
   mailSelectionTriage: document.getElementById("mail-selection-triage"),
   btnMailClear: document.getElementById("btn-mail-clear"),
   readerTriageChips: document.getElementById("reader-triage-chips"),
@@ -583,10 +592,16 @@ const el = {
   btnSettingsMailAccountNew: document.getElementById("btn-settings-mail-account-new"),
   settingsMailAccountDetail: document.getElementById("settings-mail-account-detail"),
   settingsMailAccountForm: document.getElementById("settings-mail-account-form"),
+  settingsMailAccountProviderGmail: document.getElementById("settings-mail-account-provider-gmail"),
+  settingsMailAccountProviderLibero: document.getElementById("settings-mail-account-provider-libero"),
+  settingsMailAccountProviderGeneric: document.getElementById("settings-mail-account-provider-generic"),
+  settingsMailAccountProviderHint: document.getElementById("settings-mail-account-provider-hint"),
   settingsMailAccountDisplayName: document.getElementById("settings-mail-account-display-name"),
   settingsMailAccountLogin: document.getElementById("settings-mail-account-login"),
   settingsMailAccountPassword: document.getElementById("settings-mail-account-password"),
+  settingsMailAccountAuthKind: document.getElementById("settings-mail-account-auth-kind"),
   settingsMailAccountDefault: document.getElementById("settings-mail-account-default"),
+  settingsMailAccountAdvanced: document.getElementById("settings-mail-account-advanced"),
   settingsMailAccountIMAPHost: document.getElementById("settings-mail-account-imap-host"),
   settingsMailAccountIMAPPort: document.getElementById("settings-mail-account-imap-port"),
   settingsMailAccountIMAPTLS: document.getElementById("settings-mail-account-imap-tls"),
@@ -595,6 +610,10 @@ const el = {
   settingsMailAccountSMTPPort: document.getElementById("settings-mail-account-smtp-port"),
   settingsMailAccountSMTPTLS: document.getElementById("settings-mail-account-smtp-tls"),
   settingsMailAccountSMTPStartTLS: document.getElementById("settings-mail-account-smtp-starttls"),
+  settingsMailAccountValidation: document.getElementById("settings-mail-account-validation"),
+  settingsMailAccountValidationNote: document.getElementById("settings-mail-account-validation-note"),
+  settingsMailAccountValidationActions: document.getElementById("settings-mail-account-validation-actions"),
+  btnSettingsMailAccountCheck: document.getElementById("btn-settings-mail-account-check"),
   btnSettingsMailAccountSave: document.getElementById("btn-settings-mail-account-save"),
   btnSettingsMailAccountCancel: document.getElementById("btn-settings-mail-account-cancel"),
   btnSettingsMailAccountDelete: document.getElementById("btn-settings-mail-account-delete"),
@@ -612,6 +631,21 @@ const el = {
   btnSettingsMailIdentitySave: document.getElementById("btn-settings-mail-identity-save"),
   btnSettingsMailIdentityCancel: document.getElementById("btn-settings-mail-identity-cancel"),
   btnSettingsMailIdentityDelete: document.getElementById("btn-settings-mail-identity-delete"),
+  settingsMailFunnelList: document.getElementById("settings-mail-funnel-list"),
+  btnSettingsMailFunnelNew: document.getElementById("btn-settings-mail-funnel-new"),
+  settingsMailFunnelDetail: document.getElementById("settings-mail-funnel-detail"),
+  settingsMailFunnelForm: document.getElementById("settings-mail-funnel-form"),
+  settingsMailFunnelName: document.getElementById("settings-mail-funnel-name"),
+  settingsMailFunnelCollector: document.getElementById("settings-mail-funnel-collector"),
+  settingsMailFunnelSenderName: document.getElementById("settings-mail-funnel-sender-name"),
+  settingsMailFunnelReplyMode: document.getElementById("settings-mail-funnel-reply-mode"),
+  settingsMailFunnelRoutingMode: document.getElementById("settings-mail-funnel-routing-mode"),
+  settingsMailFunnelTargetReplyCount: document.getElementById("settings-mail-funnel-target-reply-count"),
+  settingsMailFunnelIncludeCollector: document.getElementById("settings-mail-funnel-include-collector"),
+  settingsMailFunnelSourceList: document.getElementById("settings-mail-funnel-source-list"),
+  btnSettingsMailFunnelSave: document.getElementById("btn-settings-mail-funnel-save"),
+  btnSettingsMailFunnelCancel: document.getElementById("btn-settings-mail-funnel-cancel"),
+  btnSettingsMailFunnelDelete: document.getElementById("btn-settings-mail-funnel-delete"),
   settingsMailRulesAccount: document.getElementById("settings-mail-rules-account"),
   settingsMailRulesJunkStatus: document.getElementById("settings-mail-rules-junk-status"),
   btnSettingsMailRulesJunk: document.getElementById("btn-settings-mail-rules-junk"),
@@ -5123,6 +5157,8 @@ async function openComposeOverlay(trigger = null, opts = {}) {
   const prefill = opts.prefill && typeof opts.prefill === "object" ? opts.prefill : null;
   const sendContext = opts.sendContext && typeof opts.sendContext === "object" ? opts.sendContext : { mode: "send", messageID: "", accountID: "" };
   const resolvedSendAccountID = String(sendContext.accountID || effectiveIndexedComposeAccountID() || "").trim();
+  const preferredSenderID = String(opts.preferredSenderID || "").trim();
+  const preferredAccountID = String(opts.preferredAccountID || resolvedSendAccountID || "").trim();
   state.ui.composeOpen = true;
   state.ui.composeLastTrigger = trigger || document.activeElement || null;
   el.composeOverlay.classList.remove("hidden");
@@ -5160,6 +5196,8 @@ async function openComposeOverlay(trigger = null, opts = {}) {
   state.compose.htmlSource = "";
   state.compose.bodyMode = "rich";
   syncComposeBodyModeUI();
+  state.compose.selectedSenderID = preferredSenderID;
+  state.compose.selectedAccountID = preferredAccountID;
   await loadComposeSenders();
   let shouldAutoInsertSignature = false;
   let preferComposeStartFocus = false;
@@ -8703,6 +8741,11 @@ function selectedMailSettingsSender() {
   return state.settings.mail.senders.find((item) => String(item?.id || "") === id) || null;
 }
 
+function selectedMailSettingsFunnel() {
+  const id = String(state.settings.mail.selectedFunnelID || "").trim();
+  return state.settings.mail.funnels.find((item) => String(item?.id || "") === id) || null;
+}
+
 function mailSettingsSelectedDefaultAccountID() {
   const accounts = Array.isArray(state.settings.mail.accounts) ? state.settings.mail.accounts : [];
   return String(accounts.find((item) => item?.is_default)?.id || accounts[0]?.id || "").trim();
@@ -8712,6 +8755,194 @@ function mailSettingsSelectedDefaultSenderID() {
   const explicit = String(state.settings.mail.defaultSenderID || "").trim();
   if (explicit) return explicit;
   return String(state.settings.mail.senders.find((item) => item?.is_default)?.id || state.settings.mail.senders[0]?.id || "").trim();
+}
+
+function normalizeMailProviderType(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "gmail") return "gmail";
+  return value === "libero" ? "libero" : "generic";
+}
+
+function normalizeMailAccountAuthKind(raw) {
+  return String(raw || "").trim().toLowerCase() === "app_password" ? "app_password" : "password";
+}
+
+function gmailAccountKindForLogin(login) {
+  const value = String(login || "").trim().toLowerCase();
+  const at = value.lastIndexOf("@");
+  if (at < 0 || at >= value.length - 1) return "";
+  const domain = value.slice(at + 1);
+  return domain === "gmail.com" || domain === "googlemail.com" ? "personal" : "workspace";
+}
+
+function mailProviderCatalog() {
+  return Array.isArray(state.settings.mail.providers) ? state.settings.mail.providers : [];
+}
+
+function mailProviderByID(id) {
+  const providerID = normalizeMailProviderType(id);
+  return mailProviderCatalog().find((item) => normalizeMailProviderType(item?.id) === providerID) || {
+    id: providerID,
+    label: providerID === "gmail" ? "Gmail / Google Workspace" : providerID === "libero" ? "Libero Mail" : "Generic IMAP/SMTP",
+    capabilities: {},
+    helper_links: {},
+    defaults: {},
+  };
+}
+
+function currentMailAccountProvider() {
+  return mailProviderByID(state.settings.mail.accountProviderType);
+}
+
+function currentMailAccountValidationKind(result = null) {
+  const explicit = String(result?.account_kind || "").trim().toLowerCase();
+  if (explicit) return explicit;
+  if (currentMailAccountProvider().id !== "gmail") return "";
+  return gmailAccountKindForLogin(el.settingsMailAccountLogin?.value || "");
+}
+
+function providerValidationIntro(providerID) {
+  if (providerID === "gmail") {
+    return "Gmail in Despatch uses Google App Passwords over IMAP/SMTP. Personal Gmail needs 2-Step Verification first, and Google Workspace mailboxes may need admin approval or OAuth.";
+  }
+  if (providerID === "libero") {
+    return "Libero checks confirm IMAP access, SMTP submission, and whether an app password is likely needed.";
+  }
+  return "Run a connection check before saving to confirm IMAP access and SMTP submission.";
+}
+
+function renderMailAccountValidation(validation = null) {
+  state.settings.mail.accountValidation = validation && typeof validation === "object" ? validation : null;
+  if (!el.settingsMailAccountValidationNote || !el.settingsMailAccountValidationActions) return;
+  const provider = currentMailAccountProvider();
+  const result = state.settings.mail.accountValidation;
+  const appPasswordRequired = !!result?.app_password_required;
+  const accountKind = currentMailAccountValidationKind(result);
+  const openLinkAction = (label, href) => {
+    if (!href) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cmd-btn cmd-btn--dense";
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      window.open(String(href), "_blank", "noopener,noreferrer");
+    });
+    el.settingsMailAccountValidationActions.appendChild(button);
+  };
+  if (!result) {
+    el.settingsMailAccountValidationNote.textContent = providerValidationIntro(provider.id);
+  } else {
+    const parts = [];
+    if (result.auth_ready) {
+      parts.push("IMAP and SMTP are ready.");
+    } else {
+      if (result.imap_ready) parts.push("IMAP ready.");
+      if (result.smtp_ready) parts.push("SMTP ready.");
+      if (provider.id === "gmail" && accountKind === "workspace") {
+        parts.push("Google Workspace may require OAuth or an admin-approved App Password.");
+      } else if (appPasswordRequired) {
+        parts.push(provider.id === "gmail" ? "Gmail uses a Google App Password here." : "Libero likely needs an app password.");
+      }
+    }
+    if (Array.isArray(result.mailboxes) && result.mailboxes.length > 0) {
+      parts.push(`Mailboxes found: ${result.mailboxes.join(", ")}.`);
+    }
+    if (String(result.message || "").trim()) {
+      parts.push(String(result.message || "").trim());
+    }
+    el.settingsMailAccountValidationNote.textContent = parts.join(" ").trim() || "Connection state updated.";
+  }
+  el.settingsMailAccountValidation.dataset.tone = result
+    ? (result.auth_ready ? "ok" : (appPasswordRequired || (provider.id === "gmail" && accountKind === "workspace")) ? "warning" : "error")
+    : "info";
+  el.settingsMailAccountValidationActions.replaceChildren();
+  const links = provider.helper_links || {};
+  if (provider.id === "gmail") {
+    if (appPasswordRequired || accountKind === "workspace") {
+      openLinkAction(accountKind === "workspace" ? "App Password Help" : "Create App Password", links.app_password);
+    }
+    if (accountKind === "workspace") {
+      openLinkAction("Workspace OAuth Rules", links.workspace_oauth);
+    }
+    openLinkAction("Gmail Sign-In Guide", links.client_guidance || links.imap_smtp);
+    return;
+  }
+  if (provider.id === "libero") {
+    if (appPasswordRequired) {
+      openLinkAction("Open App Password Help", links.app_password);
+    }
+    openLinkAction("Libero IMAP/SMTP Guide", links.imap_smtp);
+  }
+}
+
+function setMailSettingsAccountProvider(providerType, opts = {}) {
+  const provider = mailProviderByID(providerType);
+  state.settings.mail.accountProviderType = normalizeMailProviderType(provider.id);
+  setSetupChoicePressed(el.settingsMailAccountProviderGmail, provider.id === "gmail");
+  setSetupChoicePressed(el.settingsMailAccountProviderLibero, provider.id === "libero");
+  setSetupChoicePressed(el.settingsMailAccountProviderGeneric, provider.id === "generic");
+  if (el.settingsMailAccountProviderHint) {
+    if (provider.id === "gmail") {
+      el.settingsMailAccountProviderHint.textContent = "Gmail keeps Google's documented IMAP/SMTP preset by default. Despatch uses Google App Passwords here, and custom-domain Workspace mailboxes may still need admin approval or OAuth.";
+    } else if (provider.id === "libero") {
+      el.settingsMailAccountProviderHint.textContent = "Libero keeps its documented SSL transport preset by default and surfaces app-password help when validation points there.";
+    } else {
+      el.settingsMailAccountProviderHint.textContent = "Generic accounts keep full transport control in the server settings section below.";
+    }
+  }
+  if (el.settingsMailAccountAuthKind) {
+    const current = normalizeMailAccountAuthKind(el.settingsMailAccountAuthKind.value);
+    const supported = Array.isArray(provider.auth_kinds) ? provider.auth_kinds.map((item) => String(item || "").trim()) : ["password"];
+    el.settingsMailAccountAuthKind.replaceChildren();
+    for (const item of supported) {
+      const option = document.createElement("option");
+      option.value = item;
+      option.textContent = item === "app_password" ? "App Password" : "Password";
+      el.settingsMailAccountAuthKind.appendChild(option);
+    }
+    el.settingsMailAccountAuthKind.value = supported.includes(current) ? current : supported[0];
+  }
+  const defaults = provider.defaults || {};
+  if ((provider.id !== "generic" && !opts.preserveFields) || opts.forceDefaults) {
+    if (el.settingsMailAccountIMAPHost) el.settingsMailAccountIMAPHost.value = String(defaults.imap_host || "").trim();
+    if (el.settingsMailAccountIMAPPort) el.settingsMailAccountIMAPPort.value = String(defaults.imap_port || "");
+    if (el.settingsMailAccountIMAPTLS) el.settingsMailAccountIMAPTLS.checked = String(defaults.imap_security || "").trim() === "ssl";
+    if (el.settingsMailAccountIMAPStartTLS) el.settingsMailAccountIMAPStartTLS.checked = String(defaults.imap_security || "").trim() === "starttls";
+    if (el.settingsMailAccountSMTPHost) el.settingsMailAccountSMTPHost.value = String(defaults.smtp_host || "").trim();
+    if (el.settingsMailAccountSMTPPort) el.settingsMailAccountSMTPPort.value = String(defaults.smtp_port || "");
+    if (el.settingsMailAccountSMTPTLS) el.settingsMailAccountSMTPTLS.checked = String(defaults.smtp_security || "").trim() === "ssl";
+    if (el.settingsMailAccountSMTPStartTLS) el.settingsMailAccountSMTPStartTLS.checked = String(defaults.smtp_security || "").trim() === "starttls";
+  }
+  if (el.settingsMailAccountAdvanced) {
+    el.settingsMailAccountAdvanced.open = provider.id === "generic";
+  }
+  if (!opts.preserveValidation) {
+    renderMailAccountValidation(null);
+  }
+}
+
+function collectMailSettingsAccountPayload() {
+  const provider = currentMailAccountProvider();
+  return {
+    provider_type: normalizeMailProviderType(provider.id),
+    auth_kind: normalizeMailAccountAuthKind(el.settingsMailAccountAuthKind?.value || "password"),
+    connection_mode: "imap_smtp",
+    display_name: String(el.settingsMailAccountDisplayName?.value || "").trim(),
+    login: String(el.settingsMailAccountLogin?.value || "").trim(),
+    imap_host: String(el.settingsMailAccountIMAPHost?.value || "").trim(),
+    imap_port: Number.parseInt(String(el.settingsMailAccountIMAPPort?.value || "0"), 10) || 0,
+    imap_tls: !!el.settingsMailAccountIMAPTLS?.checked,
+    imap_starttls: !!el.settingsMailAccountIMAPStartTLS?.checked,
+    smtp_host: String(el.settingsMailAccountSMTPHost?.value || "").trim(),
+    smtp_port: Number.parseInt(String(el.settingsMailAccountSMTPPort?.value || "0"), 10) || 0,
+    smtp_tls: !!el.settingsMailAccountSMTPTLS?.checked,
+    smtp_starttls: !!el.settingsMailAccountSMTPStartTLS?.checked,
+    is_default: !!el.settingsMailAccountDefault?.checked,
+  };
+}
+
+function mailAccountSupportsAssistedForwarding(account) {
+  return !!(account?.capabilities?.forwarding_assisted);
 }
 
 function populateMailSettingsSenderAccountSelect(selectedAccountID = "", disabled = false) {
@@ -8735,6 +8966,76 @@ function populateMailSettingsSenderAccountSelect(selectedAccountID = "", disable
   }
   el.settingsMailIdentityAccount.value = String(selectedAccountID || mailSettingsSelectedDefaultAccountID() || accounts[0]?.id || "");
   el.settingsMailIdentityAccount.disabled = disabled;
+}
+
+function populateMailSettingsFunnelCollectorSelect(selectedAccountID = "") {
+  if (!el.settingsMailFunnelCollector) return;
+  el.settingsMailFunnelCollector.replaceChildren();
+  const accounts = Array.isArray(state.settings.mail.accounts) ? state.settings.mail.accounts : [];
+  if (accounts.length === 0) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No account available";
+    el.settingsMailFunnelCollector.appendChild(option);
+    el.settingsMailFunnelCollector.disabled = true;
+    return;
+  }
+  for (const item of accounts) {
+    const option = document.createElement("option");
+    option.value = String(item.id || "");
+    option.textContent = String(item.display_name || item.login || "Mail account");
+    if (item.is_default) option.textContent += " (Default)";
+    el.settingsMailFunnelCollector.appendChild(option);
+  }
+  el.settingsMailFunnelCollector.value = String(selectedAccountID || mailSettingsSelectedDefaultAccountID() || accounts[0]?.id || "");
+  el.settingsMailFunnelCollector.disabled = false;
+}
+
+function checkedMailSettingsFunnelSourceIDs() {
+  if (!el.settingsMailFunnelSourceList) return [];
+  return Array.from(el.settingsMailFunnelSourceList.querySelectorAll('input[type="checkbox"][data-account-id]:checked'))
+    .map((node) => String(node.getAttribute("data-account-id") || "").trim())
+    .filter(Boolean);
+}
+
+function populateMailSettingsFunnelSourceList(selectedIDs = [], collectorAccountID = "") {
+  if (!el.settingsMailFunnelSourceList) return;
+  const selected = new Set((Array.isArray(selectedIDs) ? selectedIDs : []).map((item) => String(item || "").trim()).filter(Boolean));
+  const collectorID = String(collectorAccountID || el.settingsMailFunnelCollector?.value || "").trim();
+  const accounts = (Array.isArray(state.settings.mail.accounts) ? state.settings.mail.accounts : [])
+    .filter((item) => String(item?.id || "").trim() !== collectorID);
+  el.settingsMailFunnelSourceList.replaceChildren();
+  if (accounts.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = collectorID
+      ? "No other accounts are available for this funnel yet."
+      : "Choose a collector account first.";
+    el.settingsMailFunnelSourceList.appendChild(empty);
+    return;
+  }
+  for (const item of accounts) {
+    const accountID = String(item?.id || "").trim();
+    if (!accountID) continue;
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.checked = selected.has(accountID);
+    input.setAttribute("data-account-id", accountID);
+    const copy = document.createElement("span");
+    const title = document.createElement("strong");
+    title.textContent = String(item.display_name || item.login || "Mail account");
+    const hint = document.createElement("span");
+    hint.className = "hint";
+    const providerLabel = String(item.provider_label || item.providerLabel || "").trim();
+    hint.textContent = [String(item.login || "").trim(), providerLabel].filter(Boolean).join(" • ");
+    copy.appendChild(title);
+    copy.appendChild(document.createElement("br"));
+    copy.appendChild(hint);
+    label.appendChild(input);
+    label.appendChild(copy);
+    el.settingsMailFunnelSourceList.appendChild(label);
+  }
 }
 
 function selectedMailRulesAccountID() {
@@ -9503,9 +9804,15 @@ async function deleteSelectedMailScript() {
 function fillMailSettingsAccountForm(account = null) {
   if (!el.settingsMailAccountForm) return;
   const item = account || {};
+  const providerType = normalizeMailProviderType(item.provider_type || item.providerType || state.settings.mail.accountProviderType || "generic");
+  state.settings.mail.accountProviderType = providerType;
+  setMailSettingsAccountProvider(providerType, { forceDefaults: !account, preserveValidation: true, preserveFields: !!account });
   if (el.settingsMailAccountDisplayName) el.settingsMailAccountDisplayName.value = String(item.display_name || item.displayName || "").trim();
   if (el.settingsMailAccountLogin) el.settingsMailAccountLogin.value = String(item.login || "").trim();
   if (el.settingsMailAccountPassword) el.settingsMailAccountPassword.value = "";
+  if (el.settingsMailAccountAuthKind) {
+    el.settingsMailAccountAuthKind.value = normalizeMailAccountAuthKind(item.auth_kind || item.authKind || (providerType === "libero" || providerType === "gmail" ? "app_password" : "password"));
+  }
   if (el.settingsMailAccountDefault) el.settingsMailAccountDefault.checked = !!item.is_default;
   if (el.settingsMailAccountIMAPHost) el.settingsMailAccountIMAPHost.value = String(item.imap_host || item.imapHost || "").trim();
   if (el.settingsMailAccountIMAPPort) el.settingsMailAccountIMAPPort.value = String(item.imap_port || item.imapPort || "");
@@ -9515,6 +9822,19 @@ function fillMailSettingsAccountForm(account = null) {
   if (el.settingsMailAccountSMTPPort) el.settingsMailAccountSMTPPort.value = String(item.smtp_port || item.smtpPort || "");
   if (el.settingsMailAccountSMTPTLS) el.settingsMailAccountSMTPTLS.checked = item.smtp_tls ?? item.smtpTLS ?? false;
   if (el.settingsMailAccountSMTPStartTLS) el.settingsMailAccountSMTPStartTLS.checked = item.smtp_starttls ?? item.smtpStartTLS ?? true;
+  const imapReady = !!(item.imap_ready ?? item.validation_imap_ready ?? item.validationIMAPReady);
+  const smtpReady = !!(item.smtp_ready ?? item.validation_smtp_ready ?? item.validationSMTPReady);
+  const appPasswordRequired = !!(item.app_password_required ?? item.validation_app_password_required ?? item.validationAppPasswordRequired);
+  const validationMessage = String(item.validation_error || item.validationError || "").trim();
+  const hasValidation = !!account && (imapReady || smtpReady || appPasswordRequired || validationMessage || String(item.last_validated_at || item.lastValidatedAt || "").trim());
+  renderMailAccountValidation(hasValidation ? {
+    imap_ready: imapReady,
+    smtp_ready: smtpReady,
+    auth_ready: imapReady && smtpReady,
+    app_password_required: appPasswordRequired,
+    account_kind: providerType === "gmail" ? gmailAccountKindForLogin(item.login || "") : "",
+    message: validationMessage,
+  } : null);
   if (el.btnSettingsMailAccountDelete) el.btnSettingsMailAccountDelete.disabled = !account;
 }
 
@@ -9547,6 +9867,37 @@ function fillMailSettingsSenderForm(identity = null) {
   }
 }
 
+function fillMailSettingsFunnelForm(funnel = null) {
+  const item = funnel || {};
+  const accounts = Array.isArray(state.settings.mail.accounts) ? state.settings.mail.accounts : [];
+  const collectorID = String(item.collector_account_id || item.collectorAccountID || mailSettingsSelectedDefaultAccountID() || "").trim();
+  populateMailSettingsFunnelCollectorSelect(collectorID);
+  if (el.settingsMailFunnelName) el.settingsMailFunnelName.value = String(item.name || "").trim();
+  if (el.settingsMailFunnelSenderName) {
+    el.settingsMailFunnelSenderName.value = String(item.sender_name || item.senderName || "").trim();
+  }
+  if (el.settingsMailFunnelReplyMode) {
+    el.settingsMailFunnelReplyMode.value = String(item.reply_mode || item.replyMode || "collector").trim() || "collector";
+  }
+  if (el.settingsMailFunnelRoutingMode) {
+    el.settingsMailFunnelRoutingMode.value = String(item.routing_mode || item.routingMode || "virtual_inbox").trim() || "virtual_inbox";
+  }
+  if (el.settingsMailFunnelTargetReplyCount) {
+    const target = Number(item.target_reply_count ?? item.targetReplyCount ?? 100) || 100;
+    el.settingsMailFunnelTargetReplyCount.value = String(Math.max(1, target));
+  }
+  if (el.settingsMailFunnelIncludeCollector) {
+    el.settingsMailFunnelIncludeCollector.checked = item.include_collector ?? item.includeCollector ?? true;
+  }
+  populateMailSettingsFunnelSourceList(item.source_account_ids || item.sourceAccountIDs || [], collectorID);
+  if (el.btnSettingsMailFunnelNew) {
+    el.btnSettingsMailFunnelNew.disabled = accounts.length < 2;
+  }
+  if (el.btnSettingsMailFunnelDelete) {
+    el.btnSettingsMailFunnelDelete.disabled = !funnel;
+  }
+}
+
 function setMailSettingsAccountEditorOpen(open) {
   state.settings.mail.accountEditorOpen = !!open;
   if (el.settingsMailAccountForm) {
@@ -9555,12 +9906,38 @@ function setMailSettingsAccountEditorOpen(open) {
   renderMailSettingsAccountDetail();
 }
 
+function startMailSettingsAccountCreate(providerType = "generic") {
+  state.settings.mail.selectedAccountID = "";
+  state.settings.mail.accountProviderType = normalizeMailProviderType(providerType);
+  fillMailSettingsAccountForm({
+    provider_type: state.settings.mail.accountProviderType,
+    auth_kind: state.settings.mail.accountProviderType === "libero" || state.settings.mail.accountProviderType === "gmail" ? "app_password" : "password",
+  });
+  setMailSettingsAccountEditorOpen(true);
+  const provider = currentMailAccountProvider();
+  let message = "Create a new IMAP/SMTP account.";
+  if (provider.id === "gmail") {
+    message = "Adding Gmail with Google's IMAP/SMTP preset. Despatch uses a Google App Password here, and Workspace mailboxes may still need admin approval or OAuth.";
+  } else if (provider.id === "libero") {
+    message = "Adding a Libero account with Despatch-managed defaults and connection checks.";
+  }
+  setMailSettingsNote(message, "info");
+}
+
 function setMailSettingsSenderEditorOpen(open) {
   state.settings.mail.senderEditorOpen = !!open;
   if (el.settingsMailIdentityForm) {
     el.settingsMailIdentityForm.classList.toggle("hidden", !state.settings.mail.senderEditorOpen);
   }
   renderMailSettingsSenderDetail();
+}
+
+function setMailSettingsFunnelEditorOpen(open) {
+  state.settings.mail.funnelEditorOpen = !!open;
+  if (el.settingsMailFunnelForm) {
+    el.settingsMailFunnelForm.classList.toggle("hidden", !state.settings.mail.funnelEditorOpen);
+  }
+  renderMailSettingsFunnelDetail();
 }
 
 function renderMailSettingsAccountDetail() {
@@ -9573,16 +9950,19 @@ function renderMailSettingsAccountDetail() {
   if (!account) {
     renderPlaceholderDetail(el.settingsMailAccountDetail, {
       title: "Select an account",
-      body: "Choose a delivery account to review its routing and sync details, or create a new one.",
+      body: "Choose a delivery account to review its routing and sync details, or start with a provider-first setup path.",
       actions: [{
-        label: "New Account",
+        label: "Add Gmail",
         className: "cmd-btn cmd-btn--dense cmd-btn--primary",
-        onClick: () => {
-          state.settings.mail.selectedAccountID = "";
-          fillMailSettingsAccountForm(null);
-          setMailSettingsAccountEditorOpen(true);
-          setMailSettingsNote("Create a new mail account.", "info");
-        },
+        onClick: () => startMailSettingsAccountCreate("gmail"),
+      }, {
+        label: "Add Libero",
+        className: "cmd-btn cmd-btn--dense",
+        onClick: () => startMailSettingsAccountCreate("libero"),
+      }, {
+        label: "Add Generic",
+        className: "cmd-btn cmd-btn--dense",
+        onClick: () => startMailSettingsAccountCreate("generic"),
       }],
     });
     return;
@@ -9595,10 +9975,18 @@ function renderMailSettingsAccountDetail() {
     intro.className = "hint";
     intro.textContent = "Accounts define transport, sync, and which mailbox sends by default.";
     detail.appendChild(intro);
+    appendDetailFact(detail, "Provider", String(item.provider_label || item.providerLabel || item.provider_type || item.providerType || "Generic IMAP/SMTP").trim());
+    if (normalizeMailProviderType(item.provider_type || item.providerType) === "gmail") {
+      appendDetailFact(detail, "Google mailbox", gmailAccountKindForLogin(item.login || "") === "workspace" ? "Workspace or custom domain" : "Personal Gmail");
+    }
     appendDetailFact(detail, "Login", String(item.login || "").trim() || "Not set");
     appendDetailFact(detail, "Default account", item.is_default ? "Yes" : "No");
+    appendDetailFact(detail, "Secret type", normalizeMailAccountAuthKind(item.auth_kind || item.authKind) === "app_password" ? "App password" : "Password");
     appendDetailFact(detail, "IMAP", `${String(item.imap_host || item.imapHost || "").trim() || "-"}:${String(item.imap_port || item.imapPort || "").trim() || "-"}`);
     appendDetailFact(detail, "SMTP", `${String(item.smtp_host || item.smtpHost || "").trim() || "-"}:${String(item.smtp_port || item.smtpPort || "").trim() || "-"}`);
+    if (item.imap_ready || item.smtp_ready || item.validation_error || item.app_password_required) {
+      appendDetailFact(detail, "Connection", item.imap_ready && item.smtp_ready ? "Validated" : String(item.validation_error || (item.app_password_required ? "App password likely required" : "Needs attention")).trim());
+    }
     appendDetailFact(detail, "Sync state", String(item.last_error || "").trim() || (String(item.last_sync_at || "").trim() ? formatMailIndexFreshness(item.last_sync_at) : "No sync state yet"));
     const actions = document.createElement("div");
     actions.className = "settings-detail-actions";
@@ -9612,6 +10000,23 @@ function renderMailSettingsAccountDetail() {
       setMailSettingsNote("Editing mail account.", "info");
     };
     actions.appendChild(edit);
+    if (mailAccountSupportsAssistedForwarding(item)) {
+      const funnel = document.createElement("button");
+      funnel.type = "button";
+      funnel.className = "cmd-btn cmd-btn--dense";
+      funnel.textContent = "Use In Funnel";
+      funnel.onclick = () => {
+        state.settings.mail.selectedFunnelID = "";
+        fillMailSettingsFunnelForm({
+          collector_account_id: mailSettingsSelectedDefaultAccountID(),
+          source_account_ids: [String(item.id || "").trim()],
+          routing_mode: mailAccountSupportsAssistedForwarding(item) ? "assisted_forwarding" : "virtual_inbox",
+        });
+        setMailSettingsFunnelEditorOpen(true);
+        setMailSettingsNote(`Building a funnel around this ${String(item.provider_label || item.providerLabel || "mail").trim()} account.`, "info");
+      };
+      actions.appendChild(funnel);
+    }
     detail.appendChild(actions);
   });
 }
@@ -9678,6 +10083,203 @@ function renderMailSettingsSenderDetail() {
   });
 }
 
+function openMailFunnelInbox(funnel) {
+  const item = funnel || selectedMailSettingsFunnel();
+  if (!item) {
+    throw new Error("Choose a funnel first.");
+  }
+  const savedSearchID = String(item.saved_search_id || item.savedSearchID || "").trim();
+  const record = (Array.isArray(state.mail.savedSearches) ? state.mail.savedSearches : [])
+    .find((entry) => String(entry?.id || "").trim() === savedSearchID) || null;
+  if (!record) {
+    throw new Error("This funnel inbox is not ready yet. Save the funnel and refresh indexed mail first.");
+  }
+  applySavedSearchSelection(record);
+  showView("mail");
+  return loadMessages({ quiet: false, query: state.mail.searchQuery });
+}
+
+function replyFunnelRoutingLabel(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "managed_rules") return "Managed redirect rules";
+  if (value === "assisted_forwarding") return "Guided provider forwarding";
+  return "Shared inbox only";
+}
+
+async function updateMailSettingsAssistedForwardingState(funnelID, accountID, nextState, notes = "") {
+  const payload = await api(`/api/v2/funnels/${encodeURIComponent(String(funnelID || "").trim())}/assisted-forwarding/${encodeURIComponent(String(accountID || "").trim())}`, {
+    method: "PATCH",
+    json: { state: nextState, notes },
+    logErrors: false,
+  });
+  state.settings.mail.funnels = (Array.isArray(state.settings.mail.funnels) ? state.settings.mail.funnels : []).map((item) => (
+    String(item?.id || "").trim() === String(payload?.id || "").trim() ? payload : item
+  ));
+  if (!state.settings.mail.funnels.some((item) => String(item?.id || "").trim() === String(payload?.id || "").trim())) {
+    state.settings.mail.funnels.unshift(payload);
+  }
+  renderMailSettingsFunnelList();
+  renderMailSettingsFunnelDetail();
+  return payload;
+}
+
+function renderMailSettingsFunnelDetail() {
+  if (!el.settingsMailFunnelDetail) return;
+  if (state.settings.mail.funnelEditorOpen) {
+    renderDetailView(el.settingsMailFunnelDetail, null);
+    return;
+  }
+  const funnel = selectedMailSettingsFunnel();
+  if (!funnel) {
+    renderPlaceholderDetail(el.settingsMailFunnelDetail, {
+      title: "Select a funnel",
+      body: "Choose a reply funnel to review its collector inbox, source accounts, and reply behavior.",
+      actions: [{
+        label: "New Funnel",
+        className: "cmd-btn cmd-btn--dense cmd-btn--primary",
+        onClick: () => {
+          state.settings.mail.selectedFunnelID = "";
+          fillMailSettingsFunnelForm(null);
+          setMailSettingsFunnelEditorOpen(true);
+          setMailSettingsNote("Create a new reply funnel.", "info");
+        },
+      }],
+    });
+    const button = el.settingsMailFunnelDetail.querySelector("button");
+    if (button) {
+      button.disabled = !Array.isArray(state.settings.mail.accounts) || state.settings.mail.accounts.length < 2;
+    }
+    return;
+  }
+  renderDetailView(el.settingsMailFunnelDetail, funnel, (detail, item) => {
+    const title = document.createElement("h4");
+    title.textContent = String(item.name || "Reply Funnel").trim();
+    detail.appendChild(title);
+    const intro = document.createElement("p");
+    intro.className = "hint";
+    intro.textContent = "Funnels keep multi-account reply traffic in one operator inbox while preserving the right sender choice.";
+    detail.appendChild(intro);
+    appendDetailFact(detail, "Collector", String(item.collector_label || item.collector_login || item.collector_account_id || "").trim() || "Not set");
+    appendDetailFact(detail, "Source accounts", String((item.source_account_ids || item.sourceAccountIDs || []).length || 0));
+    appendDetailFact(detail, "Visible sender", String(item.sender_name || item.senderName || "").trim() || "Not set");
+    appendDetailFact(detail, "Reply mode", String(item.reply_mode || item.replyMode || "collector").trim());
+    appendDetailFact(detail, "Routing", replyFunnelRoutingLabel(item.routing_mode || item.routingMode || "virtual_inbox"));
+    appendDetailFact(detail, "Reply goal", String(item.target_reply_count || item.targetReplyCount || 100));
+    const warnings = (Array.isArray(item.accounts) ? item.accounts : [])
+      .map((row) => String(row?.last_apply_error || "").trim())
+      .filter(Boolean);
+    if (warnings.length > 0) {
+      appendDetailFact(detail, "Needs attention", warnings[0]);
+    }
+    if (String(item.routing_mode || item.routingMode || "").trim() === "assisted_forwarding") {
+      const assistance = document.createElement("section");
+      assistance.className = "mail-provider-assistance-card";
+      const assistanceTitle = document.createElement("h5");
+      assistanceTitle.textContent = "Forwarding Assistant";
+      assistance.appendChild(assistanceTitle);
+      const assistanceCopy = document.createElement("p");
+      assistanceCopy.className = "hint";
+      assistanceCopy.textContent = "Use Despatch to track which source accounts have been guided through provider forwarding and keep the collector address one click away.";
+      assistance.appendChild(assistanceCopy);
+      const collectorActions = document.createElement("div");
+      collectorActions.className = "settings-detail-actions";
+      const copyCollector = document.createElement("button");
+      copyCollector.type = "button";
+      copyCollector.className = "cmd-btn cmd-btn--dense";
+      copyCollector.textContent = "Copy Collector Address";
+      copyCollector.addEventListener("click", async () => {
+        const ok = await copyTextToClipboard(String(item.collector_login || "").trim());
+        setMailSettingsNote(ok ? "Collector address copied." : "Failed to copy collector address.", ok ? "ok" : "error");
+      });
+      collectorActions.appendChild(copyCollector);
+      assistance.appendChild(collectorActions);
+      const rows = (Array.isArray(item.accounts) ? item.accounts : []).filter((row) => String(row?.role || "").trim() === "source");
+      for (const row of rows) {
+        const rowCard = document.createElement("div");
+        rowCard.className = "mail-provider-assistance-row";
+        const rowTitle = document.createElement("strong");
+        rowTitle.textContent = String(row.account_label || row.account_login || row.account_id || "Source account").trim();
+        rowCard.appendChild(rowTitle);
+        const rowMeta = document.createElement("p");
+        rowMeta.className = "hint";
+        const stateLabel = String(row.assisted_forwarding_state || row.assistedForwardingState || "pending").trim().replace(/_/g, " ");
+        const warning = String(row.assisted_forwarding_warning || row.assistedForwardingWarning || "").trim();
+        rowMeta.textContent = [String(row.provider_label || row.providerLabel || "").trim(), stateLabel, warning].filter(Boolean).join(" • ");
+        rowCard.appendChild(rowMeta);
+        const rowActions = document.createElement("div");
+        rowActions.className = "settings-detail-actions";
+        const guideBtn = document.createElement("button");
+        guideBtn.type = "button";
+        guideBtn.className = "cmd-btn cmd-btn--dense";
+        guideBtn.textContent = "Open Guide";
+        guideBtn.addEventListener("click", async () => {
+          await updateMailSettingsAssistedForwardingState(item.id, row.account_id || row.accountID, "in_progress");
+          const href = String(row.assisted_forwarding_url || row.assistedForwardingURL || "").trim();
+          if (href) {
+            window.open(href, "_blank", "noopener,noreferrer");
+          }
+        });
+        rowActions.appendChild(guideBtn);
+        const readyBtn = document.createElement("button");
+        readyBtn.type = "button";
+        readyBtn.className = "cmd-btn cmd-btn--dense cmd-btn--primary";
+        readyBtn.textContent = "Mark Ready";
+        readyBtn.addEventListener("click", async () => {
+          try {
+            await updateMailSettingsAssistedForwardingState(item.id, row.account_id || row.accountID, "confirmed");
+            setMailSettingsNote("Forwarding progress updated.", "ok");
+          } catch (err) {
+            setMailSettingsNote(formatAPIError(err, "Failed to update forwarding progress."), "error");
+          }
+        });
+        rowActions.appendChild(readyBtn);
+        const helpBtn = document.createElement("button");
+        helpBtn.type = "button";
+        helpBtn.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+        helpBtn.textContent = "Need Help";
+        helpBtn.addEventListener("click", async () => {
+          try {
+            await updateMailSettingsAssistedForwardingState(item.id, row.account_id || row.accountID, "needs_help", warning || "Needs operator follow-up.");
+            setMailSettingsNote("Forwarding progress updated.", "ok");
+          } catch (err) {
+            setMailSettingsNote(formatAPIError(err, "Failed to update forwarding progress."), "error");
+          }
+        });
+        rowActions.appendChild(helpBtn);
+        rowCard.appendChild(rowActions);
+        assistance.appendChild(rowCard);
+      }
+      detail.appendChild(assistance);
+    }
+    const actions = document.createElement("div");
+    actions.className = "settings-detail-actions";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "cmd-btn cmd-btn--dense";
+    open.textContent = "Open Inbox";
+    open.onclick = async () => {
+      try {
+        await refreshIndexedMailContext({ logErrors: false });
+        await openMailFunnelInbox(item);
+      } catch (err) {
+        setMailSettingsNote(formatAPIError(err, "Failed to open funnel inbox."), "error");
+      }
+    };
+    actions.appendChild(open);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "cmd-btn cmd-btn--dense cmd-btn--primary";
+    edit.textContent = "Edit Funnel";
+    edit.onclick = () => {
+      fillMailSettingsFunnelForm(item);
+      setMailSettingsFunnelEditorOpen(true);
+      setMailSettingsNote("Editing reply funnel.", "info");
+    };
+    actions.appendChild(edit);
+    detail.appendChild(actions);
+  });
+}
+
 function renderMailSettingsAccountList() {
   if (!el.settingsMailAccountList) return;
   const items = Array.isArray(state.settings.mail.accounts) ? state.settings.mail.accounts : [];
@@ -9693,7 +10295,10 @@ function renderMailSettingsAccountList() {
   for (const item of items) {
     const accountID = String(item.id || "");
     const meta = [];
+    if (String(item.provider_label || item.providerLabel || "").trim()) meta.push(String(item.provider_label || item.providerLabel || "").trim());
     if (String(item.login || "").trim()) meta.push(String(item.login || "").trim());
+    if (item.app_password_required) meta.push("App password likely needed");
+    if (normalizeMailProviderType(item.provider_type || item.providerType) === "gmail" && gmailAccountKindForLogin(item.login || "") === "workspace") meta.push("Workspace sign-in rules apply");
     if (String(item.last_error || "").trim()) meta.push("Needs attention");
     else {
       const freshness = formatMailIndexFreshness(item.last_sync_at);
@@ -9756,6 +10361,48 @@ function renderMailSettingsSenderList() {
     el.settingsMailIdentityList.appendChild(row);
   }
   renderMailSettingsSenderDetail();
+}
+
+function renderMailSettingsFunnelList() {
+  if (!el.settingsMailFunnelList) return;
+  const items = Array.isArray(state.settings.mail.funnels) ? state.settings.mail.funnels : [];
+  el.settingsMailFunnelList.replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = "No funnels configured yet.";
+    el.settingsMailFunnelList.appendChild(empty);
+    renderMailSettingsFunnelDetail();
+    return;
+  }
+  for (const item of items) {
+    const funnelID = String(item.id || "").trim();
+    const sourceCount = Array.isArray(item.source_account_ids || item.sourceAccountIDs)
+      ? (item.source_account_ids || item.sourceAccountIDs).length
+      : 0;
+    const issues = (Array.isArray(item.accounts) ? item.accounts : []).some((row) => String(row?.last_apply_error || "").trim() !== "");
+    const meta = [
+      String(item.collector_label || item.collector_login || "").trim(),
+      `${sourceCount} sources`,
+      replyFunnelRoutingLabel(item.routing_mode || item.routingMode || "virtual_inbox"),
+    ].filter(Boolean);
+    if (issues) meta.push("Needs attention");
+    const row = renderListItem({
+      active: funnelID === state.settings.mail.selectedFunnelID,
+      markerClass: issues ? "status-chip status-chip--warning" : "status-chip status-chip--ok",
+      markerText: issues ? "Check" : "Funnel",
+      title: String(item.name || "Reply Funnel").trim(),
+      meta: meta.join(" • "),
+      onSelect: () => {
+        state.settings.mail.selectedFunnelID = funnelID;
+        state.settings.mail.funnelEditorOpen = false;
+        renderMailSettingsFunnelList();
+        renderMailSettingsFunnelDetail();
+      },
+    });
+    el.settingsMailFunnelList.appendChild(row);
+  }
+  renderMailSettingsFunnelDetail();
 }
 
 function renderMailTriageSettingsLists() {
@@ -9879,20 +10526,30 @@ async function loadMailSettingsSenders() {
 }
 
 async function loadMailSettingsSection() {
-  const [accountsPayload, sendersPayload, triageCatalog] = await Promise.all([
+  const [providersPayload, accountsPayload, sendersPayload, funnelsPayload, triageCatalog] = await Promise.all([
+    api("/api/v2/mail/providers", { logErrors: false }),
     api("/api/v2/accounts", { logErrors: false }),
     api("/api/v2/mail/senders", { logErrors: false }),
+    api("/api/v2/funnels", { logErrors: false }),
     ensureMailTriageCatalogLoaded({ logErrors: false }),
   ]);
+  state.settings.mail.providers = Array.isArray(providersPayload?.items) ? providersPayload.items : [];
   state.settings.mail.accounts = Array.isArray(accountsPayload.items) ? accountsPayload.items : [];
   state.settings.mail.senders = Array.isArray(sendersPayload.items) ? sendersPayload.items : [];
+  state.settings.mail.funnels = Array.isArray(funnelsPayload?.items) ? funnelsPayload.items : [];
   syncMailTriageCatalogState(triageCatalog || currentMailTriageCatalog());
   state.settings.mail.defaultSenderID = String(state.settings.mail.senders.find((item) => item?.is_default)?.id || "").trim();
   if (!state.settings.mail.accounts.some((item) => String(item.id || "") === state.settings.mail.selectedAccountID)) {
     state.settings.mail.selectedAccountID = mailSettingsSelectedDefaultAccountID();
   }
+  if (!selectedMailSettingsAccount()) {
+    state.settings.mail.accountProviderType = "generic";
+  }
   if (!state.settings.mail.senders.some((item) => String(item.id || "") === state.settings.mail.selectedSenderID)) {
     state.settings.mail.selectedSenderID = mailSettingsSelectedDefaultSenderID();
+  }
+  if (!state.settings.mail.funnels.some((item) => String(item.id || "") === state.settings.mail.selectedFunnelID)) {
+    state.settings.mail.selectedFunnelID = String(state.settings.mail.funnels[0]?.id || "");
   }
   if (state.settings.mail.accountEditorOpen) {
     fillMailSettingsAccountForm(selectedMailSettingsAccount());
@@ -9900,40 +10557,69 @@ async function loadMailSettingsSection() {
   if (state.settings.mail.senderEditorOpen) {
     fillMailSettingsSenderForm(selectedMailSettingsSender());
   }
+  if (state.settings.mail.funnelEditorOpen) {
+    fillMailSettingsFunnelForm(selectedMailSettingsFunnel());
+  }
   renderMailSettingsAccountList();
   renderMailSettingsSenderList();
+  renderMailSettingsFunnelList();
   renderMailTriageSettingsLists();
   renderMailSettingsAccountDetail();
   renderMailSettingsSenderDetail();
+  renderMailSettingsFunnelDetail();
   if (!state.settings.mail.rulesAccountID || !state.settings.mail.accounts.some((item) => String(item?.id || "") === state.settings.mail.rulesAccountID)) {
     state.settings.mail.rulesAccountID = mailSettingsSelectedDefaultAccountID();
   }
   populateMailRulesAccountSelect();
   await loadMailRulesSection(state.settings.mail.rulesAccountID);
-  setMailSettingsNote("Manage accounts, senders, rules, junk handling, and default delivery here.", "info");
+  setMailSettingsNote("Manage accounts, senders, funnels, rules, junk handling, and default delivery here.", "info");
+}
+
+async function checkMailSettingsAccountConnection() {
+  const password = String(el.settingsMailAccountPassword?.value || "");
+  if (!password.trim()) {
+    throw new Error(currentMailAccountProvider().id === "gmail"
+      ? "Enter the current Google App Password to run a connection check."
+      : "Enter the current mailbox password or app password to run a connection check.");
+  }
+  state.settings.mail.accountValidationPending = true;
+  if (el.btnSettingsMailAccountCheck) el.btnSettingsMailAccountCheck.disabled = true;
+  try {
+    const payload = await api("/api/v2/mail/providers/validate", {
+      method: "POST",
+      json: {
+        ...collectMailSettingsAccountPayload(),
+        password,
+      },
+      logErrors: false,
+    });
+    renderMailAccountValidation(payload?.validation || null);
+    if (!payload?.ok) {
+      throw new Error(String(payload?.validation?.message || "Connection check failed."));
+    }
+    setMailSettingsNote("Connection check passed.", "ok");
+    return payload;
+  } finally {
+    state.settings.mail.accountValidationPending = false;
+    if (el.btnSettingsMailAccountCheck) el.btnSettingsMailAccountCheck.disabled = false;
+  }
 }
 
 async function saveMailSettingsAccount() {
-  const payload = {
-    display_name: String(el.settingsMailAccountDisplayName?.value || "").trim(),
-    login: String(el.settingsMailAccountLogin?.value || "").trim(),
-    imap_host: String(el.settingsMailAccountIMAPHost?.value || "").trim(),
-    imap_port: Number.parseInt(String(el.settingsMailAccountIMAPPort?.value || "0"), 10) || 0,
-    imap_tls: !!el.settingsMailAccountIMAPTLS?.checked,
-    imap_starttls: !!el.settingsMailAccountIMAPStartTLS?.checked,
-    smtp_host: String(el.settingsMailAccountSMTPHost?.value || "").trim(),
-    smtp_port: Number.parseInt(String(el.settingsMailAccountSMTPPort?.value || "0"), 10) || 0,
-    smtp_tls: !!el.settingsMailAccountSMTPTLS?.checked,
-    smtp_starttls: !!el.settingsMailAccountSMTPStartTLS?.checked,
-    is_default: !!el.settingsMailAccountDefault?.checked,
-  };
+  const payload = collectMailSettingsAccountPayload();
   const password = String(el.settingsMailAccountPassword?.value || "");
-  if (password.trim() !== "") payload.password = password;
+  const providerType = normalizeMailProviderType(payload.provider_type);
   const current = selectedMailSettingsAccount();
+  if (password.trim() !== "") payload.password = password;
+  if ((providerType === "libero" || providerType === "gmail") && (!current || password.trim() !== "")) {
+    await checkMailSettingsAccountConnection();
+    payload.validate_connection = true;
+  }
   const saved = current
     ? await api(`/api/v2/accounts/${encodeURIComponent(String(current.id || ""))}`, { method: "PATCH", json: payload, logErrors: false })
     : await api("/api/v2/accounts", { method: "POST", json: { ...payload, password }, logErrors: false });
   state.settings.mail.selectedAccountID = String(saved?.id || "");
+  state.settings.mail.accountProviderType = normalizeMailProviderType(saved?.provider_type || saved?.providerType || providerType);
   state.settings.mail.accountEditorOpen = false;
   await loadMailSettingsSection();
   setMailSettingsNote(current ? "Mail account updated." : "Mail account created.", "ok");
@@ -9982,6 +10668,64 @@ async function saveMailSettingsIdentity() {
   state.settings.mail.senderEditorOpen = false;
   await loadMailSettingsSection();
   setMailSettingsNote(current ? "Sender updated." : "Sender created.", "ok");
+}
+
+async function saveMailSettingsFunnel() {
+  const current = selectedMailSettingsFunnel();
+  const payload = {
+    name: String(el.settingsMailFunnelName?.value || "").trim(),
+    sender_name: String(el.settingsMailFunnelSenderName?.value || "").trim(),
+    collector_account_id: String(el.settingsMailFunnelCollector?.value || "").trim(),
+    source_account_ids: checkedMailSettingsFunnelSourceIDs(),
+    reply_mode: String(el.settingsMailFunnelReplyMode?.value || "collector").trim() || "collector",
+    routing_mode: String(el.settingsMailFunnelRoutingMode?.value || "virtual_inbox").trim() || "virtual_inbox",
+    include_collector: !!el.settingsMailFunnelIncludeCollector?.checked,
+    target_reply_count: Number.parseInt(String(el.settingsMailFunnelTargetReplyCount?.value || "100"), 10) || 100,
+  };
+  if (payload.routing_mode === "assisted_forwarding") {
+    const unsupported = payload.source_account_ids
+      .map((accountID) => (Array.isArray(state.settings.mail.accounts) ? state.settings.mail.accounts : []).find((item) => String(item?.id || "").trim() === accountID))
+      .filter((item) => item && !mailAccountSupportsAssistedForwarding(item));
+    if (unsupported.length > 0) {
+      const label = String(unsupported[0]?.display_name || unsupported[0]?.login || "Selected account").trim();
+      throw new Error(`${label} does not support guided provider forwarding yet.`);
+    }
+  }
+  const saved = current
+    ? await api(`/api/v2/funnels/${encodeURIComponent(String(current.id || ""))}`, { method: "PATCH", json: payload, logErrors: false })
+    : await api("/api/v2/funnels", { method: "POST", json: payload, logErrors: false });
+  state.settings.mail.selectedFunnelID = String(saved?.id || "");
+  state.settings.mail.funnelEditorOpen = false;
+  await Promise.all([
+    loadMailSettingsSection(),
+    refreshIndexedMailContext({ logErrors: false }).catch(() => null),
+  ]);
+  setMailSettingsNote(current ? "Reply funnel updated." : "Reply funnel created.", "ok");
+}
+
+async function deleteMailSettingsFunnel() {
+  const current = selectedMailSettingsFunnel();
+  if (!current) return;
+  const confirmed = await showConfirmModal({
+    title: "Delete funnel?",
+    body: "The shared inbox view and any Despatch-managed redirect rules for this funnel will be removed.",
+    confirmText: "Delete",
+    cancelText: "Cancel",
+    trigger: el.btnSettingsMailFunnelDelete,
+  });
+  if (!confirmed) return;
+  await api(`/api/v2/funnels/${encodeURIComponent(String(current.id || ""))}`, {
+    method: "DELETE",
+    json: {},
+    logErrors: false,
+  });
+  state.settings.mail.selectedFunnelID = "";
+  state.settings.mail.funnelEditorOpen = false;
+  await Promise.all([
+    loadMailSettingsSection(),
+    refreshIndexedMailContext({ logErrors: false }).catch(() => null),
+  ]);
+  setMailSettingsNote("Reply funnel deleted.", "ok");
 }
 
 async function deleteMailSettingsIdentity() {
@@ -10104,6 +10848,12 @@ function settingsSearchEntries() {
       target: { domain: "mail" },
     },
     {
+      label: "Funnels",
+      subtitle: "Mail",
+      keywords: ["funnels", "collector inbox", "bulk reply", "redirect rules", "shared inbox"],
+      target: { domain: "mail" },
+    },
+    {
       label: "Rules & Junk",
       subtitle: "Mail",
       keywords: ["rules", "junk", "spam", "sieve", "filters", "block sender", "allow sender"],
@@ -10163,6 +10913,21 @@ function settingsSearchEntries() {
         String(item.reply_to || ""),
       ],
       target: { domain: "mail", type: "mail-sender", detailId: id, accountId: item.account_id || state.settings.mail.selectedAccountID || "" },
+    });
+  }
+  for (const item of state.settings.mail.funnels) {
+    const id = String(item.id || "").trim();
+    if (!id) continue;
+    entries.push({
+      label: String(item.name || "Reply Funnel").trim(),
+      subtitle: "Reply funnel",
+      keywords: [
+        "funnel",
+        "collector inbox",
+        String(item.collector_login || item.collector_label || ""),
+        String(item.sender_name || ""),
+      ],
+      target: { domain: "mail", type: "mail-funnel", detailId: id },
     });
   }
   for (const item of state.settings.passkeys.items) {
@@ -10330,6 +11095,12 @@ async function navigateSettingsTarget(target) {
     }
     renderMailSettingsSenderList();
     fillMailSettingsSenderForm(selectedMailSettingsSender());
+    return;
+  }
+  if (target.type === "mail-funnel") {
+    state.settings.mail.selectedFunnelID = String(target.detailId || "");
+    renderMailSettingsFunnelList();
+    fillMailSettingsFunnelForm(selectedMailSettingsFunnel());
     return;
   }
   if (target.type === "device") {
@@ -11769,6 +12540,18 @@ function selectedSavedSearchRecord() {
   if (!id) return null;
   return (Array.isArray(state.mail.savedSearches) ? state.mail.savedSearches : [])
     .find((item) => String(item?.id || "") === id) || null;
+}
+
+function replyFunnelBySavedSearchID(savedSearchID) {
+  const key = String(savedSearchID || "").trim();
+  if (!key) return null;
+  return (Array.isArray(state.mail.funnels) ? state.mail.funnels : [])
+    .find((item) => String(item?.saved_search_id || item?.savedSearchID || "").trim() === key) || null;
+}
+
+function activeReplyFunnelRecord() {
+  if (state.mail.viewKind !== "saved") return null;
+  return replyFunnelBySavedSearchID(state.mail.savedSearchID);
 }
 
 function indexedAccountsList() {
@@ -13434,14 +14217,16 @@ async function refreshIndexedMailContext(opts = {}) {
     const requests = [
       api("/api/v2/accounts", { logErrors: opts.logErrors }),
       api("/api/v2/saved-searches", { logErrors: opts.logErrors }),
+      api("/api/v2/funnels", { logErrors: false }).catch(() => ({ items: [] })),
       api("/api/v2/accounts/health", { logErrors: false }).catch(() => null),
     ];
     if (fetchAuthIdentity) {
       requests.push(api("/api/v2/mail/senders", { logErrors: false }));
     }
-    const [accountsPayload, savedPayload, healthPayload, senderPayload] = await Promise.all(requests);
+    const [accountsPayload, savedPayload, funnelsPayload, healthPayload, senderPayload] = await Promise.all(requests);
     state.mail.indexedAccounts = Array.isArray(accountsPayload?.items) ? accountsPayload.items : [];
     state.mail.savedSearches = Array.isArray(savedPayload?.items) ? savedPayload.items : [];
+    state.mail.funnels = Array.isArray(funnelsPayload?.items) ? funnelsPayload.items : [];
     if (healthPayload && typeof healthPayload === "object") {
       state.mail.accountHealth = {
         summary: healthPayload?.summary || null,
@@ -15523,6 +16308,7 @@ function applyMailActionAvailability() {
   if (el.btnNotSpam) el.btnNotSpam.disabled = !hasActionSelection || !selectedMailActionAllInJunk();
   if (el.btnMove) el.btnMove.disabled = !hasActionSelection || !hasMoveTarget;
   if (el.btnTrash) el.btnTrash.disabled = !hasActionSelection;
+  if (el.btnComposeSelected) el.btnComposeSelected.disabled = !bulkSelected;
   if (el.btnFlag) {
     el.btnFlag.textContent = selectedMailActionFlagMode() === "unflag" ? "Unflag" : "Flag";
   }
@@ -15922,6 +16708,82 @@ function extractPrimaryEmailAddress(raw) {
     return direct[0].trim().toLowerCase();
   }
   return "";
+}
+
+function extractEmailAddresses(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return [];
+  const matches = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/ig) || [];
+  const seen = new Set();
+  const out = [];
+  for (const match of matches) {
+    const email = String(match || "").trim().toLowerCase();
+    if (!validEmail(email) || seen.has(email)) continue;
+    seen.add(email);
+    out.push(email);
+  }
+  return out;
+}
+
+function replyFunnelRows(funnel) {
+  return Array.isArray(funnel?.accounts) ? funnel.accounts : [];
+}
+
+function replyFunnelCollectorRow(funnel) {
+  return replyFunnelRows(funnel).find((row) => String(row?.role || "").trim() === "collector") || null;
+}
+
+function replyFunnelAccountLogin(row) {
+  const explicit = String(row?.account_login || row?.accountLogin || "").trim().toLowerCase();
+  if (explicit) return explicit;
+  return String(indexedAccountByID(String(row?.account_id || row?.accountID || "").trim())?.login || "").trim().toLowerCase();
+}
+
+function replyFunnelSourceRowForMessage(funnel, message) {
+  const rows = replyFunnelRows(funnel).filter((row) => String(row?.role || "").trim() === "source");
+  const directAccountID = String(message?.account_id || message?.accountID || "").trim();
+  if (directAccountID) {
+    const direct = rows.find((row) => String(row?.account_id || row?.accountID || "").trim() === directAccountID) || null;
+    if (direct) return direct;
+  }
+  const recipients = new Set([
+    ...extractEmailAddresses(message?.to || message?.to_value || message?.toValue || ""),
+    ...extractEmailAddresses(message?.cc || message?.cc_value || message?.ccValue || ""),
+  ]);
+  if (recipients.size === 0) return null;
+  return rows.find((row) => recipients.has(replyFunnelAccountLogin(row))) || null;
+}
+
+function replyFunnelPreferredComposeContext(funnel, message, opts = {}) {
+  const collectorRow = replyFunnelCollectorRow(funnel);
+  const sourceRow = message ? replyFunnelSourceRowForMessage(funnel, message) : null;
+  const collectorSenderID = String(collectorRow?.sender_identity_id || collectorRow?.senderIdentityID || "").trim();
+  const sourceSenderID = String(sourceRow?.sender_identity_id || sourceRow?.senderIdentityID || "").trim();
+  const collectorAccountID = String(collectorRow?.account_id || collectorRow?.accountID || funnel?.collector_account_id || funnel?.collectorAccountID || "").trim();
+  const sourceAccountID = String(sourceRow?.account_id || sourceRow?.accountID || "").trim();
+  const replyMode = String(funnel?.reply_mode || funnel?.replyMode || "collector").trim().toLowerCase() || "collector";
+  if (opts.bulk === true) {
+    return {
+      senderID: collectorSenderID || sourceSenderID,
+      accountID: collectorAccountID || sourceAccountID,
+    };
+  }
+  if (replyMode === "source") {
+    return {
+      senderID: sourceSenderID || collectorSenderID,
+      accountID: sourceAccountID || collectorAccountID,
+    };
+  }
+  if (replyMode === "smart") {
+    return {
+      senderID: sourceSenderID || collectorSenderID,
+      accountID: sourceAccountID || collectorAccountID,
+    };
+  }
+  return {
+    senderID: collectorSenderID || sourceSenderID,
+    accountID: collectorAccountID || sourceAccountID,
+  };
 }
 
 function formatSenderDisplayName(raw) {
@@ -16379,9 +17241,13 @@ async function openReplyCompose() {
     setStatus("Cannot determine sender address for reply.", "error");
     return;
   }
+  const funnel = activeReplyFunnelRecord();
+  const preferred = funnel ? replyFunnelPreferredComposeContext(funnel, message) : { senderID: "", accountID: "" };
   await openComposeOverlay(el.btnReply || el.btnComposeOpen, {
     title: "Reply",
     useDraft: false,
+    preferredSenderID: preferred.senderID,
+    preferredAccountID: preferred.accountID,
     sendContext: {
       mode: "reply",
       messageID: message.id,
@@ -16399,9 +17265,13 @@ async function openReplyCompose() {
 async function openForwardCompose() {
   requireSelectedMessage();
   const message = state.selectedMessage;
+  const funnel = activeReplyFunnelRecord();
+  const preferred = funnel ? replyFunnelPreferredComposeContext(funnel, message) : { senderID: "", accountID: "" };
   await openComposeOverlay(el.btnForward || el.btnComposeOpen, {
     title: "Forward",
     useDraft: false,
+    preferredSenderID: preferred.senderID,
+    preferredAccountID: preferred.accountID,
     sendContext: {
       mode: "forward",
       messageID: message.id,
@@ -16411,6 +17281,56 @@ async function openForwardCompose() {
       subject: withPrefixSubject("Fwd", message.subject),
       bodyText: buildForwardBodyPrefill(message),
       bodyHTML: buildForwardBodyPrefillHTML(message),
+    },
+  });
+}
+
+async function openComposeForSelectedReplies() {
+  const items = selectedMailActionItems();
+  if (items.length === 0) {
+    setStatus("Select at least one message first.", "error");
+    return;
+  }
+  const recipients = [];
+  const seen = new Set();
+  for (const item of items) {
+    const email = extractPrimaryEmailAddress(item?.from || item?.from_value || item?.fromValue || "");
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    recipients.push(email);
+  }
+  if (recipients.length === 0) {
+    setStatus("Could not find any sender addresses in the selected messages.", "error");
+    return;
+  }
+  const funnel = activeReplyFunnelRecord();
+  const preferred = funnel ? replyFunnelPreferredComposeContext(funnel, null, { bulk: true }) : { senderID: "", accountID: "" };
+  await openComposeOverlay(el.btnComposeSelected || el.btnComposeOpen, {
+    title: recipients.length > 1 ? "Email Selected Replies" : "Email Selected Reply",
+    useDraft: false,
+    preferredSenderID: preferred.senderID,
+    preferredAccountID: preferred.accountID,
+    sendContext: {
+      mode: "send",
+      messageID: "",
+      accountID: preferred.accountID || effectiveIndexedComposeAccountID() || "",
+    },
+    prefill: {
+      to: recipients.join(", "),
+    },
+  });
+}
+
+async function openComposeWithActiveFunnel(trigger = null) {
+  const funnel = activeReplyFunnelRecord();
+  const preferred = funnel ? replyFunnelPreferredComposeContext(funnel, null, { bulk: true }) : { senderID: "", accountID: "" };
+  await openComposeOverlay(trigger || el.btnComposeOpen, {
+    preferredSenderID: preferred.senderID,
+    preferredAccountID: preferred.accountID,
+    sendContext: {
+      mode: "send",
+      messageID: "",
+      accountID: preferred.accountID || effectiveIndexedComposeAccountID() || "",
     },
   });
 }
@@ -18468,7 +19388,7 @@ async function handleMailKeyboard(event) {
 
   if (k === "c") {
     event.preventDefault();
-    void openComposeOverlay(el.btnComposeOpen);
+    void openComposeWithActiveFunnel(el.btnComposeOpen);
     return;
   }
 
@@ -19956,10 +20876,53 @@ function bindUI() {
   bindRichEditorToolbar(el.settingsMailIdentityToolbar, el.settingsMailIdentitySignature);
   if (el.btnSettingsMailAccountNew) {
     el.btnSettingsMailAccountNew.addEventListener("click", () => {
-      state.settings.mail.selectedAccountID = "";
-      fillMailSettingsAccountForm(null);
-      setMailSettingsAccountEditorOpen(true);
-      setMailSettingsNote("Create a new mail account.", "info");
+      startMailSettingsAccountCreate("gmail");
+    });
+  }
+  if (el.settingsMailAccountProviderGmail) {
+    el.settingsMailAccountProviderGmail.addEventListener("click", () => {
+      setMailSettingsAccountProvider("gmail", { forceDefaults: true });
+    });
+  }
+  if (el.settingsMailAccountProviderLibero) {
+    el.settingsMailAccountProviderLibero.addEventListener("click", () => {
+      setMailSettingsAccountProvider("libero", { forceDefaults: true });
+    });
+  }
+  if (el.settingsMailAccountProviderGeneric) {
+    el.settingsMailAccountProviderGeneric.addEventListener("click", () => {
+      setMailSettingsAccountProvider("generic");
+    });
+  }
+  for (const node of [
+    el.settingsMailAccountDisplayName,
+    el.settingsMailAccountLogin,
+    el.settingsMailAccountPassword,
+    el.settingsMailAccountAuthKind,
+    el.settingsMailAccountIMAPHost,
+    el.settingsMailAccountIMAPPort,
+    el.settingsMailAccountIMAPTLS,
+    el.settingsMailAccountIMAPStartTLS,
+    el.settingsMailAccountSMTPHost,
+    el.settingsMailAccountSMTPPort,
+    el.settingsMailAccountSMTPTLS,
+    el.settingsMailAccountSMTPStartTLS,
+  ]) {
+    if (!node) continue;
+    node.addEventListener("input", () => {
+      renderMailAccountValidation(null);
+    });
+    node.addEventListener("change", () => {
+      renderMailAccountValidation(null);
+    });
+  }
+  if (el.btnSettingsMailAccountCheck) {
+    el.btnSettingsMailAccountCheck.addEventListener("click", async () => {
+      try {
+        await checkMailSettingsAccountConnection();
+      } catch (err) {
+        setMailSettingsNote(formatAPIError(err, "Connection check failed."), "error");
+      }
     });
   }
   if (el.btnSettingsMailAccountSave) {
@@ -20020,6 +20983,47 @@ function bindUI() {
     el.btnSettingsMailIdentityCancel.addEventListener("click", () => {
       setMailSettingsSenderEditorOpen(false);
       renderMailSettingsSenderList();
+    });
+  }
+  if (el.settingsMailFunnelCollector) {
+    el.settingsMailFunnelCollector.addEventListener("change", () => {
+      populateMailSettingsFunnelSourceList(checkedMailSettingsFunnelSourceIDs(), el.settingsMailFunnelCollector.value);
+    });
+  }
+  if (el.btnSettingsMailFunnelNew) {
+    el.btnSettingsMailFunnelNew.addEventListener("click", () => {
+      if (!Array.isArray(state.settings.mail.accounts) || state.settings.mail.accounts.length < 2) {
+        setMailSettingsNote("Add at least two accounts before creating a funnel.", "warn");
+        return;
+      }
+      state.settings.mail.selectedFunnelID = "";
+      fillMailSettingsFunnelForm(null);
+      setMailSettingsFunnelEditorOpen(true);
+      setMailSettingsNote("Create a new reply funnel.", "info");
+    });
+  }
+  if (el.btnSettingsMailFunnelSave) {
+    el.btnSettingsMailFunnelSave.addEventListener("click", async () => {
+      try {
+        await saveMailSettingsFunnel();
+      } catch (err) {
+        setMailSettingsNote(formatAPIError(err, "Failed to save reply funnel."), "error");
+      }
+    });
+  }
+  if (el.btnSettingsMailFunnelDelete) {
+    el.btnSettingsMailFunnelDelete.addEventListener("click", async () => {
+      try {
+        await deleteMailSettingsFunnel();
+      } catch (err) {
+        setMailSettingsNote(formatAPIError(err, "Failed to delete reply funnel."), "error");
+      }
+    });
+  }
+  if (el.btnSettingsMailFunnelCancel) {
+    el.btnSettingsMailFunnelCancel.addEventListener("click", () => {
+      setMailSettingsFunnelEditorOpen(false);
+      renderMailSettingsFunnelList();
     });
   }
   if (el.btnSettingsMailTriageCategoryNew) {
@@ -20811,7 +21815,13 @@ function bindUI() {
   if (el.btnComposeOpen) {
     el.btnComposeOpen.onclick = () => {
       if (!state.user || state.setup.required) return;
-      void openComposeOverlay(el.btnComposeOpen);
+      void openComposeWithActiveFunnel(el.btnComposeOpen);
+    };
+  }
+  if (el.btnComposeSelected) {
+    el.btnComposeSelected.onclick = () => {
+      if (!state.user || state.setup.required) return;
+      void openComposeForSelectedReplies();
     };
   }
   if (el.btnComposeClose) {

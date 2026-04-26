@@ -1,12 +1,22 @@
 package mail
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"strings"
 	"testing"
 )
 
 func TestNormalizeThreadSubject(t *testing.T) {
 	got := NormalizeThreadSubject("  Re: FWD: fw:  Status Update  ")
+	want := "status update"
+	if got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
+func TestNormalizeThreadSubjectSupportsListTagsAndLocalizedPrefixes(t *testing.T) {
+	got := NormalizeThreadSubject(" [Team] AW: Re[2]: 回复: Status Update (fwd) ")
 	want := "status update"
 	if got != want {
 		t.Fatalf("expected %q, got %q", want, got)
@@ -23,6 +33,57 @@ func TestDeriveThreadIDStableAndConversationScoped(t *testing.T) {
 	otherMailbox := DeriveThreadID("Archive", "weekly sync", "alice@example.com")
 	if otherMailbox != a {
 		t.Fatalf("expected same thread id across mailboxes, got %q and %q", a, otherMailbox)
+	}
+}
+
+func TestNormalizeMessageIDHeaderExtractsCanonicalToken(t *testing.T) {
+	got := NormalizeMessageIDHeader(`reply to root <Root.ID@example.COM> (comment)`)
+	if got != "root.id@example.com" {
+		t.Fatalf("expected canonical message id, got %q", got)
+	}
+}
+
+func TestDeriveIndexedThreadIDWithConversationIndexRootMatchesReplies(t *testing.T) {
+	rootBytes := make([]byte, 22)
+	for i := range rootBytes {
+		rootBytes[i] = byte(i + 1)
+	}
+	replyBytes := append(append([]byte{}, rootBytes...), []byte{23, 24, 25, 26, 27}...)
+	rootIndex := base64.StdEncoding.EncodeToString(rootBytes)
+	replyIndex := base64.StdEncoding.EncodeToString(replyBytes)
+
+	rootThreadID := DeriveIndexedThreadIDWithHints(
+		"<root@example.com>",
+		"",
+		nil,
+		"Topic",
+		"alice@example.com",
+		[]string{"alice@example.com", "user@example.com"},
+		"Topic",
+		rootIndex,
+		"",
+	)
+	replyThreadID := DeriveIndexedThreadIDWithHints(
+		"<reply@example.com>",
+		"",
+		nil,
+		"Re: Topic",
+		"user@example.com",
+		[]string{"user@example.com", "alice@example.com"},
+		"Topic",
+		replyIndex,
+		"",
+	)
+	if rootThreadID == "" || replyThreadID == "" || rootThreadID != replyThreadID {
+		t.Fatalf("expected matching conversation-index thread ids, got root=%q reply=%q", rootThreadID, replyThreadID)
+	}
+
+	expectedRoot := hex.EncodeToString(rootBytes)
+	if got := NormalizeConversationIndexRoot(rootIndex); got != expectedRoot {
+		t.Fatalf("expected normalized root %q, got %q", expectedRoot, got)
+	}
+	if got := NormalizeConversationIndexRoot(replyIndex); got != expectedRoot {
+		t.Fatalf("expected reply to keep same normalized root %q, got %q", expectedRoot, got)
 	}
 }
 

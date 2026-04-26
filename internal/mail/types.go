@@ -17,19 +17,19 @@ type Mailbox struct {
 }
 
 type MessageSummary struct {
-	ID        string    `json:"id"`
-	AccountID string    `json:"account_id,omitempty"`
-	Mailbox   string    `json:"mailbox,omitempty"`
-	Source    string    `json:"source,omitempty"`
-	From      string    `json:"from"`
-	Subject   string    `json:"subject"`
-	Date      time.Time `json:"date"`
-	Seen      bool      `json:"seen"`
-	Flagged   bool      `json:"flagged,omitempty"`
-	Answered  bool      `json:"answered,omitempty"`
-	Preview   string    `json:"preview,omitempty"`
-	ThreadID  string    `json:"thread_id,omitempty"`
-	TriageKey string    `json:"triage_key,omitempty"`
+	ID        string      `json:"id"`
+	AccountID string      `json:"account_id,omitempty"`
+	Mailbox   string      `json:"mailbox,omitempty"`
+	Source    string      `json:"source,omitempty"`
+	From      string      `json:"from"`
+	Subject   string      `json:"subject"`
+	Date      time.Time   `json:"date"`
+	Seen      bool        `json:"seen"`
+	Flagged   bool        `json:"flagged,omitempty"`
+	Answered  bool        `json:"answered,omitempty"`
+	Preview   string      `json:"preview,omitempty"`
+	ThreadID  string      `json:"thread_id,omitempty"`
+	TriageKey string      `json:"triage_key,omitempty"`
 	Triage    TriageState `json:"triage"`
 }
 
@@ -65,6 +65,9 @@ type Message struct {
 	MessageID   string           `json:"-"`
 	InReplyTo   string           `json:"-"`
 	References  []string         `json:"-"`
+	ThreadTopic string           `json:"-"`
+	ListID      string           `json:"-"`
+	ThreadIndex string           `json:"-"`
 }
 
 type MailboxSnapshot struct {
