@@ -1796,6 +1796,7 @@ func (h *Handlers) V2GetIndexedMessage(w http.ResponseWriter, r *http.Request) {
 	attachments, _ := h.svc.Store().GetIndexedMessageAttachments(r.Context(), accountID, id)
 	parsedHTML := ""
 	parsedAttachments := []mail.AttachmentMeta{}
+	unsubscribeAction := (*mail.UnsubscribeAction)(nil)
 	if parsed, parseErr := mail.ParseRawMessage([]byte(msg.RawSource), msg.Mailbox, msg.UID); parseErr == nil {
 		if v := strings.TrimSpace(parsed.From); v != "" {
 			msg.FromValue = v
@@ -1817,6 +1818,9 @@ func (h *Handlers) V2GetIndexedMessage(w http.ResponseWriter, r *http.Request) {
 		}
 		parsedHTML = strings.TrimSpace(parsed.BodyHTML)
 		parsedAttachments = parsed.Attachments
+		unsubscribeAction = parsed.Unsubscribe
+	} else {
+		unsubscribeAction = messageUnsubscribeAction([]byte(msg.RawSource))
 	}
 	msg = presentIndexedMessage(msg)
 	switch {
@@ -1825,7 +1829,13 @@ func (h *Handlers) V2GetIndexedMessage(w http.ResponseWriter, r *http.Request) {
 	case strings.TrimSpace(msg.BodyHTMLSanitized) != "":
 		msg.BodyHTMLSanitized = rewriteIndexedMessageHTML(accountID, msg.ID, msg.BodyHTMLSanitized, parsedAttachments)
 	}
-	util.WriteJSON(w, 200, map[string]any{"message": msg, "attachments": attachments})
+	util.WriteJSON(w, 200, map[string]any{
+		"message": indexedMessageDetailEnvelope{
+			IndexedMessage: msg,
+			Unsubscribe:    unsubscribeAction,
+		},
+		"attachments": attachments,
+	})
 }
 
 func (h *Handlers) V2GetIndexedMessageRaw(w http.ResponseWriter, r *http.Request) {
@@ -2935,6 +2945,49 @@ func (h *Handlers) V2SendDraft(w http.ResponseWriter, r *http.Request) {
 			"draft_id":      draft.ID,
 		})
 		return
+	}
+	if sendMode == "send_now" {
+		_, sendAccountID, _, err := h.svc.BuildDraftSendRequest(r.Context(), u, mailLogin, mailPass, draft)
+		if err != nil {
+			code := "send_failed"
+			status := 400
+			if errors.Is(err, store.ErrNotFound) {
+				code = "context_message_not_found"
+				status = 404
+			} else if strings.Contains(err.Error(), "identity_id is required") ||
+				strings.Contains(err.Error(), "selected identity is missing from_email") ||
+				strings.Contains(err.Error(), "selected sender is missing from_email") ||
+				strings.Contains(err.Error(), "selected sender requires a sending account") ||
+				strings.Contains(err.Error(), "selected sender is not available for sending") ||
+				strings.Contains(err.Error(), "manual sender must match authenticated account email") {
+				code = "invalid_sender_identity"
+			}
+			util.WriteError(w, status, code, err.Error(), middleware.RequestID(r.Context()))
+			return
+		}
+		if strings.TrimSpace(sendAccountID) == "" {
+			sendAccountID = strings.TrimSpace(draft.AccountID)
+		}
+		if strings.TrimSpace(sendAccountID) != "" {
+			queueDraft := draft
+			queueDraft.AccountID = strings.TrimSpace(sendAccountID)
+			queueDraft.ScheduledFor = time.Now().UTC().Add(undoSendGracePeriod)
+			if err := h.svc.Store().QueueScheduledSend(r.Context(), queueDraft); err != nil {
+				util.WriteError(w, 500, "undo_send_queue_failed", err.Error(), middleware.RequestID(r.Context()))
+				return
+			}
+			draft.AccountID = strings.TrimSpace(sendAccountID)
+			draft.Status = "undo_pending"
+			draft.LastSendError = ""
+			draft.ScheduledFor = queueDraft.ScheduledFor
+			_, _ = h.svc.Store().UpdateDraft(r.Context(), draft)
+			util.WriteJSON(w, 202, map[string]any{
+				"status":        "undo_pending",
+				"undo_deadline": queueDraft.ScheduledFor.UTC(),
+				"draft_id":      draft.ID,
+			})
+			return
+		}
 	}
 	cryptoJSON := strings.TrimSpace(draft.CryptoOptions)
 	if len(sendReqPayload.CryptoOptions) > 0 {

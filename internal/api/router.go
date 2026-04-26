@@ -198,6 +198,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.With(middleware.RateLimit(h.limiter, "send", 30, time.Minute, h.cfg.TrustProxy)).Post("/messages/send", h.SendMessage)
 					r.With(middleware.RateLimit(h.limiter, "send", 30, time.Minute, h.cfg.TrustProxy)).Post("/messages/{id}/reply", h.ReplyMessage)
 					r.With(middleware.RateLimit(h.limiter, "send", 30, time.Minute, h.cfg.TrustProxy)).Post("/messages/{id}/forward", h.ForwardMessage)
+					r.Post("/messages/{id}/unsubscribe", h.V1UnsubscribeMessage)
 					r.Post("/messages/{id}/flags", h.SetMessageFlags)
 					r.Post("/messages/{id}/move", h.MoveMessage)
 					r.Post("/mailboxes", h.CreateMailbox)
@@ -355,6 +356,13 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Delete("/mailboxes/{id}", h.V2DeleteMailboxMapping)
 
 					r.Post("/messages/bulk", h.V2BulkMessages)
+					r.Get("/mail/snippets", h.V2ListMailSnippets)
+					r.Post("/mail/snippets", h.V2CreateMailSnippet)
+					r.Patch("/mail/snippets/{id}", h.V2UpdateMailSnippet)
+					r.Delete("/mail/snippets/{id}", h.V2DeleteMailSnippet)
+					r.Get("/mail/favorites", h.V2ListMailFavorites)
+					r.Post("/mail/favorites", h.V2CreateMailFavorite)
+					r.Delete("/mail/favorites/{id}", h.V2DeleteMailFavorite)
 					r.Post("/mail-triage/actions", h.V2ApplyMailTriage)
 					r.Post("/mail-triage/categories", h.V2CreateMailTriageCategory)
 					r.Patch("/mail-triage/categories/{id}", h.V2UpdateMailTriageCategory)
@@ -363,6 +371,8 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Patch("/mail-triage/tags/{id}", h.V2UpdateMailTriageTag)
 					r.Delete("/mail-triage/tags/{id}", h.V2DeleteMailTriageTag)
 					r.Post("/messages/{id}/remote-images/allow", h.V2AllowRemoteImages)
+					r.Post("/messages/{id}/unsubscribe", h.V2UnsubscribeIndexedMessage)
+					r.Post("/messages/{id}/sweep", h.V2SweepIndexedMessage)
 					r.Post("/messages/{id}/crypto/decrypt", h.V2DecryptIndexedMessage)
 					r.Post("/messages/{id}/crypto/verify", h.V2VerifyIndexedMessage)
 
@@ -380,6 +390,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Post("/drafts/{id}/attachments", h.V2UploadDraftAttachments)
 					r.Delete("/drafts/{id}/attachments/{attachment_id}", h.V2DeleteDraftAttachment)
 					r.Post("/drafts/{id}/send", h.V2SendDraft)
+					r.Post("/drafts/{id}/undo-send", h.V2UndoDraftSend)
 					r.With(middleware.RateLimit(h.limiter, "send_v2", 30, time.Minute, h.cfg.TrustProxy)).Post("/messages/send", h.V2SendMessage)
 
 					r.Put("/rules/scripts/{name}", h.V2PutRuleScript)

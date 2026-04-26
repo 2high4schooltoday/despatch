@@ -62,6 +62,7 @@ type Message struct {
 	Attachments []AttachmentMeta `json:"attachments"`
 	TriageKey   string           `json:"triage_key,omitempty"`
 	Triage      TriageState      `json:"triage"`
+	Unsubscribe *UnsubscribeAction `json:"unsubscribe,omitempty"`
 	MessageID   string           `json:"-"`
 	InReplyTo   string           `json:"-"`
 	References  []string         `json:"-"`

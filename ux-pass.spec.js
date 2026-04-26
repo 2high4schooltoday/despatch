@@ -4614,6 +4614,59 @@ test('mailbox rows switch to compact layout when the message pane narrows', asyn
   await expectNoHorizontalOverflow(page, '.reader-view-controls');
 });
 
+test('mail panes resize horizontally without clipping key mailbox or reader controls', async ({ page }) => {
+  await mockMailActionScenario(page);
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await page.locator('.message-row-btn').first().click();
+
+  const before = await page.evaluate(() => {
+    const mailbox = document.getElementById('mail-pane-mailboxes');
+    const messages = document.getElementById('mail-pane-messages');
+    const reader = document.getElementById('mail-pane-reader');
+    return {
+      mailbox: Math.round(mailbox?.getBoundingClientRect().width || 0),
+      messages: Math.round(messages?.getBoundingClientRect().width || 0),
+      reader: Math.round(reader?.getBoundingClientRect().width || 0),
+    };
+  });
+
+  const dragSplitter = async (selector, deltaX) => {
+    const box = await page.locator(selector).boundingBox();
+    expect(box).toBeTruthy();
+    const startX = box.x + (box.width / 2);
+    const startY = box.y + (box.height / 2);
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(startX + deltaX, startY, { steps: 16 });
+    await page.mouse.up();
+  };
+
+  await dragSplitter('#mail-splitter-mailboxes', 160);
+  await dragSplitter('#mail-splitter-messages', -220);
+
+  const after = await page.evaluate(() => {
+    const mailbox = document.getElementById('mail-pane-mailboxes');
+    const messages = document.getElementById('mail-pane-messages');
+    const reader = document.getElementById('mail-pane-reader');
+    return {
+      mailbox: Math.round(mailbox?.getBoundingClientRect().width || 0),
+      messages: Math.round(messages?.getBoundingClientRect().width || 0),
+      reader: Math.round(reader?.getBoundingClientRect().width || 0),
+    };
+  });
+
+  expect(after.mailbox).toBeGreaterThan(before.mailbox + 40);
+  expect(after.messages).toBeLessThan(before.messages - 40);
+  expect(after.reader).toBeGreaterThanOrEqual(320);
+
+  await expectNoHorizontalOverflow(page, '.mailbox-pane-head');
+  await expectNoHorizontalOverflow(page, '.reader-view-controls');
+  await expectNoHorizontalOverflow(page, '#reader-action-controls');
+  await expectNoHorizontalOverflow(page, '.mail-commandbar');
+});
+
 test('mailbox dedupes duplicate message rows from live payloads', async ({ page }) => {
   await mockLiveRefreshScenario(page, { duplicateSummaryIDs: ['m2'] });
   await page.setViewportSize({ width: 1366, height: 900 });
@@ -4723,6 +4776,516 @@ test('mailbox live refresh updates counts and rows without losing the open threa
   await expect(page.locator('.message-row-btn')).toHaveCount(3);
   await expect(page.locator('#message-subject-anchor')).toHaveText(/Re: Updates to OpenAI Privacy Policy/i);
   await expect(page.locator('#thread-position')).toHaveText(/Conversation · 4 messages/i);
+});
+
+async function mockMailFeatureScenario(page) {
+  const user = {
+    email: 'admin@example.com',
+    role: 'admin',
+    recovery_email: 'recovery@example.net',
+    needs_recovery_email: false,
+    auth_stage: 'authenticated',
+    mail_secret_required: false,
+  };
+  const account = {
+    id: 'acct-1',
+    display_name: 'Primary Account',
+    login: 'admin@example.com',
+    is_default: true,
+    last_sync_at: '2026-04-26T10:00:00.000Z',
+    last_error: '',
+  };
+  const state = {
+    favoriteSeq: 1,
+    draftSeq: 1,
+    favorites: [],
+    drafts: new Map(),
+    unsubscribeCalls: 0,
+    sweepRequests: [],
+    snippets: [
+      {
+        id: 'snippet-ack',
+        name: 'Acknowledgement',
+        subject: 'Acknowledged',
+        body: 'Thanks for the note.\nWe are on it.',
+        created_at: '2026-04-26T09:00:00.000Z',
+        updated_at: '2026-04-26T09:00:00.000Z',
+      },
+    ],
+    messages: [
+      {
+        id: 'msg-1',
+        account_id: 'acct-1',
+        mailbox: 'INBOX',
+        from: 'Newsletter <news@example.com>',
+        subject: 'Daily Update',
+        date: '2026-04-26T09:30:00.000Z',
+        seen: false,
+        flagged: false,
+        answered: false,
+        preview: 'Today\'s issue is ready to read.',
+        thread_id: 'thread-feature-1',
+      },
+      {
+        id: 'msg-2',
+        account_id: 'acct-1',
+        mailbox: 'INBOX',
+        from: 'Newsletter <news@example.com>',
+        subject: 'Yesterday\'s Update',
+        date: '2026-04-25T09:30:00.000Z',
+        seen: true,
+        flagged: false,
+        answered: false,
+        preview: 'Yesterday\'s issue is still in your inbox.',
+        thread_id: 'thread-feature-2',
+      },
+    ],
+    unsubscribesByMessageID: new Set(['msg-1']),
+  };
+
+  const accountMailboxes = () => {
+    const inboxMessages = state.messages.filter((item) => item.mailbox === 'INBOX');
+    const archiveMessages = state.messages.filter((item) => item.mailbox === 'Archive');
+    const sentMessages = state.messages.filter((item) => item.mailbox === 'Sent');
+    return [
+      { name: 'INBOX', role: 'inbox', unread: inboxMessages.filter((item) => !item.seen).length, messages: inboxMessages.length },
+      { name: 'Archive', role: 'archive', unread: 0, messages: archiveMessages.length },
+      { name: 'Sent', role: 'sent', unread: 0, messages: sentMessages.length },
+    ];
+  };
+
+  const favoriteFingerprint = (item) => {
+    const kind = String(item?.kind || '').trim().toLowerCase();
+    const scope = String(item?.account_scope || 'account').trim().toLowerCase() === 'all' ? 'all' : 'account';
+    const accountID = String(item?.account_id || '').trim().toLowerCase();
+    if (kind === 'mailbox') return [kind, scope, accountID, String(item?.mailbox || '').trim().toLowerCase()].join('|');
+    if (kind === 'saved_view') return [kind, String(item?.saved_search_id || '').trim().toLowerCase()].join('|');
+    if (kind === 'smart_view') return [kind, scope, accountID, String(item?.smart_view || '').trim().toLowerCase()].join('|');
+    if (kind === 'sender') return [kind, scope, accountID, String(item?.sender || '').trim().toLowerCase()].join('|');
+    if (kind === 'domain') return [kind, scope, accountID, String(item?.domain || '').trim().toLowerCase()].join('|');
+    if (kind === 'thread') return [kind, accountID, String(item?.thread_id || '').trim().toLowerCase()].join('|');
+    if (kind === 'message') return [kind, accountID, String(item?.message_id || '').trim().toLowerCase()].join('|');
+    return [kind, String(item?.id || '').trim().toLowerCase()].join('|');
+  };
+
+  const sortedFavorites = () => [...state.favorites].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+
+  const normalizeFavorite = (payload) => {
+    const next = {
+      id: payload.id || `fav-${state.favoriteSeq++}`,
+      kind: payload.kind,
+      label: payload.label || '',
+      account_id: payload.account_id || '',
+      account_scope: payload.account_scope || 'account',
+      mailbox: payload.mailbox || '',
+      smart_view: payload.smart_view || '',
+      saved_search_id: payload.saved_search_id || '',
+      sender: payload.sender || '',
+      domain: payload.domain || '',
+      thread_id: payload.thread_id || '',
+      message_id: payload.message_id || '',
+      subject: payload.subject || '',
+      from: payload.from || '',
+      created_at: payload.created_at || '2026-04-26T11:00:00.000Z',
+      updated_at: '2026-04-26T11:00:00.000Z',
+    };
+    return next;
+  };
+
+  const draftList = () => Array
+    .from(state.drafts.values())
+    .filter((item) => String(item.status || '').toLowerCase() !== 'sent')
+    .sort((a, b) => new Date(b.updated_at || b.created_at || 0).getTime() - new Date(a.updated_at || a.created_at || 0).getTime());
+
+  const summaryFromMessage = (item) => ({
+    id: item.id,
+    account_id: item.account_id,
+    mailbox: item.mailbox,
+    from: item.from,
+    subject: item.subject,
+    date: item.date,
+    seen: item.seen,
+    flagged: item.flagged,
+    answered: item.answered,
+    preview: item.preview,
+    thread_id: item.thread_id,
+  });
+
+  const detailFromMessage = (item) => ({
+    id: item.id,
+    account_id: item.account_id,
+    mailbox: item.mailbox,
+    from: item.from,
+    to: ['admin@example.com'],
+    cc: [],
+    bcc: [],
+    subject: item.subject,
+    date: item.date,
+    seen: item.seen,
+    flagged: item.flagged,
+    answered: item.answered,
+    body: `${item.subject}\n\n${item.preview}`,
+    body_html: '',
+    unsubscribe: state.unsubscribesByMessageID.has(item.id)
+      ? { method: 'POST', url: 'https://example.test/unsubscribe' }
+      : null,
+  });
+
+  const listMessages = (url) => {
+    const mailbox = url.searchParams.get('mailbox') || 'INBOX';
+    const fromFilter = String(url.searchParams.get('from') || '').trim().toLowerCase();
+    return state.messages
+      .filter((item) => item.mailbox === mailbox)
+      .filter((item) => !fromFilter || String(item.from || '').toLowerCase().includes(fromFilter))
+      .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+      .map(summaryFromMessage);
+  };
+
+  await page.route('**/api/**', async (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    const method = route.request().method();
+    const ok = async (body, extra = {}) => {
+      await route.fulfill({
+        status: extra.status || 200,
+        contentType: extra.contentType || 'application/json',
+        body: extra.rawBody ?? JSON.stringify(body),
+      });
+    };
+
+    if (path === '/api/v1/public/captcha/config') return ok({ enabled: false });
+    if (path === '/api/v1/public/password-reset/capabilities') return ok({ enabled: false, reason: 'disabled' });
+    if (path === '/api/v1/public/auth/capabilities') {
+      return ok({
+        passkey_mfa_available: false,
+        passkey_passwordless_available: false,
+        passkey_usernameless_enabled: true,
+        reason: 'disabled',
+      });
+    }
+    if (path === '/api/v1/setup/status') {
+      return ok({
+        required: false,
+        base_domain: 'example.com',
+        default_admin_email: 'webmaster@example.com',
+        auth_mode: 'sql',
+        password_min_length: 12,
+        password_max_length: 128,
+        password_class_min: 3,
+        automatic_updates_enabled: true,
+        passkey_primary_sign_in_enabled: true,
+      });
+    }
+    if (path === '/api/v1/admin/system/update/status') {
+      return ok({
+        current: {
+          version: 'v1.0.0',
+          commit: 'abc1234',
+          build_time: '2026-04-26T08:00:00.000Z',
+          source_repo: 'https://github.com/2high4schooltoday/despatch',
+        },
+        latest: {
+          tag_name: 'v1.0.0',
+          html_url: 'https://github.com/2high4schooltoday/despatch/releases/tag/v1.0.0',
+        },
+        update_available: false,
+        apply: null,
+        auto_update: {
+          enabled: true,
+          state: 'idle',
+          target_version: '',
+          downloaded_at: '',
+          scheduled_for: '',
+          error: '',
+        },
+      });
+    }
+    if (path === '/api/v1/me') return ok(user);
+    if (path === '/api/v2/security/mfa/webauthn') return ok({ items: [] });
+    if (path === '/api/v2/security/mfa/trusted-devices') return ok({ items: [] });
+    if (path === '/api/v2/security/sessions') return ok({ items: [] });
+    if (path === '/api/v2/accounts') return ok({ items: [account] });
+    if (path === '/api/v2/saved-searches') return ok({ items: [] });
+    if (path === '/api/v2/funnels') return ok({ items: [] });
+    if (path === '/api/v2/accounts/health') return ok({ summary: null, items: [] });
+    if (path === '/api/v2/mail/favorites' && method === 'GET') return ok({ items: sortedFavorites() });
+    if (path === '/api/v2/mail/favorites' && method === 'POST') {
+      const payload = normalizeFavorite(route.request().postDataJSON());
+      const fingerprint = favoriteFingerprint(payload);
+      const existingIndex = state.favorites.findIndex((item) => favoriteFingerprint(item) === fingerprint);
+      if (existingIndex >= 0) {
+        const existing = state.favorites[existingIndex];
+        state.favorites[existingIndex] = {
+          ...payload,
+          id: existing.id,
+          created_at: existing.created_at,
+        };
+        return ok(state.favorites[existingIndex]);
+      }
+      state.favorites.push(payload);
+      return ok(payload, { status: 201 });
+    }
+    const favoriteDeleteMatch = path.match(/^\/api\/v2\/mail\/favorites\/([^/]+)$/);
+    if (favoriteDeleteMatch && method === 'DELETE') {
+      const favoriteID = decodeURIComponent(favoriteDeleteMatch[1]);
+      state.favorites = state.favorites.filter((item) => item.id !== favoriteID);
+      return ok({ status: 'deleted' });
+    }
+    if (path === '/api/v2/mail/snippets' && method === 'GET') return ok({ items: state.snippets });
+    if (path === '/api/v2/mail/senders') {
+      return ok({
+        items: [{
+          id: 'sender-primary',
+          kind: 'primary',
+          name: 'Admin',
+          from_email: user.email,
+          reply_to: '',
+          signature_text: '',
+          signature_html: '',
+          account_id: account.id,
+          account_label: account.display_name,
+          account_login: account.login,
+          is_default: true,
+          is_primary: true,
+          can_delete: false,
+          can_schedule: true,
+          status: 'ok',
+        }],
+      });
+    }
+    if (path === `/api/v2/accounts/${account.id}/mailboxes`) return ok(accountMailboxes());
+    if (path === '/api/v2/messages') return ok({ items: listMessages(url), total: listMessages(url).length });
+    const indexedMessageMatch = path.match(/^\/api\/v2\/messages\/([^/]+)$/);
+    if (indexedMessageMatch && method === 'GET') {
+      const messageID = decodeURIComponent(indexedMessageMatch[1]);
+      const item = state.messages.find((entry) => entry.id === messageID);
+      if (!item) {
+        return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'not found' }) });
+      }
+      return ok({
+        message: detailFromMessage(item),
+        attachments: [],
+      });
+    }
+    const threadMatch = path.match(/^\/api\/v2\/threads\/([^/]+)$/);
+    if (threadMatch && method === 'GET') {
+      const threadID = decodeURIComponent(threadMatch[1]);
+      return ok({
+        items: state.messages
+          .filter((item) => item.thread_id === threadID)
+          .map(summaryFromMessage),
+      });
+    }
+    if (path === '/api/v2/messages/bulk' && method === 'POST') {
+      const payload = route.request().postDataJSON();
+      if (payload.action === 'seen') {
+        for (const id of payload.ids || []) {
+          const item = state.messages.find((entry) => entry.id === id);
+          if (item) item.seen = true;
+        }
+      }
+      return ok({ status: 'ok', applied: payload.ids || [], failed: [] });
+    }
+    const unsubscribeMatch = path.match(/^\/api\/v2\/messages\/([^/]+)\/unsubscribe$/);
+    if (unsubscribeMatch && method === 'POST') {
+      const messageID = decodeURIComponent(unsubscribeMatch[1]);
+      state.unsubscribeCalls += 1;
+      state.unsubscribesByMessageID.delete(messageID);
+      return ok({ status: 'unsubscribed', method: 'POST' });
+    }
+    const sweepMatch = path.match(/^\/api\/v2\/messages\/([^/]+)\/sweep$/);
+    if (sweepMatch && method === 'POST') {
+      const messageID = decodeURIComponent(sweepMatch[1]);
+      const payload = route.request().postDataJSON();
+      state.sweepRequests.push(payload);
+      const targetMailbox = payload.target_mailbox || 'Archive';
+      const source = state.messages.find((item) => item.id === messageID);
+      const sender = String(source?.from || '').toLowerCase();
+      const matched = state.messages.filter((item) => String(item.from || '').toLowerCase() === sender);
+      matched.forEach((item) => {
+        item.mailbox = targetMailbox;
+      });
+      return ok({
+        status: 'applied',
+        matched: matched.length,
+        applied: matched.map((item) => item.id),
+        failed: [],
+        sender: 'news@example.com',
+        target_mailbox: targetMailbox,
+        future_rule_created: !!payload.apply_to_future,
+        future_rule_live: !!payload.apply_to_future,
+        rule_id: payload.apply_to_future ? 'rule-1' : '',
+      });
+    }
+    if (path === '/api/v2/drafts' && method === 'GET') {
+      return ok({ items: draftList(), page: 1, page_size: 100, total: draftList().length });
+    }
+    if (path === '/api/v2/drafts' && method === 'POST') {
+      const payload = route.request().postDataJSON();
+      const draft = {
+        id: `draft-${state.draftSeq++}`,
+        account_id: payload.account_id || account.id,
+        sender_profile_id: payload.sender_profile_id || 'sender-primary',
+        identity_id: payload.identity_id || '',
+        compose_mode: payload.compose_mode || 'send',
+        context_message_id: payload.context_message_id || '',
+        context_account_id: payload.context_account_id || '',
+        from_mode: payload.from_mode || 'sender',
+        from_manual: payload.from_manual || '',
+        client_state_json: payload.client_state_json || '',
+        to: payload.to || '',
+        cc: payload.cc || '',
+        bcc: payload.bcc || '',
+        subject: payload.subject || '',
+        body_text: payload.body_text || '',
+        body_html: payload.body_html || '',
+        attachments_json: '[]',
+        send_mode: payload.send_mode || 'send_now',
+        scheduled_for: payload.scheduled_for || '',
+        status: payload.status || 'active',
+        last_send_error: payload.last_send_error || '',
+        created_at: '2026-04-26T11:20:00.000Z',
+        updated_at: '2026-04-26T11:20:00.000Z',
+      };
+      state.drafts.set(draft.id, draft);
+      return ok(draft, { status: 201 });
+    }
+    const draftMatch = path.match(/^\/api\/v2\/drafts\/([^/]+)$/);
+    if (draftMatch && method === 'GET') {
+      const draftID = decodeURIComponent(draftMatch[1]);
+      const draft = state.drafts.get(draftID);
+      if (!draft) {
+        return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'not found' }) });
+      }
+      return ok(draft);
+    }
+    if (draftMatch && method === 'PATCH') {
+      const draftID = decodeURIComponent(draftMatch[1]);
+      const payload = route.request().postDataJSON();
+      const draft = state.drafts.get(draftID);
+      if (!draft) {
+        return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'not found' }) });
+      }
+      const next = {
+        ...draft,
+        ...payload,
+        updated_at: '2026-04-26T11:21:00.000Z',
+      };
+      state.drafts.set(draftID, next);
+      return ok(next);
+    }
+    if (draftMatch && method === 'DELETE') {
+      const draftID = decodeURIComponent(draftMatch[1]);
+      state.drafts.delete(draftID);
+      return ok({ status: 'deleted' });
+    }
+    const draftSendMatch = path.match(/^\/api\/v2\/drafts\/([^/]+)\/send$/);
+    if (draftSendMatch && method === 'POST') {
+      const draftID = decodeURIComponent(draftSendMatch[1]);
+      const draft = state.drafts.get(draftID);
+      if (draft) {
+        draft.status = 'undo_pending';
+        draft.scheduled_for = '2026-04-26T11:21:10.000Z';
+        draft.updated_at = '2026-04-26T11:21:00.000Z';
+        state.drafts.set(draftID, draft);
+      }
+      return ok({
+        status: 'undo_pending',
+        draft_id: draftID,
+        undo_deadline: '2026-04-26T11:21:10.000Z',
+      }, { status: 202 });
+    }
+    const undoMatch = path.match(/^\/api\/v2\/drafts\/([^/]+)\/undo-send$/);
+    if (undoMatch && method === 'POST') {
+      const draftID = decodeURIComponent(undoMatch[1]);
+      const draft = state.drafts.get(draftID);
+      if (!draft) {
+        return route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ error: 'not found' }) });
+      }
+      draft.status = 'draft';
+      draft.send_mode = 'send_now';
+      draft.scheduled_for = '';
+      draft.updated_at = '2026-04-26T11:21:02.000Z';
+      state.drafts.set(draftID, draft);
+      return ok({ status: 'draft', draft });
+    }
+
+    await route.fulfill({
+      status: 404,
+      contentType: 'application/json',
+      body: JSON.stringify({ error: path }),
+    });
+  });
+
+  return state;
+}
+
+test('mail favorites, snippets, undo send, unsubscribe, and sweep integrate cleanly', async ({ page }) => {
+  const runtime = await mockMailFeatureScenario(page);
+  await page.setViewportSize({ width: 1366, height: 900 });
+  await page.goto('http://127.0.0.1:18081/', { waitUntil: 'networkidle' });
+
+  await expect(page.locator('#view-mail')).toBeVisible();
+  await expect(page.locator('.message-row-btn')).toHaveCount(2);
+
+  await page.locator('.message-row-btn').first().click();
+  await expect(page.locator('#message-subject-anchor')).toHaveText(/Daily Update/);
+
+  await page.click('#reader-more-summary');
+  await expect(page.locator('#btn-reader-unsubscribe')).toBeVisible();
+  await expect(page.locator('#btn-reader-sweep')).toBeVisible();
+  await page.click('#btn-reader-pin-sender');
+  await expect(page.locator('#mailboxes')).toContainText('news@example.com');
+
+  await page.click('#reader-more-summary');
+  await expect(page.locator('#btn-reader-pin-sender')).toHaveText(/Unpin Sender/);
+  await page.click('#reader-more-summary');
+
+  await page.click('#mail-view-menu > summary');
+  await page.click('#btn-mail-favorite-view');
+  await page.click('#mail-view-menu > summary');
+  await expect(page.locator('#btn-mail-favorite-view')).toHaveText(/Unfavorite View/);
+
+  await page.click('#reader-more-summary');
+  await page.click('#btn-reader-unsubscribe');
+  await expect(page.locator('.status-toast').filter({ hasText: 'Unsubscribe request sent.' })).toBeVisible();
+  expect(runtime.unsubscribeCalls).toBe(1);
+
+  await page.click('#btn-compose-open');
+  await page.click('#compose-to-input');
+  await page.keyboard.type('ops@example.com');
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#compose-to-chips')).toContainText('ops@example.com');
+  await page.click('#btn-compose-snippets');
+  await expect(page.locator('#ui-modal-title')).toHaveText(/Insert Snippet/);
+  await page.click('#ui-modal-confirm');
+  await expect(page.locator('#compose-subject-input')).toHaveValue('Acknowledged');
+  await expect(page.locator('#compose-editor')).toContainText('Thanks for the note.');
+
+  await page.click('#btn-compose-send');
+  await expect(page.locator('#compose-overlay')).toHaveClass(/hidden/);
+  const undoToast = page.locator('.status-toast').filter({ hasText: /queued until/i }).last();
+  await expect(undoToast.locator('.status-toast-action')).toHaveText('Undo');
+  await undoToast.locator('.status-toast-action').click();
+  await expect(page.locator('#compose-overlay')).not.toHaveClass(/hidden/);
+  await expect(page.locator('#compose-subject-input')).toHaveValue('Acknowledged');
+  await expect(page.locator('#compose-editor')).toContainText('Thanks for the note.');
+  await page.click('#btn-compose-close');
+
+  await page.locator('.message-row-btn').first().click();
+  await page.click('#reader-more-summary');
+  await page.click('#btn-reader-sweep');
+  await expect(page.locator('#ui-modal-title')).toHaveText(/Sweep Sender/);
+  await page.selectOption('#ui-modal-select', 'archive');
+  await page.click('#ui-modal-confirm');
+  await expect(page.locator('#ui-modal-title')).toHaveText(/Future Mail/);
+  await page.selectOption('#ui-modal-select', 'now');
+  await page.click('#ui-modal-confirm');
+
+  await expect(page.locator('.message-row-btn')).toHaveCount(0);
+  expect(runtime.sweepRequests).toHaveLength(1);
+  expect(runtime.sweepRequests[0].action).toBe('archive');
+  expect(runtime.sweepRequests[0].target_mailbox).toBe('Archive');
 });
 
 test('mobile primary controls keep touch-friendly target sizes', async ({ browser }) => {

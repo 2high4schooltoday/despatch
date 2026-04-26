@@ -721,7 +721,7 @@ func (w *MailWorkers) recordAccountSyncFailure(accountID string, now time.Time) 
 
 func (w *MailWorkers) runScheduledSendLoop(ctx context.Context) {
 	w.processScheduledSends(ctx)
-	ticker := time.NewTicker(15 * time.Second)
+	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {

@@ -1142,6 +1142,7 @@ func parseMessage(raw []byte, messageID, mailbox string, uid uint32) (Message, e
 		mr.Header.Get("Conversation-Index"),
 	))
 	msg.ListID = strings.TrimSpace(mr.Header.Get("List-Id"))
+	msg.Unsubscribe = ParsePreferredUnsubscribeAction(&mr.Header)
 	if rawReferences := mr.Header.Get("References"); strings.TrimSpace(rawReferences) != "" {
 		msg.References = ParseMessageIDList(rawReferences)
 	}

@@ -94,6 +94,12 @@ html[data-theme="paper-light"] {
   --mail-toolbar-pad-y: 14px;
   --mail-search-max: 620px;
   --mail-pane-pad: 16px;
+  --mail-pane-splitter-w: 12px;
+  --mail-layout-mailboxes-min-w: 188px;
+  --mail-layout-messages-min-w: 250px;
+  --mail-layout-reader-min-w: 320px;
+  --mail-layout-mailboxes-w: 216px;
+  --mail-layout-messages-w: 300px;
   --mail-control-h: 34px;
   --mail-label-size: 0.82rem;
   --mail-meta-size: 0.84rem;
@@ -724,6 +730,10 @@ main {
   font-family: var(--font-notice);
   font-size: 0.92rem;
   line-height: 1.35;
+}
+
+.status-toast-action {
+  justify-self: start;
 }
 
 .status-toast-dismiss {
@@ -2321,18 +2331,63 @@ a:focus-visible {
 
 .mail-layout {
   display: grid;
-  grid-template-columns: 216px minmax(300px, 1.02fr) minmax(420px, 1.34fr);
+  grid-template-columns:
+    minmax(var(--mail-layout-mailboxes-min-w), var(--mail-layout-mailboxes-w))
+    var(--mail-pane-splitter-w)
+    minmax(var(--mail-layout-messages-min-w), var(--mail-layout-messages-w))
+    var(--mail-pane-splitter-w)
+    minmax(var(--mail-layout-reader-min-w), 1fr);
   border: var(--border-w) solid var(--line-1);
   min-height: 620px;
   height: clamp(600px, calc(100vh - 172px), 780px);
+  min-width: 0;
+}
+
+.mail-layout > * {
+  min-width: 0;
 }
 
 .mail-pane {
   display: grid;
   grid-template-rows: auto 1fr;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
   border-right: var(--border-w) solid var(--line-2);
   padding: 0;
+}
+
+.mail-pane-splitter {
+  position: relative;
+  min-width: var(--mail-pane-splitter-w);
+  min-height: 0;
+  background: color-mix(in srgb, var(--bg-1) 84%, transparent);
+  border-right: var(--border-w) solid color-mix(in srgb, var(--line-2) 76%, transparent);
+  border-left: var(--border-w) solid color-mix(in srgb, var(--line-2) 76%, transparent);
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+
+.mail-pane-splitter::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 2px;
+  height: calc(100% - 24px);
+  background: color-mix(in srgb, var(--line-1) 88%, transparent);
+}
+
+.mail-pane-splitter:hover::before,
+.mail-pane-splitter:focus-visible::before,
+.mail-pane-splitter.is-active::before,
+.mail-layout.is-resizing .mail-pane-splitter::before {
+  background: var(--line-0);
+}
+
+.mail-pane-splitter:focus-visible {
+  box-shadow: inset 0 0 0 var(--focus-ring) var(--line-0);
 }
 
 .mail-pane--mailboxes {
@@ -2823,6 +2878,7 @@ a:focus-visible {
   border-bottom: var(--border-w) solid var(--line-2);
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .reader-subject {
@@ -2868,6 +2924,7 @@ a:focus-visible {
 .thread-strip {
   border-bottom: var(--border-w) solid color-mix(in srgb, var(--line-2) 86%, transparent);
   background: color-mix(in srgb, var(--bg-2) 58%, transparent);
+  min-width: 0;
 }
 
 .thread-context {
@@ -2876,6 +2933,7 @@ a:focus-visible {
   justify-content: space-between;
   gap: 12px;
   padding: 0 var(--mail-pane-pad);
+  min-width: 0;
 }
 
 .thread-summary {
@@ -2905,6 +2963,7 @@ a:focus-visible {
   flex-wrap: wrap;
   gap: 8px;
   padding: 10px 0;
+  min-width: 0;
 }
 
 .thread-badge {
@@ -2970,6 +3029,7 @@ a:focus-visible {
   gap: 12px 16px;
   padding: 14px var(--mail-pane-pad);
   border-bottom: var(--border-w) solid var(--line-2);
+  min-width: 0;
 }
 
 .reader-view-label {
@@ -2986,6 +3046,7 @@ a:focus-visible {
   flex-wrap: wrap;
   flex: 1 1 320px;
   gap: 8px;
+  min-width: 0;
 }
 
 .reader-action-controls {
@@ -2998,6 +3059,7 @@ a:focus-visible {
   padding-left: 0;
   margin-left: 0;
   border-left: 0;
+  min-width: 0;
 }
 
 .reader-action-controls .cmd-btn {
@@ -4245,6 +4307,11 @@ a:focus-visible {
   gap: var(--space-1);
 }
 
+.ui-modal-input-wrap textarea {
+  min-height: 220px;
+  resize: vertical;
+}
+
 .ui-modal-document {
   margin: 0;
   min-height: 320px;
@@ -5200,7 +5267,9 @@ button.setting-list-item {
   }
 
   .mail-layout {
-    grid-template-columns: 188px minmax(250px, 0.96fr) minmax(320px, 1.08fr);
+    --mail-layout-mailboxes-min-w: 188px;
+    --mail-layout-messages-min-w: 250px;
+    --mail-layout-reader-min-w: 320px;
   }
 
   .mail-health-body {
@@ -5306,6 +5375,10 @@ button.setting-list-item {
     grid-template-columns: 1fr;
     min-height: 0;
     height: auto;
+  }
+
+  .mail-pane-splitter {
+    display: none;
   }
 
   .mail-toolbar-primary {

@@ -473,6 +473,24 @@
 
               <section class="setting-section">
                 <header class="setting-section-head">
+                  <h4>Snippets</h4>
+                  <p class="hint">Reusable reply blocks, canned acknowledgements, and short inserts for compose.</p>
+                </header>
+                <div class="mail-settings-columns">
+                  <div class="mail-settings-column">
+                    <div class="actions setting-actions">
+                      <button id="btn-settings-mail-snippet-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Snippet</button>
+                    </div>
+                    <div id="settings-mail-snippet-list" class="settings-list"></div>
+                  </div>
+                  <div class="mail-settings-detail-shell">
+                    <article id="settings-mail-snippet-detail" class="settings-detail hidden"></article>
+                  </div>
+                </div>
+              </section>
+
+              <section class="setting-section">
+                <header class="setting-section-head">
                   <h4>Triage</h4>
                   <p class="hint">Manage categories and tags used for conversation triage.</p>
                 </header>
@@ -1019,6 +1037,7 @@
                 <div class="row-menu-body mail-view-menu-body">
                   <button id="btn-mail-filters" class="menu-action-btn" type="button">Filters</button>
                   <button id="btn-mail-shortcuts" class="menu-action-btn" type="button">Shortcuts</button>
+                  <button id="btn-mail-favorite-view" class="menu-action-btn" type="button">Favorite View</button>
                   <button id="btn-mail-save-search" class="menu-action-btn" type="button">Save View</button>
                   <button id="btn-mail-delete-search" class="menu-action-btn hidden" type="button">Delete View</button>
                 </div>
@@ -1144,7 +1163,7 @@
           </div>
         </article>
 
-        <div class="mail-layout">
+        <div id="mail-layout" class="mail-layout">
           <aside id="mail-pane-mailboxes" class="panel mail-pane mail-pane--mailboxes" tabindex="-1">
             <div class="mailbox-pane-head">
               <div class="mailbox-pane-copy">
@@ -1154,6 +1173,16 @@
             </div>
             <ul id="mailboxes" class="list mailbox-list" role="listbox" aria-label="Mailboxes" tabindex="0"></ul>
           </aside>
+
+          <div
+            id="mail-splitter-mailboxes"
+            class="mail-pane-splitter mail-pane-splitter--mailboxes"
+            role="separator"
+            aria-label="Resize mailbox pane"
+            aria-controls="mail-pane-mailboxes mail-pane-messages"
+            aria-orientation="vertical"
+            tabindex="0"
+          ></div>
 
           <section id="mail-pane-messages" class="panel mail-pane mail-pane--messages" tabindex="-1">
             <div class="pane-head">
@@ -1172,6 +1201,16 @@
             </div>
             <ul id="messages" class="message-list" role="listbox" aria-label="Messages" tabindex="0"></ul>
           </section>
+
+          <div
+            id="mail-splitter-messages"
+            class="mail-pane-splitter mail-pane-splitter--messages"
+            role="separator"
+            aria-label="Resize message pane"
+            aria-controls="mail-pane-messages mail-pane-reader"
+            aria-orientation="vertical"
+            tabindex="0"
+          ></div>
 
           <section id="mail-pane-reader" class="panel mail-pane mail-pane--reader" tabindex="-1">
             <div class="pane-head">
@@ -1253,6 +1292,17 @@
                 <button id="btn-reader-archive" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Archive</button>
                 <button id="btn-reader-spam" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Spam</button>
                 <button id="btn-reader-not-spam" class="cmd-btn cmd-btn--dense cmd-btn--ghost hidden" type="button">Not Spam</button>
+                <details id="reader-more-menu" class="row-menu reader-inspect-menu">
+                  <summary id="reader-more-summary" class="cmd-btn cmd-btn--dense cmd-btn--ghost">More</summary>
+                  <div class="row-menu-body reader-inspect-menu-body">
+                    <button id="btn-reader-unsubscribe" class="menu-action-btn" type="button">Unsubscribe</button>
+                    <button id="btn-reader-sweep" class="menu-action-btn" type="button">Sweep Sender</button>
+                    <button id="btn-reader-pin-sender" class="menu-action-btn" type="button">Pin Sender</button>
+                    <button id="btn-reader-pin-domain" class="menu-action-btn" type="button">Pin Domain</button>
+                    <button id="btn-reader-pin-thread" class="menu-action-btn" type="button">Pin Conversation</button>
+                    <button id="btn-reader-pin-message" class="menu-action-btn" type="button">Pin Message</button>
+                  </div>
+                </details>
                 <button id="btn-reader-trash" class="cmd-btn cmd-btn--dense cmd-btn--danger" type="button">Trash</button>
               </div>
             </div>
@@ -1648,6 +1698,7 @@
           </div>
           <div class="compose-window-actions compose-window-actions--right">
             <button id="compose-tool-attach" class="cmd-btn cmd-btn--dense compose-window-btn" type="button" title="Attach files">Attach</button>
+            <button id="btn-compose-snippets" class="cmd-btn cmd-btn--dense compose-window-btn" type="button">Snippets</button>
             <div id="compose-mode-switch" class="compose-mode-switch" role="group" aria-label="Compose body mode">
               <button id="btn-compose-mode-rich" class="cmd-btn cmd-btn--dense compose-window-btn compose-mode-btn" type="button" aria-pressed="true">Rich Text</button>
               <button id="btn-compose-mode-html" class="cmd-btn cmd-btn--dense compose-window-btn compose-mode-btn" type="button" aria-pressed="false">HTML</button>
@@ -1796,6 +1847,7 @@
       <label id="ui-modal-input-wrap" class="ui-modal-input-wrap hidden">
         <span id="ui-modal-input-label">Value</span>
         <input id="ui-modal-input" type="text" autocomplete="off" list="ui-modal-datalist">
+        <textarea id="ui-modal-textarea" class="hidden" rows="10" spellcheck="false"></textarea>
         <select id="ui-modal-select" class="hidden"></select>
         <datalist id="ui-modal-datalist"></datalist>
       </label>

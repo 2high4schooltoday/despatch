@@ -62,6 +62,7 @@ const state = {
     indexedFallbackReason: "",
     syncStatus: null,
     savedSearches: [],
+    favorites: [],
     viewKind: "mailbox",
     smartView: "",
     savedSearchID: "",
@@ -248,6 +249,8 @@ const state = {
       selectedFunnelID: "",
       funnelEditorOpen: false,
       defaultSenderID: "",
+      snippets: [],
+      selectedSnippetID: "",
       rulesAccountID: "",
       rules: [],
       selectedRuleID: "",
@@ -334,6 +337,24 @@ const state = {
   },
 };
 
+const mailPaneSizingStorageKey = "mail.paneSizing.v1";
+const mailPaneSizing = {
+  activeHandle: "",
+  pointerId: null,
+  startX: 0,
+  startMailboxWidth: 0,
+  startMessageWidth: 0,
+};
+const mailPaneSizingDefaults = {
+  mailbox: 216,
+  message: 300,
+};
+const mailPaneSizingMinimums = {
+  mailbox: 188,
+  message: 250,
+  reader: 320,
+};
+
 const el = {
   appShell: document.getElementById("app-shell"),
   workspaceTitle: document.getElementById("workspace-title"),
@@ -359,8 +380,11 @@ const el = {
   viewMail: document.getElementById("view-mail"),
   viewContacts: document.getElementById("view-contacts"),
   viewAdmin: document.getElementById("view-admin"),
+  mailLayout: document.getElementById("mail-layout"),
   mailPaneMailboxes: document.getElementById("mail-pane-mailboxes"),
+  mailSplitterMailboxes: document.getElementById("mail-splitter-mailboxes"),
   mailPaneMessages: document.getElementById("mail-pane-messages"),
+  mailSplitterMessages: document.getElementById("mail-splitter-messages"),
   mailPaneReader: document.getElementById("mail-pane-reader"),
   mailMobileBack: document.getElementById("mail-mobile-back"),
   mailBackToMailboxes: document.getElementById("mail-back-to-mailboxes"),
@@ -404,6 +428,14 @@ const el = {
   btnReaderArchive: document.getElementById("btn-reader-archive"),
   btnReaderSpam: document.getElementById("btn-reader-spam"),
   btnReaderNotSpam: document.getElementById("btn-reader-not-spam"),
+  readerMoreMenu: document.getElementById("reader-more-menu"),
+  readerMoreSummary: document.getElementById("reader-more-summary"),
+  btnReaderUnsubscribe: document.getElementById("btn-reader-unsubscribe"),
+  btnReaderSweep: document.getElementById("btn-reader-sweep"),
+  btnReaderPinSender: document.getElementById("btn-reader-pin-sender"),
+  btnReaderPinDomain: document.getElementById("btn-reader-pin-domain"),
+  btnReaderPinThread: document.getElementById("btn-reader-pin-thread"),
+  btnReaderPinMessage: document.getElementById("btn-reader-pin-message"),
   btnReaderTrash: document.getElementById("btn-reader-trash"),
   readerInspectMenu: document.getElementById("reader-inspect-menu"),
   readerInspectSummary: document.getElementById("reader-inspect-summary"),
@@ -457,6 +489,7 @@ const el = {
   mailViewMenu: document.getElementById("mail-view-menu"),
   btnMailFilters: document.getElementById("btn-mail-filters"),
   btnMailShortcuts: document.getElementById("btn-mail-shortcuts"),
+  btnMailFavoriteView: document.getElementById("btn-mail-favorite-view"),
   btnMailSaveSearch: document.getElementById("btn-mail-save-search"),
   btnMailDeleteSearch: document.getElementById("btn-mail-delete-search"),
   mailJunkSuggestion: document.getElementById("mail-junk-suggestion"),
@@ -535,6 +568,7 @@ const el = {
   composeHTMLInput: document.getElementById("compose-html-input"),
   composeHTMLPreview: document.getElementById("compose-html-preview"),
   composeAttachmentsInput: document.getElementById("compose-attachments-input"),
+  btnComposeSnippets: document.getElementById("btn-compose-snippets"),
   composeToolUndo: document.getElementById("compose-tool-undo"),
   composeToolTypography: document.getElementById("compose-tool-typography"),
   composeToolBold: document.getElementById("compose-tool-bold"),
@@ -551,6 +585,7 @@ const el = {
   uiModalInputWrap: document.getElementById("ui-modal-input-wrap"),
   uiModalInputLabel: document.getElementById("ui-modal-input-label"),
   uiModalInput: document.getElementById("ui-modal-input"),
+  uiModalTextarea: document.getElementById("ui-modal-textarea"),
   uiModalSelect: document.getElementById("ui-modal-select"),
   uiModalDatalist: document.getElementById("ui-modal-datalist"),
   uiModalDocument: document.getElementById("ui-modal-document"),
@@ -646,6 +681,9 @@ const el = {
   btnSettingsMailFunnelSave: document.getElementById("btn-settings-mail-funnel-save"),
   btnSettingsMailFunnelCancel: document.getElementById("btn-settings-mail-funnel-cancel"),
   btnSettingsMailFunnelDelete: document.getElementById("btn-settings-mail-funnel-delete"),
+  btnSettingsMailSnippetNew: document.getElementById("btn-settings-mail-snippet-new"),
+  settingsMailSnippetList: document.getElementById("settings-mail-snippet-list"),
+  settingsMailSnippetDetail: document.getElementById("settings-mail-snippet-detail"),
   settingsMailRulesAccount: document.getElementById("settings-mail-rules-account"),
   settingsMailRulesJunkStatus: document.getElementById("settings-mail-rules-junk-status"),
   btnSettingsMailRulesJunk: document.getElementById("btn-settings-mail-rules-junk"),
@@ -1411,6 +1449,25 @@ function renderStatusToast(item) {
   copy.className = "status-toast-copy";
   copy.textContent = item.body || "";
 
+  let actionBtn = null;
+  if (item.action && typeof item.action === "object" && typeof item.action.run === "function") {
+    const label = String(item.action.label || "").trim();
+    if (label) {
+      actionBtn = document.createElement("button");
+      actionBtn.type = "button";
+      actionBtn.className = "cmd-btn cmd-btn--dense status-toast-action";
+      actionBtn.textContent = label;
+      actionBtn.addEventListener("click", async () => {
+        try {
+          await item.action.run();
+          removeToast();
+        } catch (err) {
+          setStatus(formatAPIError(err, "Action failed."), "error");
+        }
+      });
+    }
+  }
+
   const dismiss = document.createElement("button");
   dismiss.type = "button";
   dismiss.className = "status-toast-dismiss";
@@ -1426,6 +1483,9 @@ function renderStatusToast(item) {
   dismiss.addEventListener("click", removeToast);
 
   main.append(head, copy);
+  if (actionBtn) {
+    main.appendChild(actionBtn);
+  }
   toast.append(main, dismiss);
   host.appendChild(toast);
   const lifetime = item.kind === "error" ? 7200 : item.kind === "success" ? 3600 : 4200;
@@ -1639,7 +1699,11 @@ function setStatus(text, type = "info", options = {}) {
   if (!payload) return;
   const notification = notificationHasCenterDelivery(payload.delivery) ? pushNotification(payload) : normalizeNotificationItem(payload);
   if (!notificationHasToastDelivery(payload.delivery)) return;
-  renderStatusToast(notification || normalizeNotificationItem(payload));
+  const toastItem = notification || normalizeNotificationItem(payload);
+  if (toastItem && config.action && typeof config.action === "object") {
+    toastItem.action = config.action;
+  }
+  renderStatusToast(toastItem);
 }
 
 function setSetupInlineStatus(text, type = "info") {
@@ -3596,6 +3660,11 @@ function restoreComposeDraft(form) {
   return true;
 }
 
+function includeDraftInMailboxList(draft) {
+  const status = String(draft?.status || "").trim().toLowerCase();
+  return status !== "sent" && status !== "undo_pending";
+}
+
 function upsertLocalDraft(draft) {
   if (!draft || !draft.id) return;
   const items = Array.isArray(state.mail.drafts) ? [...state.mail.drafts] : [];
@@ -3603,7 +3672,7 @@ function upsertLocalDraft(draft) {
   if (idx >= 0) items[idx] = draft;
   else items.unshift(draft);
   items.sort((a, b) => new Date(b?.updated_at || 0).getTime() - new Date(a?.updated_at || 0).getTime());
-  state.mail.drafts = items.filter((item) => String(item?.status || "").toLowerCase() !== "sent");
+  state.mail.drafts = items.filter((item) => includeDraftInMailboxList(item));
   renderMailboxes();
   if (isDraftsMailboxSelected()) {
     renderMessages(state.mail.drafts.map((item) => buildDraftMessageSummary(item)));
@@ -3730,6 +3799,7 @@ async function restoreComposeDraftVersion(trigger = null) {
 function composeDraftStatusText() {
   if (state.compose.submitInFlight) return ["Sending", "muted"];
   if (String(state.compose.draftStatus || "").toLowerCase() === "scheduled") return ["Scheduled", "ok"];
+  if (String(state.compose.draftStatus || "").toLowerCase() === "undo_pending") return ["Undo Window", "warn"];
   if (composeAssetUploadInProgress()) return ["Uploading", "muted"];
   if (composeAssetHasFailed()) return ["Attachment failed", "error"];
   if (state.compose.draftSaving) return ["Saving", "muted"];
@@ -3850,10 +3920,12 @@ function buildDraftMessageSummary(draft) {
   let contextBadge = composeDraftContextLabel(draft?.compose_mode);
   if (draftStatus === "scheduled") {
     contextBadge = "Scheduled";
+  } else if (draftStatus === "undo_pending") {
+    contextBadge = "Undo Window";
   } else if (draftStatus === "failed") {
     contextBadge = "Failed";
   }
-  const previewText = draftStatus === "scheduled" && draft?.scheduled_for
+  const previewText = (draftStatus === "scheduled" || draftStatus === "undo_pending") && draft?.scheduled_for
     ? `Sends ${formatDate(draft.scheduled_for)}`
     : bodyText;
   return {
@@ -4130,7 +4202,7 @@ function isAppDraftMailboxName(name) {
 async function loadDrafts(opts = {}) {
   if (!state.user) return [];
   const payload = await api("/api/v2/drafts?page=1&page_size=100", { logErrors: opts.logErrors });
-  state.mail.drafts = Array.isArray(payload?.items) ? payload.items : [];
+  state.mail.drafts = (Array.isArray(payload?.items) ? payload.items : []).filter((item) => includeDraftInMailboxList(item));
   renderMailboxes();
   return state.mail.drafts;
 }
@@ -5376,6 +5448,7 @@ function openUIModal(options) {
     trigger = null,
     documentText = "",
     hideCancel = false,
+    multiline = false,
   } = options || {};
 
   state.ui.modalOpen = true;
@@ -5388,6 +5461,9 @@ function openUIModal(options) {
   el.uiModalInputLabel.textContent = inputLabel;
   el.uiModalInput.type = inputType;
   el.uiModalInput.value = inputValue;
+  if (el.uiModalTextarea) {
+    el.uiModalTextarea.value = inputValue;
+  }
   if (el.uiModalSelect) {
     el.uiModalSelect.replaceChildren();
     for (const optionLike of Array.isArray(selectOptions) ? selectOptions : []) {
@@ -5417,6 +5493,8 @@ function openUIModal(options) {
     }
   }
   const hasInput = mode === "prompt";
+  const hasTextarea = hasInput && multiline === true;
+  const hasTextInput = hasInput && !hasTextarea;
   const hasSelect = mode === "select";
   const hasDocument = mode === "document" || String(documentText || "") !== "";
   if (el.uiModalCard) {
@@ -5427,7 +5505,10 @@ function openUIModal(options) {
   }
   el.uiModalInputWrap.classList.toggle("hidden", !hasInput && !hasSelect);
   if (el.uiModalInput) {
-    el.uiModalInput.classList.toggle("hidden", !hasInput);
+    el.uiModalInput.classList.toggle("hidden", !hasTextInput);
+  }
+  if (el.uiModalTextarea) {
+    el.uiModalTextarea.classList.toggle("hidden", !hasTextarea);
   }
   if (el.uiModalSelect) {
     el.uiModalSelect.classList.toggle("hidden", !hasSelect);
@@ -5443,7 +5524,8 @@ function openUIModal(options) {
   el.uiModalOverlay.setAttribute("aria-hidden", "false");
   document.body.style.overflow = "hidden";
   window.setTimeout(() => {
-    if (hasInput) el.uiModalInput.focus();
+    if (hasTextarea && el.uiModalTextarea) el.uiModalTextarea.focus();
+    else if (hasTextInput) el.uiModalInput.focus();
     else if (hasSelect && el.uiModalSelect) el.uiModalSelect.focus();
     else el.uiModalConfirm.focus();
   }, 0);
@@ -5466,6 +5548,7 @@ async function showPromptModal(opts) {
     confirmText: opts?.confirmText || "Confirm",
     cancelText: opts?.cancelText || "Cancel",
     trigger: opts?.trigger || null,
+    multiline: opts?.multiline === true,
   });
   if (!out || !out.confirmed) return null;
   return String(out.value || "");
@@ -7331,6 +7414,9 @@ function showView(name) {
 
   if (name === "mail") {
     startMailPolling();
+    window.requestAnimationFrame(() => {
+      syncMailPaneLayout();
+    });
   } else {
     stopMailPolling();
   }
@@ -7339,6 +7425,270 @@ function showView(name) {
 
 function isMobileLayout() {
   return window.matchMedia("(max-width: 980px)").matches;
+}
+
+function isDesktopMailLayout() {
+  return !isMobileLayout();
+}
+
+function readMailPaneCSSPixels(name, fallback) {
+  if (!el.mailLayout) return fallback;
+  const raw = getComputedStyle(el.mailLayout).getPropertyValue(name).trim();
+  const value = Number.parseFloat(raw);
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function readMailPaneSplittersWidth() {
+  const splitterWidth = readMailPaneCSSPixels("--mail-pane-splitter-w", 12);
+  return splitterWidth * 2;
+}
+
+function readMailPaneMinimums() {
+  const mailboxHeaderMin = Math.ceil(el.mailPaneMailboxes?.querySelector(".mailbox-pane-head")?.scrollWidth || 0);
+  return {
+    mailbox: Math.max(mailPaneSizingMinimums.mailbox, mailboxHeaderMin),
+    message: Math.max(mailPaneSizingMinimums.message, readMailPaneCSSPixels("--mail-layout-messages-min-w", mailPaneSizingMinimums.message)),
+    reader: Math.max(mailPaneSizingMinimums.reader, readMailPaneCSSPixels("--mail-layout-reader-min-w", mailPaneSizingMinimums.reader)),
+  };
+}
+
+function readCurrentMailPaneWidths() {
+  return {
+    mailbox: Math.round(el.mailPaneMailboxes?.getBoundingClientRect().width || 0),
+    message: Math.round(el.mailPaneMessages?.getBoundingClientRect().width || 0),
+  };
+}
+
+function readAvailableMailPaneWidth() {
+  if (!el.mailLayout) return 0;
+  return Math.max(0, Math.round(el.mailLayout.getBoundingClientRect().width) - readMailPaneSplittersWidth());
+}
+
+function clampMailPaneWidths(widths) {
+  const available = readAvailableMailPaneWidth();
+  const minimums = readMailPaneMinimums();
+  if (!available) {
+    return {
+      mailbox: Math.max(minimums.mailbox, Math.round(widths.mailbox || mailPaneSizingDefaults.mailbox)),
+      message: Math.max(minimums.message, Math.round(widths.message || mailPaneSizingDefaults.message)),
+    };
+  }
+
+  const maxMailbox = Math.max(minimums.mailbox, available - minimums.message - minimums.reader);
+  let mailbox = Math.round(widths.mailbox || mailPaneSizingDefaults.mailbox);
+  mailbox = Math.min(Math.max(mailbox, minimums.mailbox), maxMailbox);
+
+  const maxMessage = Math.max(minimums.message, available - mailbox - minimums.reader);
+  let message = Math.round(widths.message || mailPaneSizingDefaults.message);
+  message = Math.min(Math.max(message, minimums.message), maxMessage);
+
+  if (mailbox + message > available - minimums.reader) {
+    message = Math.max(minimums.message, available - mailbox - minimums.reader);
+  }
+
+  return { mailbox, message };
+}
+
+function persistMailPaneWidths(widths) {
+  try {
+    localStorage.setItem(mailPaneSizingStorageKey, JSON.stringify(widths));
+  } catch {}
+}
+
+function restoreSavedMailPaneWidths() {
+  try {
+    const raw = localStorage.getItem(mailPaneSizingStorageKey);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    const mailbox = Number(parsed?.mailbox || 0);
+    const message = Number(parsed?.message || 0);
+    if (!Number.isFinite(mailbox) || !Number.isFinite(message) || mailbox <= 0 || message <= 0) return null;
+    return { mailbox, message };
+  } catch {
+    return null;
+  }
+}
+
+function applyMailPaneWidths(widths, options = {}) {
+  if (!el.mailLayout) return null;
+  if (!isDesktopMailLayout()) {
+    el.mailLayout.classList.remove("is-resizing");
+    return null;
+  }
+  const next = clampMailPaneWidths(widths);
+  el.mailLayout.style.setProperty("--mail-layout-mailboxes-w", `${next.mailbox}px`);
+  el.mailLayout.style.setProperty("--mail-layout-messages-w", `${next.message}px`);
+  if (options.persist !== false) {
+    persistMailPaneWidths(next);
+  }
+  syncMailPaneSplitterAccessibility(next);
+  return next;
+}
+
+function syncMailPaneLayout(options = {}) {
+  if (!el.mailLayout || !isDesktopMailLayout()) return;
+  if (el.viewMail?.classList.contains("hidden")) return;
+  const current = readCurrentMailPaneWidths();
+  const saved = options.reset ? null : restoreSavedMailPaneWidths();
+  const seed = saved || {
+    mailbox: current.mailbox || mailPaneSizingDefaults.mailbox,
+    message: current.message || mailPaneSizingDefaults.message,
+  };
+  applyMailPaneWidths(seed, { persist: options.persist !== false });
+}
+
+function syncMailPaneSplitterAccessibility(widths = readCurrentMailPaneWidths()) {
+  const available = readAvailableMailPaneWidth();
+  const minimums = readMailPaneMinimums();
+  const mailboxMax = Math.max(minimums.mailbox, available - minimums.message - minimums.reader);
+  const messageMax = Math.max(minimums.message, available - Math.round(widths.mailbox || 0) - minimums.reader);
+
+  if (el.mailSplitterMailboxes) {
+    el.mailSplitterMailboxes.setAttribute("aria-valuemin", String(minimums.mailbox));
+    el.mailSplitterMailboxes.setAttribute("aria-valuemax", String(mailboxMax));
+    el.mailSplitterMailboxes.setAttribute("aria-valuenow", String(Math.round(widths.mailbox || minimums.mailbox)));
+  }
+  if (el.mailSplitterMessages) {
+    el.mailSplitterMessages.setAttribute("aria-valuemin", String(minimums.message));
+    el.mailSplitterMessages.setAttribute("aria-valuemax", String(messageMax));
+    el.mailSplitterMessages.setAttribute("aria-valuenow", String(Math.round(widths.message || minimums.message)));
+  }
+}
+
+function stopMailPaneResize() {
+  if (!mailPaneSizing.activeHandle) return;
+  const activeNode = mailPaneSizing.activeHandle === "mailboxes" ? el.mailSplitterMailboxes : el.mailSplitterMessages;
+  if (activeNode) activeNode.classList.remove("is-active");
+  el.mailLayout?.classList.remove("is-resizing");
+  document.body.style.userSelect = "";
+  mailPaneSizing.activeHandle = "";
+  mailPaneSizing.pointerId = null;
+}
+
+function updateMailPaneResize(clientX) {
+  if (!mailPaneSizing.activeHandle) return;
+  const delta = Math.round(clientX - mailPaneSizing.startX);
+  if (mailPaneSizing.activeHandle === "mailboxes") {
+    applyMailPaneWidths({
+      mailbox: mailPaneSizing.startMailboxWidth + delta,
+      message: mailPaneSizing.startMessageWidth - delta,
+    });
+    return;
+  }
+  applyMailPaneWidths({
+    mailbox: mailPaneSizing.startMailboxWidth,
+    message: mailPaneSizing.startMessageWidth + delta,
+  });
+}
+
+function startMailPaneResize(handle, event) {
+  if (!isDesktopMailLayout() || !el.mailLayout) return;
+  const current = readCurrentMailPaneWidths();
+  if (!current.mailbox || !current.message) return;
+  mailPaneSizing.activeHandle = handle;
+  mailPaneSizing.pointerId = typeof event.pointerId === "number" ? event.pointerId : null;
+  mailPaneSizing.startX = event.clientX;
+  mailPaneSizing.startMailboxWidth = current.mailbox;
+  mailPaneSizing.startMessageWidth = current.message;
+  el.mailLayout.classList.add("is-resizing");
+  document.body.style.userSelect = "none";
+  const activeNode = handle === "mailboxes" ? el.mailSplitterMailboxes : el.mailSplitterMessages;
+  if (activeNode) {
+    activeNode.classList.add("is-active");
+    if (typeof activeNode.setPointerCapture === "function" && typeof event.pointerId === "number") {
+      try {
+        activeNode.setPointerCapture(event.pointerId);
+      } catch {}
+    }
+  }
+}
+
+function nudgeMailPane(handle, delta) {
+  const current = readCurrentMailPaneWidths();
+  if (!current.mailbox || !current.message) return;
+  if (handle === "mailboxes") {
+    applyMailPaneWidths({
+      mailbox: current.mailbox + delta,
+      message: current.message - delta,
+    });
+    return;
+  }
+  applyMailPaneWidths({
+    mailbox: current.mailbox,
+    message: current.message + delta,
+  });
+}
+
+function bindMailPaneResizers() {
+  const bindings = [
+    [el.mailSplitterMailboxes, "mailboxes"],
+    [el.mailSplitterMessages, "messages"],
+  ];
+  bindings.forEach(([node, handle]) => {
+    if (!node) return;
+    node.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      startMailPaneResize(handle, event);
+    });
+    node.addEventListener("pointermove", (event) => {
+      if (mailPaneSizing.activeHandle !== handle) return;
+      updateMailPaneResize(event.clientX);
+    });
+    node.addEventListener("pointerup", () => {
+      stopMailPaneResize();
+    });
+    node.addEventListener("pointercancel", () => {
+      stopMailPaneResize();
+    });
+    node.addEventListener("keydown", (event) => {
+      if (!isDesktopMailLayout()) return;
+      const step = event.shiftKey ? 48 : 24;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        nudgeMailPane(handle, -step);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        nudgeMailPane(handle, step);
+      } else if (event.key === "Home") {
+        event.preventDefault();
+        const minimums = readMailPaneMinimums();
+        if (handle === "mailboxes") {
+          applyMailPaneWidths({
+            mailbox: minimums.mailbox,
+            message: readCurrentMailPaneWidths().message,
+          });
+        } else {
+          applyMailPaneWidths({
+            mailbox: readCurrentMailPaneWidths().mailbox,
+            message: minimums.message,
+          });
+        }
+      } else if (event.key === "End") {
+        event.preventDefault();
+        const available = readAvailableMailPaneWidth();
+        const minimums = readMailPaneMinimums();
+        const current = readCurrentMailPaneWidths();
+        if (handle === "mailboxes") {
+          applyMailPaneWidths({
+            mailbox: available - minimums.message - minimums.reader,
+            message: current.message,
+          });
+        } else {
+          applyMailPaneWidths({
+            mailbox: current.mailbox,
+            message: available - current.mailbox - minimums.reader,
+          });
+        }
+      }
+    });
+  });
+  window.addEventListener("pointerup", () => {
+    stopMailPaneResize();
+  });
+  window.addEventListener("pointercancel", () => {
+    stopMailPaneResize();
+  });
 }
 
 function captureScrollPosition(node) {
@@ -10280,6 +10630,302 @@ function renderMailSettingsFunnelDetail() {
   });
 }
 
+function selectedMailSnippet() {
+  const id = String(state.settings.mail.selectedSnippetID || "").trim();
+  if (!id) return null;
+  return (Array.isArray(state.settings.mail.snippets) ? state.settings.mail.snippets : [])
+    .find((item) => String(item?.id || "").trim() === id) || null;
+}
+
+function snippetPreviewText(item) {
+  const body = String(item?.body || "").replace(/\s+/g, " ").trim();
+  if (!body) return String(item?.subject || "").trim() || "Empty snippet";
+  return body.length > 88 ? `${body.slice(0, 85).trimEnd()}...` : body;
+}
+
+async function loadMailSnippets(opts = {}) {
+  const payload = await api("/api/v2/mail/snippets", { logErrors: opts.logErrors });
+  state.settings.mail.snippets = Array.isArray(payload?.items) ? payload.items : [];
+  if (!state.settings.mail.snippets.some((item) => String(item?.id || "") === String(state.settings.mail.selectedSnippetID || ""))) {
+    state.settings.mail.selectedSnippetID = String(state.settings.mail.snippets[0]?.id || "");
+  }
+  renderMailSnippetList();
+  renderMailSnippetDetail();
+  return state.settings.mail.snippets;
+}
+
+async function ensureMailSnippetsLoaded(opts = {}) {
+  if (Array.isArray(state.settings.mail.snippets) && state.settings.mail.snippets.length > 0 && opts.force !== true) {
+    return state.settings.mail.snippets;
+  }
+  return loadMailSnippets({ logErrors: opts.logErrors });
+}
+
+function snippetBodyHTML(snippet) {
+  const source = String(snippet?.body || "").replace(/\r\n/g, "\n").trim();
+  if (!source) return "";
+  return source
+    .split(/\n{2,}/)
+    .map((block) => `<p>${escapeHtml(block).replace(/\n/g, "<br>")}</p>`)
+    .join("");
+}
+
+function insertSnippetIntoComposeHTMLSource(htmlFragment) {
+  const fragmentHTML = String(htmlFragment || "").trim();
+  if (!fragmentHTML) return;
+  const ctx = parseComposeHTMLSourceDocument(composeHTMLSourceValue());
+  const container = ctx?.container || ctx?.doc?.body || ctx?.doc?.documentElement || null;
+  if (!container || !ctx?.doc) return;
+  const anchor = container.querySelector?.('[data-compose-signature="true"], [data-compose-quoted]') || null;
+  const wrap = ctx.doc.createElement("div");
+  wrap.innerHTML = fragmentHTML;
+  const fragment = ctx.doc.createDocumentFragment();
+  while (wrap.firstChild) {
+    fragment.appendChild(wrap.firstChild);
+  }
+  if (anchor?.parentNode) {
+    anchor.parentNode.insertBefore(fragment, anchor);
+  } else {
+    container.appendChild(fragment);
+  }
+  applyComposeHTMLSourceValue(serializeComposeHTMLSourceDocument(ctx), {
+    previewImmediate: true,
+    queueSave: true,
+  });
+}
+
+async function insertSnippetIntoCompose(snippet, trigger = null) {
+  if (!snippet) {
+    throw new Error("Choose a snippet first.");
+  }
+  if (!state.ui.composeOpen) {
+    await openComposeWithActiveFunnel(trigger || el.btnComposeSnippets || el.btnComposeOpen || null);
+  }
+  const snippetSubject = String(snippet?.subject || "").trim();
+  if (snippetSubject && el.composeSubjectInput && !String(el.composeSubjectInput.value || "").trim()) {
+    el.composeSubjectInput.value = snippetSubject;
+  }
+  const htmlFragment = snippetBodyHTML(snippet);
+  if (htmlFragment) {
+    if (composeBodyUsesHTMLMode()) {
+      insertSnippetIntoComposeHTMLSource(htmlFragment);
+    } else {
+      const selection = window.getSelection();
+      const hasEditorSelection = !!selection && !!el.composeEditor && el.composeEditor.contains(selection.anchorNode);
+      if (!hasEditorSelection) {
+        focusComposeEditorForComposeStart();
+      }
+      insertComposeHTMLAtCaret(htmlFragment);
+      queueComposeDraftSave();
+    }
+  } else {
+    syncComposeDraftFields();
+    queueComposeDraftSave();
+    updateComposeSubmitState();
+  }
+  setComposeDraftNote(`Inserted snippet ${String(snippet?.name || "snippet").trim() || "snippet"}.`, "ok");
+}
+
+async function promptMailSnippetFields(current = null, trigger = null) {
+  const currentItem = current && typeof current === "object" ? current : {};
+  const name = await showPromptModal({
+    title: current ? "Edit Snippet" : "New Snippet",
+    body: "Choose a short internal name for this reusable block.",
+    label: "Snippet name",
+    defaultValue: String(currentItem?.name || "").trim(),
+    confirmText: "Next",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (name === null) return null;
+  const subject = await showPromptModal({
+    title: "Snippet Subject",
+    body: "Optional. Leave blank if this snippet only inserts body text.",
+    label: "Subject",
+    defaultValue: String(currentItem?.subject || "").trim(),
+    confirmText: "Next",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (subject === null) return null;
+  const body = await showPromptModal({
+    title: "Snippet Body",
+    body: "Write the text that should be inserted into compose.",
+    label: "Body",
+    defaultValue: String(currentItem?.body || ""),
+    confirmText: current ? "Save" : "Create",
+    cancelText: "Cancel",
+    trigger,
+    multiline: true,
+  });
+  if (body === null) return null;
+  return {
+    name: String(name || "").trim(),
+    subject: String(subject || "").trim(),
+    body: String(body || ""),
+  };
+}
+
+async function createMailSnippet(trigger = null) {
+  const payload = await promptMailSnippetFields(null, trigger);
+  if (!payload) return;
+  const saved = await api("/api/v2/mail/snippets", {
+    method: "POST",
+    json: payload,
+    logErrors: false,
+  });
+  state.settings.mail.selectedSnippetID = String(saved?.id || "").trim();
+  await loadMailSnippets({ logErrors: false });
+  setMailSettingsNote("Snippet created.", "ok");
+}
+
+async function updateMailSnippet(trigger = null) {
+  const current = selectedMailSnippet();
+  if (!current) {
+    throw new Error("Choose a snippet first.");
+  }
+  const payload = await promptMailSnippetFields(current, trigger);
+  if (!payload) return;
+  const saved = await api(`/api/v2/mail/snippets/${encodeURIComponent(String(current.id || "").trim())}`, {
+    method: "PATCH",
+    json: payload,
+    logErrors: false,
+  });
+  state.settings.mail.selectedSnippetID = String(saved?.id || current.id || "").trim();
+  await loadMailSnippets({ logErrors: false });
+  setMailSettingsNote("Snippet updated.", "ok");
+}
+
+async function deleteMailSnippet(trigger = null) {
+  const current = selectedMailSnippet();
+  if (!current) {
+    throw new Error("Choose a snippet first.");
+  }
+  const confirmed = await showConfirmModal({
+    title: "Delete snippet?",
+    body: `${String(current.name || "This snippet")} will be removed from compose.`,
+    confirmText: "Delete",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (!confirmed) return;
+  await api(`/api/v2/mail/snippets/${encodeURIComponent(String(current.id || "").trim())}`, {
+    method: "DELETE",
+    json: {},
+    logErrors: false,
+  });
+  state.settings.mail.selectedSnippetID = "";
+  await loadMailSnippets({ logErrors: false });
+  setMailSettingsNote("Snippet deleted.", "ok");
+}
+
+function renderMailSnippetList() {
+  if (!el.settingsMailSnippetList) return;
+  const items = Array.isArray(state.settings.mail.snippets) ? state.settings.mail.snippets : [];
+  el.settingsMailSnippetList.replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = "No snippets saved yet.";
+    el.settingsMailSnippetList.appendChild(empty);
+    renderMailSnippetDetail();
+    return;
+  }
+  for (const item of items) {
+    const id = String(item?.id || "").trim();
+    const meta = [];
+    if (String(item?.subject || "").trim()) meta.push(`Subject: ${String(item.subject || "").trim()}`);
+    meta.push(snippetPreviewText(item));
+    const row = renderListItem({
+      active: id === String(state.settings.mail.selectedSnippetID || "").trim(),
+      markerClass: "status-chip status-chip--info",
+      markerText: "Snippet",
+      title: String(item?.name || "Snippet").trim(),
+      meta: meta.filter(Boolean).join(" • "),
+      onSelect: () => {
+        state.settings.mail.selectedSnippetID = id;
+        renderMailSnippetList();
+        renderMailSnippetDetail();
+      },
+    });
+    el.settingsMailSnippetList.appendChild(row);
+  }
+  renderMailSnippetDetail();
+}
+
+function renderMailSnippetDetail() {
+  if (!el.settingsMailSnippetDetail) return;
+  const snippet = selectedMailSnippet();
+  if (!snippet) {
+    renderPlaceholderDetail(el.settingsMailSnippetDetail, {
+      title: "Select a snippet",
+      body: "Choose a saved snippet to review it, edit it, or reuse it in compose.",
+      actions: [{
+        label: "New Snippet",
+        className: "cmd-btn cmd-btn--dense cmd-btn--primary",
+        onClick: () => {
+          void createMailSnippet(el.btnSettingsMailSnippetNew).catch((err) => {
+            setMailSettingsNote(formatAPIError(err, "Failed to create snippet."), "error");
+          });
+        },
+      }],
+    });
+    return;
+  }
+  renderDetailView(el.settingsMailSnippetDetail, snippet, (detail, item) => {
+    const title = document.createElement("h4");
+    title.textContent = String(item.name || "Snippet").trim();
+    detail.appendChild(title);
+    const intro = document.createElement("p");
+    intro.className = "hint";
+    intro.textContent = "Snippets can drop reusable text into the current compose window without rebuilding the whole message.";
+    detail.appendChild(intro);
+    appendDetailFact(detail, "Subject", String(item.subject || "").trim() || "No subject preset");
+    const bodyWrap = document.createElement("pre");
+    bodyWrap.className = "ui-modal-document";
+    bodyWrap.style.minHeight = "0";
+    bodyWrap.style.maxHeight = "280px";
+    bodyWrap.textContent = String(item.body || "");
+    detail.appendChild(bodyWrap);
+    const actions = document.createElement("div");
+    actions.className = "settings-detail-actions";
+    const insertBtn = document.createElement("button");
+    insertBtn.type = "button";
+    insertBtn.className = "cmd-btn cmd-btn--dense";
+    insertBtn.textContent = "Insert in Compose";
+    insertBtn.addEventListener("click", async () => {
+      await insertSnippetIntoCompose(item);
+      setMailSettingsNote("Snippet inserted into compose.", "ok");
+    });
+    actions.appendChild(insertBtn);
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "cmd-btn cmd-btn--dense";
+    editBtn.textContent = "Edit Snippet";
+    editBtn.addEventListener("click", async () => {
+      try {
+        await updateMailSnippet(editBtn);
+      } catch (err) {
+        setMailSettingsNote(formatAPIError(err, "Failed to update snippet."), "error");
+      }
+    });
+    actions.appendChild(editBtn);
+    const deleteBtn = document.createElement("button");
+    deleteBtn.type = "button";
+    deleteBtn.className = "cmd-btn cmd-btn--dense cmd-btn--danger";
+    deleteBtn.textContent = "Delete Snippet";
+    deleteBtn.addEventListener("click", async () => {
+      try {
+        await deleteMailSnippet(deleteBtn);
+      } catch (err) {
+        setMailSettingsNote(formatAPIError(err, "Failed to delete snippet."), "error");
+      }
+    });
+    actions.appendChild(deleteBtn);
+    detail.appendChild(actions);
+  });
+}
+
 function renderMailSettingsAccountList() {
   if (!el.settingsMailAccountList) return;
   const items = Array.isArray(state.settings.mail.accounts) ? state.settings.mail.accounts : [];
@@ -10526,17 +11172,19 @@ async function loadMailSettingsSenders() {
 }
 
 async function loadMailSettingsSection() {
-  const [providersPayload, accountsPayload, sendersPayload, funnelsPayload, triageCatalog] = await Promise.all([
+  const [providersPayload, accountsPayload, sendersPayload, funnelsPayload, snippetsPayload, triageCatalog] = await Promise.all([
     api("/api/v2/mail/providers", { logErrors: false }),
     api("/api/v2/accounts", { logErrors: false }),
     api("/api/v2/mail/senders", { logErrors: false }),
     api("/api/v2/funnels", { logErrors: false }),
+    api("/api/v2/mail/snippets", { logErrors: false }).catch(() => ({ items: [] })),
     ensureMailTriageCatalogLoaded({ logErrors: false }),
   ]);
   state.settings.mail.providers = Array.isArray(providersPayload?.items) ? providersPayload.items : [];
   state.settings.mail.accounts = Array.isArray(accountsPayload.items) ? accountsPayload.items : [];
   state.settings.mail.senders = Array.isArray(sendersPayload.items) ? sendersPayload.items : [];
   state.settings.mail.funnels = Array.isArray(funnelsPayload?.items) ? funnelsPayload.items : [];
+  state.settings.mail.snippets = Array.isArray(snippetsPayload?.items) ? snippetsPayload.items : [];
   syncMailTriageCatalogState(triageCatalog || currentMailTriageCatalog());
   state.settings.mail.defaultSenderID = String(state.settings.mail.senders.find((item) => item?.is_default)?.id || "").trim();
   if (!state.settings.mail.accounts.some((item) => String(item.id || "") === state.settings.mail.selectedAccountID)) {
@@ -10551,6 +11199,9 @@ async function loadMailSettingsSection() {
   if (!state.settings.mail.funnels.some((item) => String(item.id || "") === state.settings.mail.selectedFunnelID)) {
     state.settings.mail.selectedFunnelID = String(state.settings.mail.funnels[0]?.id || "");
   }
+  if (!state.settings.mail.snippets.some((item) => String(item.id || "") === state.settings.mail.selectedSnippetID)) {
+    state.settings.mail.selectedSnippetID = String(state.settings.mail.snippets[0]?.id || "");
+  }
   if (state.settings.mail.accountEditorOpen) {
     fillMailSettingsAccountForm(selectedMailSettingsAccount());
   }
@@ -10563,16 +11214,18 @@ async function loadMailSettingsSection() {
   renderMailSettingsAccountList();
   renderMailSettingsSenderList();
   renderMailSettingsFunnelList();
+  renderMailSnippetList();
   renderMailTriageSettingsLists();
   renderMailSettingsAccountDetail();
   renderMailSettingsSenderDetail();
   renderMailSettingsFunnelDetail();
+  renderMailSnippetDetail();
   if (!state.settings.mail.rulesAccountID || !state.settings.mail.accounts.some((item) => String(item?.id || "") === state.settings.mail.rulesAccountID)) {
     state.settings.mail.rulesAccountID = mailSettingsSelectedDefaultAccountID();
   }
   populateMailRulesAccountSelect();
   await loadMailRulesSection(state.settings.mail.rulesAccountID);
-  setMailSettingsNote("Manage accounts, senders, funnels, rules, junk handling, and default delivery here.", "info");
+  setMailSettingsNote("Manage accounts, senders, snippets, funnels, rules, junk handling, and default delivery here.", "info");
 }
 
 async function checkMailSettingsAccountConnection() {
@@ -12295,8 +12948,12 @@ function mailboxCanDelete(mailbox) {
   return !!(mailbox?.can_delete ?? mailbox?.canDelete);
 }
 
+function mailboxCanFavorite(mailbox) {
+  return !!mailboxFavoritePayload(mailbox);
+}
+
 function mailboxHasManagementActions(mailbox) {
-  return mailboxCanRename(mailbox) || mailboxCanDelete(mailbox);
+  return mailboxCanFavorite(mailbox) || mailboxCanRename(mailbox) || mailboxCanDelete(mailbox);
 }
 
 function mailboxRecordByName(name) {
@@ -12540,6 +13197,439 @@ function selectedSavedSearchRecord() {
   if (!id) return null;
   return (Array.isArray(state.mail.savedSearches) ? state.mail.savedSearches : [])
     .find((item) => String(item?.id || "") === id) || null;
+}
+
+function mailFavoriteItems() {
+  return Array.isArray(state.mail.favorites) ? state.mail.favorites : [];
+}
+
+function favoriteFingerprintClient(item) {
+  const kind = String(item?.kind || "").trim().toLowerCase();
+  const accountScope = String(item?.account_scope || item?.accountScope || "account").trim().toLowerCase() === "all" ? "all" : "account";
+  const accountID = String(item?.account_id || item?.accountId || "").trim().toLowerCase();
+  if (kind === "mailbox") {
+    return [kind, accountScope, accountID, String(item?.mailbox || "").trim().toLowerCase()].join("|");
+  }
+  if (kind === "saved_view") {
+    return [kind, String(item?.saved_search_id || item?.savedSearchID || "").trim().toLowerCase()].join("|");
+  }
+  if (kind === "smart_view") {
+    return [kind, accountScope, accountID, String(item?.smart_view || item?.smartView || "").trim().toLowerCase()].join("|");
+  }
+  if (kind === "sender") {
+    return [kind, accountScope, accountID, String(item?.sender || "").trim().toLowerCase()].join("|");
+  }
+  if (kind === "domain") {
+    return [kind, accountScope, accountID, String(item?.domain || "").trim().toLowerCase()].join("|");
+  }
+  if (kind === "thread") {
+    return [kind, accountID, String(item?.thread_id || item?.threadId || "").trim().toLowerCase()].join("|");
+  }
+  if (kind === "message") {
+    return [kind, accountID, String(item?.message_id || item?.messageId || "").trim().toLowerCase()].join("|");
+  }
+  return [kind, String(item?.id || "").trim().toLowerCase()].join("|");
+}
+
+function favoriteRecordForPayload(payload) {
+  const fingerprint = favoriteFingerprintClient(payload);
+  return mailFavoriteItems().find((item) => favoriteFingerprintClient(item) === fingerprint) || null;
+}
+
+function visibleMailFavorites() {
+  return mailFavoriteItems().filter((item) => {
+    const kind = String(item?.kind || "").trim().toLowerCase();
+    if (kind === "saved_view") {
+      const savedID = String(item?.saved_search_id || item?.savedSearchID || "").trim();
+      return !!savedID && !!((Array.isArray(state.mail.savedSearches) ? state.mail.savedSearches : [])
+        .find((entry) => String(entry?.id || "").trim() === savedID));
+    }
+    return true;
+  });
+}
+
+function favoriteDisplayMeta(item) {
+  const kind = String(item?.kind || "").trim().toLowerCase();
+  if (kind === "mailbox") {
+    const scope = String(item?.account_scope || item?.accountScope || "account").trim().toLowerCase();
+    if (scope === "all") return "Favorite folder · all accounts";
+    const accountID = String(item?.account_id || item?.accountId || "").trim();
+    return accountID ? `Favorite folder · ${indexedAccountLabel(accountID)}` : "Favorite folder";
+  }
+  if (kind === "saved_view") return "Saved view";
+  if (kind === "smart_view") return "Smart view";
+  if (kind === "sender") return "Pinned sender";
+  if (kind === "domain") return "Pinned domain";
+  if (kind === "thread") return "Pinned conversation";
+  if (kind === "message") return "Pinned message";
+  return "Favorite";
+}
+
+function favoriteNavKey(item) {
+  const kind = String(item?.kind || "").trim().toLowerCase();
+  if (kind === "mailbox") return mailNavKeyForMailbox(item?.mailbox || "");
+  if (kind === "saved_view") return mailNavKeyForSaved(item?.saved_search_id || item?.savedSearchID || "");
+  if (kind === "smart_view") return mailNavKeyForSmart(item?.smart_view || item?.smartView || "");
+  return `favorite:${String(item?.id || "").trim()}`;
+}
+
+function favoriteAccountScope(item) {
+  return String(item?.account_scope || item?.accountScope || "account").trim().toLowerCase() === "all" ? "all" : "account";
+}
+
+function favoriteAccountID(item) {
+  return String(item?.account_id || item?.accountId || "").trim();
+}
+
+function favoriteScopeMatchesCurrent(item) {
+  const scope = favoriteAccountScope(item);
+  if (scope === "all") {
+    return currentMailScope() === "all";
+  }
+  if (currentMailScope() !== "account") {
+    return false;
+  }
+  const accountID = favoriteAccountID(item);
+  if (!accountID) return true;
+  const currentAccountID = currentIndexedAccountID();
+  return !currentAccountID || currentAccountID === accountID;
+}
+
+function favoriteMatchesCurrentView(item) {
+  if (!item) return false;
+  const kind = String(item?.kind || "").trim().toLowerCase();
+  if (kind === "mailbox") {
+    return state.mail.viewKind === "mailbox"
+      && favoriteScopeMatchesCurrent(item)
+      && mailboxNameMatches(item?.mailbox, state.mailbox);
+  }
+  if (kind === "saved_view") {
+    return state.mail.viewKind === "saved"
+      && String(item?.saved_search_id || item?.savedSearchID || "").trim() === String(state.mail.savedSearchID || "").trim();
+  }
+  if (kind === "smart_view") {
+    return state.mail.viewKind === "smart"
+      && favoriteScopeMatchesCurrent(item)
+      && String(item?.smart_view || item?.smartView || "").trim().toLowerCase() === String(state.mail.smartView || "").trim().toLowerCase();
+  }
+  if (kind === "sender") {
+    return favoriteScopeMatchesCurrent(item)
+      && state.mail.viewKind === "mailbox"
+      && !String(state.mail.searchQuery || "").trim()
+      && !hasAppliedAdvancedMailFiltersExcept(["from"])
+      && String(state.mail.filters.from || "").trim().toLowerCase() === String(item?.sender || "").trim().toLowerCase();
+  }
+  if (kind === "domain") {
+    return favoriteScopeMatchesCurrent(item)
+      && state.mail.viewKind === "mailbox"
+      && !String(state.mail.searchQuery || "").trim()
+      && !hasAppliedAdvancedMailFiltersExcept(["from"])
+      && String(state.mail.filters.from || "").trim().toLowerCase() === String(item?.domain || "").trim().toLowerCase();
+  }
+  if (kind === "thread") {
+    const selectedThreadID = String(state.selectedMessage?.thread_id || state.selectedMessageSummary?.thread_id || "").trim();
+    const favoriteThreadID = String(item?.thread_id || item?.threadId || "").trim();
+    return selectedThreadID !== "" && selectedThreadID === favoriteThreadID;
+  }
+  if (kind === "message") {
+    return String(state.selectedMessage?.id || "").trim() === String(item?.message_id || item?.messageId || "").trim();
+  }
+  return false;
+}
+
+function currentViewFavoritePayload() {
+  if (state.mail.viewKind === "saved") {
+    const saved = selectedSavedSearchRecord();
+    if (!saved) return null;
+    return {
+      kind: "saved_view",
+      label: String(saved?.name || "Saved View").trim(),
+      saved_search_id: String(saved?.id || "").trim(),
+      account_id: String(saved?.account_id || "").trim(),
+      account_scope: currentMailScope(),
+    };
+  }
+  if (state.mail.viewKind === "smart" && String(state.mail.smartView || "").trim()) {
+    return {
+      kind: "smart_view",
+      label: currentMailViewLabel(),
+      smart_view: String(state.mail.smartView || "").trim(),
+      account_id: currentMailScope() === "account" ? currentIndexedAccountID() : "",
+      account_scope: currentMailScope(),
+    };
+  }
+  if (isDraftsMailboxSelected()) return null;
+  return {
+    kind: "mailbox",
+    label: currentMailViewLabel(),
+    mailbox: String(state.mailbox || "INBOX").trim(),
+    account_id: currentMailScope() === "account" ? currentIndexedAccountID() : "",
+    account_scope: currentMailScope(),
+  };
+}
+
+function currentViewFavoriteRecord() {
+  const payload = currentViewFavoritePayload();
+  return payload ? favoriteRecordForPayload(payload) : null;
+}
+
+function mailboxFavoritePayload(entry) {
+  const mailboxName = String(entry?.name || "").trim();
+  if (!mailboxName || normalizeMailboxRole(entry?.role, entry?.name) === "drafts" || isAppDraftMailboxName(mailboxName)) {
+    return null;
+  }
+  const accountScope = currentMailScope();
+  return {
+    kind: "mailbox",
+    label: mailboxDisplayLabel(entry),
+    mailbox: mailboxName,
+    account_scope: accountScope,
+    account_id: accountScope === "account" ? currentIndexedAccountID() : "",
+  };
+}
+
+function mailboxFavoriteRecord(entry) {
+  const payload = mailboxFavoritePayload(entry);
+  return payload ? favoriteRecordForPayload(payload) : null;
+}
+
+function mailSenderDomain(value) {
+  const sender = extractPrimaryEmailAddress(value);
+  const at = sender.indexOf("@");
+  return at > 0 ? sender.slice(at + 1).toLowerCase() : "";
+}
+
+function favoriteSortValue(item) {
+  return new Date(item?.created_at || item?.createdAt || 0).getTime();
+}
+
+function syncMailFavoritesState(nextItems) {
+  state.mail.favorites = (Array.isArray(nextItems) ? nextItems : [])
+    .filter(Boolean)
+    .sort((a, b) => favoriteSortValue(a) - favoriteSortValue(b));
+  renderMailboxes();
+  renderMailIndexStatus();
+  renderReaderActionControls(state.selectedMessage);
+}
+
+async function saveMailFavorite(payload) {
+  const saved = await api("/api/v2/mail/favorites", {
+    method: "POST",
+    json: payload,
+    logErrors: false,
+  });
+  const next = mailFavoriteItems()
+    .filter((item) => String(item?.id || "").trim() !== String(saved?.id || "").trim())
+    .filter((item) => favoriteFingerprintClient(item) !== favoriteFingerprintClient(saved));
+  next.push(saved);
+  syncMailFavoritesState(next);
+  return saved;
+}
+
+async function deleteMailFavoriteByID(id) {
+  const favoriteID = String(id || "").trim();
+  if (!favoriteID) return;
+  await api(`/api/v2/mail/favorites/${encodeURIComponent(favoriteID)}`, {
+    method: "DELETE",
+    json: {},
+    logErrors: false,
+  });
+  syncMailFavoritesState(mailFavoriteItems().filter((item) => String(item?.id || "").trim() !== favoriteID));
+}
+
+async function toggleFavoriteView(trigger = null) {
+  const payload = currentViewFavoritePayload();
+  if (!payload) {
+    throw new Error("This mail view cannot be favorited.");
+  }
+  const existing = favoriteRecordForPayload(payload);
+  if (existing) {
+    await deleteMailFavoriteByID(existing.id);
+    setStatus("View removed from Favorites.", "ok", { target: trigger || null });
+    return;
+  }
+  await saveMailFavorite(payload);
+  setStatus("View added to Favorites.", "ok", { target: trigger || null });
+}
+
+async function toggleMailboxFavorite(entry, trigger = null) {
+  const payload = mailboxFavoritePayload(entry);
+  if (!payload) {
+    throw new Error("This folder cannot be favorited.");
+  }
+  const existing = favoriteRecordForPayload(payload);
+  if (existing) {
+    await deleteMailFavoriteByID(existing.id);
+    setStatus(`Removed ${payload.label} from Favorites.`, "ok", { target: trigger || null });
+    return;
+  }
+  await saveMailFavorite(payload);
+  setStatus(`Added ${payload.label} to Favorites.`, "ok", { target: trigger || null });
+}
+
+function favoriteInboxMailboxName(item) {
+  const accountID = favoriteAccountID(item);
+  if (accountID) {
+    return String(mailboxNameForRoleInAccount(accountID, "inbox") || "INBOX").trim() || "INBOX";
+  }
+  return String(mailboxNameForRole("inbox") || "INBOX").trim() || "INBOX";
+}
+
+function pinFavoritePayloadFromCurrentMessage(kind, message = state.selectedMessage, summary = state.selectedMessageSummary || state.selectedMessage) {
+  const normalizedKind = String(kind || "").trim().toLowerCase();
+  if (!message && !summary) return null;
+  const accountID = String(message?.account_id || summary?.account_id || "").trim();
+  const accountScope = normalizedKind === "sender" || normalizedKind === "domain"
+    ? currentMailScope()
+    : "account";
+  const sender = extractPrimaryEmailAddress(message?.from || summary?.from || "");
+  const domain = mailSenderDomain(message?.from || summary?.from || "");
+  const mailbox = String(message?.mailbox || summary?.mailbox || state.mailbox || "INBOX").trim() || "INBOX";
+  const subject = String(message?.subject || summary?.subject || "").trim();
+  const fromValue = String(message?.from || summary?.from || "").trim();
+  if (normalizedKind === "sender" && sender) {
+    return {
+      kind: "sender",
+      label: sender,
+      sender,
+      account_scope: accountScope,
+      account_id: accountScope === "account" ? accountID : "",
+    };
+  }
+  if (normalizedKind === "domain" && domain) {
+    return {
+      kind: "domain",
+      label: domain,
+      domain,
+      account_scope: accountScope,
+      account_id: accountScope === "account" ? accountID : "",
+    };
+  }
+  if (normalizedKind === "thread" && String(message?.thread_id || summary?.thread_id || "").trim()) {
+    return {
+      kind: "thread",
+      label: subject || "Pinned conversation",
+      account_scope: "account",
+      account_id: accountID,
+      mailbox,
+      thread_id: String(message?.thread_id || summary?.thread_id || "").trim(),
+      message_id: String(message?.id || summary?.id || "").trim(),
+      subject,
+      from: fromValue,
+    };
+  }
+  if (normalizedKind === "message" && String(message?.id || summary?.id || "").trim()) {
+    return {
+      kind: "message",
+      label: subject || "Pinned message",
+      account_scope: "account",
+      account_id: accountID,
+      mailbox,
+      thread_id: String(message?.thread_id || summary?.thread_id || "").trim(),
+      message_id: String(message?.id || summary?.id || "").trim(),
+      subject,
+      from: fromValue,
+    };
+  }
+  return null;
+}
+
+async function pinFavoriteFromCurrentMessage(kind, trigger = null) {
+  const payload = pinFavoritePayloadFromCurrentMessage(kind);
+  if (!payload) {
+    throw new Error("This message does not have enough detail to pin.");
+  }
+  const existing = favoriteRecordForPayload(payload);
+  if (existing) {
+    await deleteMailFavoriteByID(existing.id);
+    setStatus(`${payload.label} removed from Favorites.`, "ok", { target: trigger || null });
+    return;
+  }
+  await saveMailFavorite(payload);
+  setStatus(`${payload.label} added to Favorites.`, "ok", { target: trigger || null });
+}
+
+async function openMailFavorite(item) {
+  if (!item) return;
+  const kind = String(item?.kind || "").trim().toLowerCase();
+  const accountID = favoriteAccountID(item);
+  const accountScope = favoriteAccountScope(item);
+  if (accountScope === "all") {
+    setMailScope("all");
+  } else if (accountID && indexedAccountByID(accountID)) {
+    setMailScope("account", accountID);
+  }
+  state.mail.selectedDraftID = "";
+  clearMailMessageSelection({ render: false });
+  clearReaderSelection();
+  if (kind === "saved_view") {
+    const saved = (Array.isArray(state.mail.savedSearches) ? state.mail.savedSearches : [])
+      .find((entry) => String(entry?.id || "").trim() === String(item?.saved_search_id || item?.savedSearchID || "").trim()) || null;
+    if (!saved) {
+      throw new Error("This saved view is no longer available.");
+    }
+    applySavedSearchSelection(saved);
+    await loadMailboxes({ quiet: true, logErrors: false });
+    await loadMessages({ quiet: true });
+    setActiveMailPane("messages");
+    return;
+  }
+  if (kind === "smart_view") {
+    setMailSourceSmart(String(item?.smart_view || item?.smartView || "").trim());
+    await loadMailboxes({ quiet: true, logErrors: false });
+    await loadMessages({ quiet: true });
+    setActiveMailPane("messages");
+    return;
+  }
+  if (kind === "mailbox") {
+    setMailSourceMailbox(String(item?.mailbox || "INBOX").trim() || "INBOX");
+    await loadMailboxes({ quiet: true, logErrors: false });
+    await loadMessages({ quiet: true });
+    setActiveMailPane("messages");
+    return;
+  }
+  if (kind === "sender" || kind === "domain") {
+    setMailSourceMailbox(favoriteInboxMailboxName(item));
+    commitAppliedMailFilters(createMailFilterState({
+      from: String(kind === "sender" ? item?.sender : item?.domain || "").trim(),
+    }), { preserveSavedView: false });
+    syncMailSearchInput();
+    renderMailFilterBar();
+    renderMailboxes();
+    await loadMailboxes({ quiet: true, logErrors: false });
+    await loadMessages({ quiet: true });
+    setActiveMailPane("messages");
+    return;
+  }
+  if (kind === "thread" || kind === "message") {
+    const mailbox = String(item?.mailbox || favoriteInboxMailboxName(item)).trim() || "INBOX";
+    setMailSourceMailbox(mailbox);
+    await loadMailboxes({ quiet: true, logErrors: false });
+    await loadMessages({ quiet: true });
+    let messageID = String(item?.message_id || item?.messageId || "").trim();
+    if (!messageID && kind === "thread") {
+      messageID = String((Array.isArray(state.messages) ? state.messages : [])
+        .find((entry) => String(entry?.thread_id || "").trim() === String(item?.thread_id || item?.threadId || "").trim())?.id || "").trim();
+    }
+    if (!messageID) {
+      throw new Error("Pinned message is no longer available.");
+    }
+    const known = (Array.isArray(state.messages) ? state.messages : []).find((entry) => String(entry?.id || "").trim() === messageID) || null;
+    const summary = known || {
+      id: messageID,
+      account_id: accountID,
+      mailbox,
+      source: accountID ? "indexed" : "live",
+      from: String(item?.from || "").trim(),
+      subject: String(item?.subject || "").trim(),
+      thread_id: String(item?.thread_id || item?.threadId || "").trim(),
+      seen: true,
+      flagged: false,
+      answered: false,
+      preview: "",
+    };
+    await openMessage(messageID, summary);
+  }
 }
 
 function replyFunnelBySavedSearchID(savedSearchID) {
@@ -13104,6 +14194,28 @@ function hasAppliedAdvancedMailFilters(filters = appliedMailFilters()) {
     || current.categoryID
     || current.tagIDs.length > 0
     || current.accountIDs.length > 0);
+}
+
+function hasAppliedAdvancedMailFiltersExcept(allowedKeys = [], filters = appliedMailFilters()) {
+  const current = normalizeMailFilterState(filters);
+  const allowed = new Set((Array.isArray(allowedKeys) ? allowedKeys : []).map((item) => String(item || "").trim()));
+  const checks = [
+    ["from", !!current.from],
+    ["to", !!current.to],
+    ["subject", !!current.subject],
+    ["dateFrom", !!current.dateFrom],
+    ["dateTo", !!current.dateTo],
+    ["unread", !!current.unread],
+    ["flagged", !!current.flagged],
+    ["hasAttachments", !!current.hasAttachments],
+    ["waiting", !!current.waiting],
+    ["snoozed", !!current.snoozed],
+    ["followUp", !!current.followUp],
+    ["categoryID", !!current.categoryID],
+    ["tagIDs", current.tagIDs.length > 0],
+    ["accountIDs", current.accountIDs.length > 0],
+  ];
+  return checks.some(([key, active]) => active && !allowed.has(key));
 }
 
 async function removeAppliedMailFilterChip(kind, value = "") {
@@ -14167,6 +15279,14 @@ function renderMailScopeSwitcher() {
   syncMailToolbarLayout();
 }
 
+function renderMailFavoriteViewButton() {
+  if (!el.btnMailFavoriteView) return;
+  const payload = currentViewFavoritePayload();
+  const record = payload ? favoriteRecordForPayload(payload) : null;
+  el.btnMailFavoriteView.disabled = !payload;
+  el.btnMailFavoriteView.textContent = record ? "Unfavorite View" : "Favorite View";
+}
+
 function renderMailIndexStatus() {
   if (!el.mailIndexStatus) return;
   el.mailIndexStatus.classList.remove("mail-index-status--ok", "mail-index-status--warn", "mail-index-status--error");
@@ -14206,6 +15326,7 @@ function renderMailIndexStatus() {
     el.btnMailDeleteSearch.classList.toggle("hidden", !canDelete);
     el.btnMailDeleteSearch.disabled = !canDelete;
   }
+  renderMailFavoriteViewButton();
   renderMailHealthPanel();
 }
 
@@ -14217,15 +15338,17 @@ async function refreshIndexedMailContext(opts = {}) {
     const requests = [
       api("/api/v2/accounts", { logErrors: opts.logErrors }),
       api("/api/v2/saved-searches", { logErrors: opts.logErrors }),
+      api("/api/v2/mail/favorites", { logErrors: false }).catch(() => ({ items: [] })),
       api("/api/v2/funnels", { logErrors: false }).catch(() => ({ items: [] })),
       api("/api/v2/accounts/health", { logErrors: false }).catch(() => null),
     ];
     if (fetchAuthIdentity) {
       requests.push(api("/api/v2/mail/senders", { logErrors: false }));
     }
-    const [accountsPayload, savedPayload, funnelsPayload, healthPayload, senderPayload] = await Promise.all(requests);
+    const [accountsPayload, savedPayload, favoritesPayload, funnelsPayload, healthPayload, senderPayload] = await Promise.all(requests);
     state.mail.indexedAccounts = Array.isArray(accountsPayload?.items) ? accountsPayload.items : [];
     state.mail.savedSearches = Array.isArray(savedPayload?.items) ? savedPayload.items : [];
+    state.mail.favorites = Array.isArray(favoritesPayload?.items) ? favoritesPayload.items : [];
     state.mail.funnels = Array.isArray(funnelsPayload?.items) ? funnelsPayload.items : [];
     if (healthPayload && typeof healthPayload === "object") {
       state.mail.accountHealth = {
@@ -14541,6 +15664,7 @@ function normalizeLiveMessageDetail(raw = {}) {
     body: String(raw?.body || raw?.body_text || ""),
     body_html: String(raw?.body_html || raw?.bodyHTML || "").trim(),
     attachments: (Array.isArray(raw?.attachments) ? raw.attachments : []).map((item) => normalizeIndexedAttachment(item)),
+    unsubscribe: raw?.unsubscribe || null,
   };
 }
 
@@ -14566,6 +15690,7 @@ function normalizeIndexedMessageDetail(payload, accountID = "") {
     body: String(raw?.body || raw?.body_text || ""),
     body_html: String(raw?.body_html || raw?.body_html_sanitized || "").trim(),
     attachments: (Array.isArray(payload?.attachments) ? payload.attachments : []).map((item) => normalizeIndexedAttachment(item)),
+    unsubscribe: raw?.unsubscribe || null,
     source: "indexed",
   };
 }
@@ -14726,7 +15851,6 @@ function accountMailboxList(accountID) {
 function renderMailboxes() {
   const scrollState = captureScrollPosition(el.mailboxes);
   const items = Array.isArray(state.mail.mailboxes) ? state.mail.mailboxes : [];
-  const activeNavKey = currentMailNavKey();
   const showIndexedSections = hasIndexedAccounts() && !state.mail.indexedRuntimeFallback;
   const showTriageSection = !isDraftsMailboxSelected();
   const system = [];
@@ -14770,9 +15894,11 @@ function renderMailboxes() {
       let label = "";
       let meta = "";
       let navKey = "";
+      let active = false;
       if (kind === "smart") {
         label = String(entry?.name || "View");
         navKey = mailNavKeyForSmart(entry?.id || "");
+        active = currentMailNavKey() === navKey;
         btn.onclick = async () => {
           setMailSourceSmart(entry?.id || "");
           state.mail.selectedDraftID = "";
@@ -14785,6 +15911,7 @@ function renderMailboxes() {
       } else if (kind === "saved") {
         label = String(entry?.name || "Saved View");
         navKey = mailNavKeyForSaved(entry?.id || "");
+        active = currentMailNavKey() === navKey;
         btn.onclick = async () => {
           applySavedSearchSelection(entry);
           state.mail.selectedDraftID = "";
@@ -14794,6 +15921,17 @@ function renderMailboxes() {
           await loadMailboxes({ quiet: true });
           setActiveMailPane("messages");
         };
+      } else if (kind === "favorite") {
+        label = String(entry?.label || "Favorite").trim() || "Favorite";
+        meta = favoriteDisplayMeta(entry);
+        if ((String(entry?.kind || "").trim().toLowerCase() === "thread" || String(entry?.kind || "").trim().toLowerCase() === "message") && String(entry?.from || "").trim()) {
+          meta = `${meta} · ${String(entry.from || "").trim()}`;
+        }
+        navKey = favoriteNavKey(entry);
+        active = favoriteMatchesCurrentView(entry);
+        btn.onclick = async () => {
+          await openMailFavorite(entry);
+        };
       } else {
         const role = normalizeMailboxRole(entry?.role, entry?.name);
         const unread = role === "drafts"
@@ -14802,6 +15940,7 @@ function renderMailboxes() {
         label = mailboxDisplayLabel(entry);
         meta = unread > 0 ? `(${unread})` : "";
         navKey = mailNavKeyForMailbox(entry?.name || "");
+        active = currentMailNavKey() === navKey;
         btn.dataset.mailboxName = String(entry?.name || "");
         btn.dataset.mailboxRole = role;
         btn.onclick = async () => {
@@ -14817,8 +15956,8 @@ function renderMailboxes() {
 
       btn.dataset.mailNavKey = navKey;
       btn.id = safeDomID("mailbox-option-", navKey, `${optionIndex}`);
-      btn.className = navKey === activeNavKey ? "active" : "";
-      btn.setAttribute("aria-selected", navKey === activeNavKey ? "true" : "false");
+      btn.className = active ? "active" : "";
+      btn.setAttribute("aria-selected", active ? "true" : "false");
       btn.innerHTML = `<span class="mailbox-name">${escapeHtml(label)}</span><span class="mailbox-meta">${escapeHtml(meta)}</span>`;
       optionIndex += 1;
       if (kind === "mailbox") {
@@ -14836,6 +15975,23 @@ function renderMailboxes() {
           menu.appendChild(summary);
           const body = document.createElement("div");
           body.className = "row-menu-body";
+          if (mailboxCanFavorite(entry)) {
+            const favoriteBtn = document.createElement("button");
+            favoriteBtn.type = "button";
+            favoriteBtn.className = "menu-action-btn";
+            favoriteBtn.textContent = mailboxFavoriteRecord(entry) ? "Unfavorite" : "Favorite";
+            favoriteBtn.onclick = async (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              menu.removeAttribute("open");
+              try {
+                await toggleMailboxFavorite(entry, favoriteBtn);
+              } catch (err) {
+                setStatus(formatAPIError(err, "Failed to update Favorites."), "error");
+              }
+            };
+            body.appendChild(favoriteBtn);
+          }
           if (mailboxCanRename(entry)) {
             const renameBtn = document.createElement("button");
             renameBtn.type = "button";
@@ -14883,6 +16039,7 @@ function renderMailboxes() {
     }
   };
 
+  appendSection("Favorites", visibleMailFavorites(), "favorite");
   if (showTriageSection) {
     appendSection("Triage", MAIL_TRIAGE_VIEWS, "smart");
   }
@@ -15329,6 +16486,33 @@ function composeSendStatusMessage(sendMode, result) {
   return { text, tone: "ok" };
 }
 
+function composeUndoPendingStatusMessage(sendMode, result) {
+  const deadlineText = formatDate(result?.undo_deadline) || "the next few seconds";
+  let text = `Message queued until ${deadlineText}.`;
+  if (sendMode === "reply") text = `Reply queued until ${deadlineText}.`;
+  else if (sendMode === "forward") text = `Forward queued until ${deadlineText}.`;
+  return { text, tone: "ok" };
+}
+
+async function undoPendingDraftSend(draftID, trigger = null) {
+  const id = String(draftID || "").trim();
+  if (!id) {
+    throw new Error("Undo Send is unavailable for this draft.");
+  }
+  const payload = await api(`/api/v2/drafts/${encodeURIComponent(id)}/undo-send`, {
+    method: "POST",
+    json: {},
+    logErrors: false,
+  });
+  if (payload?.draft && typeof payload.draft === "object") {
+    upsertLocalDraft(payload.draft);
+  } else {
+    await loadDrafts({ logErrors: false });
+  }
+  await openComposeDraft(id, trigger || el.btnComposeOpen || null);
+  setStatus("Send canceled. Draft reopened.", "ok", { target: trigger || null });
+}
+
 function applyLocalMessagePatch(messageID, patch) {
   const id = String(messageID || "").trim();
   if (!id || !patch || typeof patch !== "object") return;
@@ -15761,6 +16945,12 @@ function closeReaderInspectMenu() {
   }
 }
 
+function closeReaderMoreMenu() {
+  if (el.readerMoreMenu) {
+    el.readerMoreMenu.removeAttribute("open");
+  }
+}
+
 function renderReaderInspectControls(message = state.selectedMessage) {
   const hasMessage = !!message;
   if (el.readerInspectMenu && !hasMessage) {
@@ -15784,11 +16974,25 @@ function renderReaderInspectControls(message = state.selectedMessage) {
   }
 }
 
+function setReaderMenuActionState(button, options = {}) {
+  if (!button) return false;
+  const visible = options.visible !== false;
+  button.classList.toggle("hidden", !visible);
+  button.disabled = options.disabled === true || !visible;
+  if (Object.prototype.hasOwnProperty.call(options, "text")) {
+    button.textContent = String(options.text || "");
+  }
+  return visible;
+}
+
 function renderReaderActionControls(message = state.selectedMessage) {
   const bulkSelected = hasBulkMailSelection();
   const hasMessage = !!message && !bulkSelected;
   if (el.readerActionControls) {
     el.readerActionControls.classList.toggle("hidden", !hasMessage);
+  }
+  if (el.readerMoreMenu && !hasMessage) {
+    el.readerMoreMenu.removeAttribute("open");
   }
   const inJunk = hasMessage ? normalizeMailboxRole(message?.mailbox_role, message?.mailbox) === "junk" : false;
   if (el.btnReaderFlag) {
@@ -15812,6 +17016,49 @@ function renderReaderActionControls(message = state.selectedMessage) {
   }
   if (el.btnReaderTrash) {
     el.btnReaderTrash.disabled = !hasMessage;
+  }
+  const senderFavorite = hasMessage ? favoriteRecordForPayload(pinFavoritePayloadFromCurrentMessage("sender", message) || null) : null;
+  const domainFavorite = hasMessage ? favoriteRecordForPayload(pinFavoritePayloadFromCurrentMessage("domain", message) || null) : null;
+  const threadFavorite = hasMessage ? favoriteRecordForPayload(pinFavoritePayloadFromCurrentMessage("thread", message) || null) : null;
+  const messageFavorite = hasMessage ? favoriteRecordForPayload(pinFavoritePayloadFromCurrentMessage("message", message) || null) : null;
+  const canSweep = hasMessage
+    && activeMailUsesIndexedSource(message)
+    && !!String(message?.account_id || state.selectedMessageSummary?.account_id || currentIndexedAccountID() || "").trim()
+    && !!extractPrimaryEmailAddress(message?.from || state.selectedMessageSummary?.from || "");
+  const hasUnsubscribe = hasMessage && !!message?.unsubscribe;
+  const senderVisible = setReaderMenuActionState(el.btnReaderPinSender, {
+    visible: hasMessage && !!pinFavoritePayloadFromCurrentMessage("sender", message),
+    text: senderFavorite ? "Unpin Sender" : "Pin Sender",
+  });
+  const domainVisible = setReaderMenuActionState(el.btnReaderPinDomain, {
+    visible: hasMessage && !!pinFavoritePayloadFromCurrentMessage("domain", message),
+    text: domainFavorite ? "Unpin Domain" : "Pin Domain",
+  });
+  const threadVisible = setReaderMenuActionState(el.btnReaderPinThread, {
+    visible: hasMessage && !!pinFavoritePayloadFromCurrentMessage("thread", message),
+    text: threadFavorite ? "Unpin Conversation" : "Pin Conversation",
+  });
+  const messageVisible = setReaderMenuActionState(el.btnReaderPinMessage, {
+    visible: hasMessage && !!pinFavoritePayloadFromCurrentMessage("message", message),
+    text: messageFavorite ? "Unpin Message" : "Pin Message",
+  });
+  const unsubscribeVisible = setReaderMenuActionState(el.btnReaderUnsubscribe, {
+    visible: hasUnsubscribe,
+    text: "Unsubscribe",
+  });
+  const sweepVisible = setReaderMenuActionState(el.btnReaderSweep, {
+    visible: hasMessage && activeMailUsesIndexedSource(message),
+    disabled: !canSweep,
+    text: "Sweep Sender",
+  });
+  const hasMoreActions = unsubscribeVisible || sweepVisible || senderVisible || domainVisible || threadVisible || messageVisible;
+  if (el.readerMoreMenu) {
+    el.readerMoreMenu.classList.toggle("hidden", !hasMoreActions);
+    el.readerMoreMenu.classList.toggle("is-disabled", !hasMoreActions);
+  }
+  if (el.readerMoreSummary) {
+    el.readerMoreSummary.setAttribute("aria-disabled", hasMoreActions ? "false" : "true");
+    el.readerMoreSummary.tabIndex = hasMoreActions ? 0 : -1;
   }
 }
 
@@ -15848,6 +17095,145 @@ function currentReaderRawPath(options = {}) {
   }
   const query = params.toString();
   return `/api/v1/messages/${encodeURIComponent(ctx.id)}/raw${query ? `?${query}` : ""}`;
+}
+
+async function unsubscribeCurrentReaderMessage(trigger = null) {
+  const ctx = currentReaderMessageContext();
+  if (!ctx.id) {
+    throw new Error("Select a message first.");
+  }
+  if (!ctx.message?.unsubscribe) {
+    throw new Error("This message does not expose a one-click unsubscribe action.");
+  }
+  const endpoint = ctx.usesIndexed
+    ? `/api/v2/messages/${encodeURIComponent(ctx.id)}/unsubscribe?account_id=${encodeURIComponent(ctx.accountID)}`
+    : `/api/v1/messages/${encodeURIComponent(ctx.id)}/unsubscribe`;
+  const result = await api(endpoint, {
+    method: "POST",
+    json: {},
+    logErrors: false,
+  });
+  if (ctx.message && typeof ctx.message === "object") {
+    ctx.message.unsubscribe = null;
+  }
+  renderReaderActionControls(ctx.message);
+  closeReaderMoreMenu();
+  const method = String(result?.method || "").trim().toUpperCase();
+  const text = method === "MAILTO"
+    ? "Unsubscribe email sent."
+    : "Unsubscribe request sent.";
+  setStatus(text, "ok", { target: trigger || null });
+}
+
+async function sweepCurrentReaderSender(trigger = null) {
+  const ctx = currentReaderMessageContext();
+  const message = ctx.message || ctx.summary || null;
+  if (!ctx.usesIndexed || !ctx.accountID) {
+    throw new Error("Sweep is available in indexed mail only.");
+  }
+  const sender = extractPrimaryEmailAddress(message?.from || "");
+  if (!sender) {
+    throw new Error("Sender address is unavailable for this message.");
+  }
+  const action = await showSelectModal({
+    title: "Sweep Sender",
+    body: `Choose how Despatch should clean up messages from ${sender}.`,
+    label: "Action",
+    choices: [
+      { value: "archive", label: "Archive all from sender" },
+      { value: "trash", label: "Trash all from sender" },
+      { value: "move", label: "Move all from sender…" },
+      { value: "keep_latest", label: "Keep newest, archive older" },
+    ],
+    defaultValue: "archive",
+    confirmText: "Continue",
+    cancelText: "Cancel",
+    trigger,
+  });
+  if (action === null) return;
+  let targetMailbox = "";
+  if (action === "move") {
+    const currentMailboxName = String(message?.mailbox || "").trim().toLowerCase();
+    const mailboxChoices = (await ensureIndexedAccountMailboxList(ctx.accountID))
+      .map((item) => ({
+        value: String(item?.name || "").trim(),
+        label: mailboxDisplayLabel(item),
+      }))
+      .filter((item) => item.value && item.value.toLowerCase() !== currentMailboxName);
+    if (mailboxChoices.length === 0) {
+      throw new Error("No destination folders are available for this account.");
+    }
+    const selectedMailbox = await showSelectModal({
+      title: "Move Sender To",
+      body: `${sender}: choose the destination folder for the sweep.`,
+      label: "Folder",
+      choices: mailboxChoices,
+      defaultValue: mailboxChoices[0].value,
+      confirmText: "Continue",
+      cancelText: "Cancel",
+      trigger,
+    });
+    if (selectedMailbox === null) return;
+    targetMailbox = String(selectedMailbox || "").trim();
+  } else if (action === "archive" || action === "keep_latest") {
+    targetMailbox = await ensureSpecialMailboxForAccount(ctx.accountID, "archive", trigger);
+  } else if (action === "trash") {
+    targetMailbox = await ensureSpecialMailboxForAccount(ctx.accountID, "trash", trigger);
+  }
+  let applyToFuture = false;
+  if (action !== "keep_latest") {
+    const futureMode = await showSelectModal({
+      title: "Future Mail",
+      body: "Should future messages from this sender follow the same cleanup rule automatically?",
+      label: "Scope",
+      choices: [
+        { value: "now", label: "Just this cleanup" },
+        { value: "future", label: "Also future mail" },
+      ],
+      defaultValue: "now",
+      confirmText: "Apply",
+      cancelText: "Cancel",
+      trigger,
+    });
+    if (futureMode === null) return;
+    applyToFuture = futureMode === "future";
+  }
+  const result = await api(`/api/v2/messages/${encodeURIComponent(ctx.id)}/sweep?account_id=${encodeURIComponent(ctx.accountID)}`, {
+    method: "POST",
+    json: {
+      action,
+      target_mailbox: targetMailbox,
+      apply_to_future: applyToFuture,
+    },
+    logErrors: false,
+  });
+  closeReaderMoreMenu();
+  await loadMailboxes({ quiet: true, logErrors: false });
+  await loadMessages({ quiet: true });
+  const appliedCount = Array.isArray(result?.applied) ? result.applied.length : 0;
+  const failedCount = Array.isArray(result?.failed) ? result.failed.length : 0;
+  let messageText = "";
+  if (action === "keep_latest") {
+    messageText = appliedCount > 0
+      ? `Kept the newest message and archived ${appliedCount} older ${pluralizeMessages(appliedCount)} from ${sender}.`
+      : `No older messages needed cleanup for ${sender}.`;
+  } else if (action === "move") {
+    messageText = `Moved ${appliedCount} ${pluralizeMessages(appliedCount)} from ${sender} to ${targetMailbox || "the selected folder"}.`;
+  } else if (action === "trash") {
+    messageText = `Moved ${appliedCount} ${pluralizeMessages(appliedCount)} from ${sender} to Trash.`;
+  } else {
+    messageText = `Archived ${appliedCount} ${pluralizeMessages(appliedCount)} from ${sender}.`;
+  }
+  if (applyToFuture) {
+    messageText += result?.future_rule_created
+      ? " Future mail will follow the same cleanup rule."
+      : " Future mail still needs a rule.";
+  }
+  if (failedCount > 0) {
+    setStatus(`${messageText} ${failedCount} failed.`, "error", { target: trigger || null });
+    return;
+  }
+  setStatus(messageText, "ok", { target: trigger || null });
 }
 
 function extractRawMessageHeaders(raw) {
@@ -20532,8 +21918,10 @@ function bindUI() {
       if (list === el.messages) focusMailPane("messages");
     });
   });
+  bindMailPaneResizers();
   window.addEventListener("resize", () => {
     setActiveMailPane(state.ui.activeMailPane, { focus: false });
+    syncMailPaneLayout();
     renderThreadContext();
     scheduleReaderHTMLFrameHeight();
   });
@@ -21305,14 +22693,19 @@ function bindUI() {
         }
         const result = await sendCompose(e.target);
         const savedCopyMailbox = String(result?.saved_copy_mailbox || "").trim();
-        const scheduled = String(result?.status || "").trim().toLowerCase() === "scheduled";
+        const sendStatus = String(result?.status || "").trim().toLowerCase();
+        const scheduled = sendStatus === "scheduled";
+        const undoPending = sendStatus === "undo_pending";
         const statusInfo = scheduled
           ? { text: `Message scheduled for ${formatDate(result?.scheduled_for) || "later"}.`, tone: "ok" }
-          : composeSendStatusMessage(sendMode, result);
-        if (!scheduled && sendMode === "reply" && sendContextMessageID) {
+          : undoPending
+            ? composeUndoPendingStatusMessage(sendMode, result)
+            : composeSendStatusMessage(sendMode, result);
+        if (!scheduled && !undoPending && sendMode === "reply" && sendContextMessageID) {
           applyLocalMessagePatch(sendContextMessageID, { answered: true });
         }
         if (!scheduled
+          && !undoPending
           && savedCopyMailbox
           && !String(state.mail.searchQuery || "").trim()
           && !hasAppliedAdvancedMailFilters()) {
@@ -21320,7 +22713,18 @@ function bindUI() {
             answered: sendMode === "reply",
           }));
         }
-        setStatus(statusInfo.text, statusInfo.tone);
+        if (undoPending && activeDraftID) {
+          setStatus(statusInfo.text, statusInfo.tone, {
+            action: {
+              label: "Undo",
+              run: async () => {
+                await undoPendingDraftSend(activeDraftID, el.btnComposeOpen || null);
+              },
+            },
+          });
+        } else {
+          setStatus(statusInfo.text, statusInfo.tone);
+        }
         e.target.reset();
         state.compose.recipients.to = [];
         state.compose.recipients.cc = [];
@@ -21341,14 +22745,16 @@ function bindUI() {
         setComposeDraftNote("");
         setComposeDraftState("Draft", "muted");
         clearComposeAssets();
-        if (!scheduled && activeDraftID) {
+        if ((undoPending || !scheduled) && activeDraftID) {
           removeLocalDraft(activeDraftID);
         } else {
           clearComposeCrashBuffer("");
         }
         resetComposeDraftSession();
         closeComposeOverlay({ restoreFocus: true, persistDraft: false });
-        queueMailRefresh({ preservePane: true, delay: 120 });
+        if (!undoPending) {
+          queueMailRefresh({ preservePane: true, delay: 120 });
+        }
       } catch (err) {
         if (err.code === "smtp_sender_rejected") {
           const requestRef = err.requestID ? ` (request ${err.requestID})` : "";
@@ -21721,6 +23127,37 @@ function bindUI() {
     });
   }
 
+  if (el.btnComposeSnippets) {
+    el.btnComposeSnippets.addEventListener("click", async () => {
+      try {
+        const snippets = await ensureMailSnippetsLoaded({ logErrors: false });
+        if (!Array.isArray(snippets) || snippets.length === 0) {
+          setStatus("No snippets saved yet. Add one in Mail settings first.", "info");
+          return;
+        }
+        const selected = await showSelectModal({
+          title: "Insert Snippet",
+          body: "Choose reusable text to drop into the current compose window.",
+          label: "Snippet",
+          choices: snippets.map((item) => ({
+            value: String(item?.id || "").trim(),
+            label: String(item?.name || "Snippet").trim() || "Snippet",
+          })),
+          defaultValue: String(snippets[0]?.id || "").trim(),
+          confirmText: "Insert",
+          cancelText: "Cancel",
+          trigger: el.btnComposeSnippets,
+        });
+        if (selected === null) return;
+        const snippet = snippets.find((item) => String(item?.id || "").trim() === selected) || null;
+        await insertSnippetIntoCompose(snippet, el.btnComposeSnippets);
+      } catch (err) {
+        setComposeDraftNote(formatAPIError(err, "Snippet insert failed."), "error");
+        setStatus(formatAPIError(err, "Snippet insert failed."), "error");
+      }
+    });
+  }
+
   if (el.composeFromManualInput) {
     el.composeFromManualInput.addEventListener("input", () => {
       if (state.compose.fromMode !== "manual") {
@@ -21851,7 +23288,11 @@ function bindUI() {
     el.uiModalConfirm.onclick = () => {
       const value = modalState.mode === "select" && el.uiModalSelect
         ? el.uiModalSelect.value
-        : (el.uiModalInput ? el.uiModalInput.value : "");
+        : (
+          !el.uiModalTextarea?.classList.contains("hidden") && el.uiModalTextarea
+            ? el.uiModalTextarea.value
+            : (el.uiModalInput ? el.uiModalInput.value : "")
+        );
       closeUIModal({ confirmed: true, value });
     };
   }
@@ -22147,6 +23588,17 @@ function bindUI() {
     };
   }
 
+  if (el.btnMailFavoriteView) {
+    el.btnMailFavoriteView.onclick = async () => {
+      closeMailViewMenu();
+      try {
+        await toggleFavoriteView(el.btnMailFavoriteView);
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to update Favorites."), "error");
+      }
+    };
+  }
+
   if (el.btnMailHealthToggle) {
     el.btnMailHealthToggle.onclick = async () => {
       persistMailHealthExpanded(!state.mail.healthExpanded);
@@ -22338,6 +23790,22 @@ function bindUI() {
     });
   }
 
+  if (el.readerMoreMenu) {
+    el.readerMoreMenu.addEventListener("toggle", () => {
+      if (el.readerMoreMenu.open) {
+        closeOpenRowMenus(el.readerMoreMenu);
+      }
+    });
+  }
+
+  if (el.readerMoreSummary) {
+    el.readerMoreSummary.addEventListener("click", (event) => {
+      if (el.readerMoreSummary.getAttribute("aria-disabled") === "true") {
+        event.preventDefault();
+      }
+    });
+  }
+
   if (el.btnReaderViewSource) {
     el.btnReaderViewSource.onclick = async () => {
       closeReaderInspectMenu();
@@ -22440,6 +23908,70 @@ function bindUI() {
         await runMailAction("trash", { statusVerb: "Moved to trash", trigger: el.btnReaderTrash });
       } catch (err) {
         setStatus(err.message, "error");
+      }
+    };
+  }
+
+  if (el.btnReaderUnsubscribe) {
+    el.btnReaderUnsubscribe.onclick = async () => {
+      try {
+        await unsubscribeCurrentReaderMessage(el.btnReaderUnsubscribe);
+      } catch (err) {
+        setStatus(formatAPIError(err, "Unsubscribe failed."), "error");
+      }
+    };
+  }
+
+  if (el.btnReaderSweep) {
+    el.btnReaderSweep.onclick = async () => {
+      try {
+        await sweepCurrentReaderSender(el.btnReaderSweep);
+      } catch (err) {
+        setStatus(formatAPIError(err, "Sweep failed."), "error");
+      }
+    };
+  }
+
+  if (el.btnReaderPinSender) {
+    el.btnReaderPinSender.onclick = async () => {
+      closeReaderMoreMenu();
+      try {
+        await pinFavoriteFromCurrentMessage("sender", el.btnReaderPinSender);
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to update Favorites."), "error");
+      }
+    };
+  }
+
+  if (el.btnReaderPinDomain) {
+    el.btnReaderPinDomain.onclick = async () => {
+      closeReaderMoreMenu();
+      try {
+        await pinFavoriteFromCurrentMessage("domain", el.btnReaderPinDomain);
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to update Favorites."), "error");
+      }
+    };
+  }
+
+  if (el.btnReaderPinThread) {
+    el.btnReaderPinThread.onclick = async () => {
+      closeReaderMoreMenu();
+      try {
+        await pinFavoriteFromCurrentMessage("thread", el.btnReaderPinThread);
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to update Favorites."), "error");
+      }
+    };
+  }
+
+  if (el.btnReaderPinMessage) {
+    el.btnReaderPinMessage.onclick = async () => {
+      closeReaderMoreMenu();
+      try {
+        await pinFavoriteFromCurrentMessage("message", el.btnReaderPinMessage);
+      } catch (err) {
+        setStatus(formatAPIError(err, "Failed to update Favorites."), "error");
       }
     };
   }

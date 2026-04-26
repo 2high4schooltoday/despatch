@@ -1211,6 +1211,56 @@ func (s *Store) ListDueScheduledSends(ctx context.Context, now time.Time, limit 
 	return out, rows.Err()
 }
 
+func (s *Store) GetScheduledSendByDraftID(ctx context.Context, userID, draftID string) (models.ScheduledSendQueueItem, error) {
+	row := s.db.QueryRowContext(ctx,
+		`SELECT id,draft_id,user_id,account_id,due_at,state,retry_count,next_retry_at,COALESCE(last_error,''),created_at,updated_at
+		 FROM scheduled_send_queue
+		 WHERE user_id=? AND draft_id=?`,
+		userID, draftID,
+	)
+	var item models.ScheduledSendQueueItem
+	var nextRetryAt sql.NullTime
+	if err := row.Scan(
+		&item.ID,
+		&item.DraftID,
+		&item.UserID,
+		&item.AccountID,
+		&item.DueAt,
+		&item.State,
+		&item.RetryCount,
+		&nextRetryAt,
+		&item.LastError,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		if err == sql.ErrNoRows {
+			return models.ScheduledSendQueueItem{}, ErrNotFound
+		}
+		return models.ScheduledSendQueueItem{}, err
+	}
+	if nextRetryAt.Valid {
+		item.NextRetryAt = nextRetryAt.Time
+	}
+	return item, nil
+}
+
+func (s *Store) CancelScheduledSendByDraftID(ctx context.Context, userID, draftID string) error {
+	res, err := s.db.ExecContext(ctx,
+		`UPDATE scheduled_send_queue
+		 SET state='canceled', next_retry_at=NULL, last_error=NULL, updated_at=?
+		 WHERE user_id=? AND draft_id=?`,
+		time.Now().UTC(), userID, draftID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *Store) MarkScheduledSendRetry(ctx context.Context, queueID string, retryCount int, nextRetryAt time.Time, lastErr string) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE scheduled_send_queue
