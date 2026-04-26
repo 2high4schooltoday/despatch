@@ -1670,12 +1670,18 @@ func (h *Handlers) resolveIndexedMailboxFilters(ctx context.Context, accounts []
 		return nil, nil
 	}
 	filters := make(map[string][]string, len(accounts))
+	fallback := fallbackAggregateMailboxSelection(target)
 	for _, account := range accounts {
 		items, err := h.listAccountMailboxesWithRolesBestEffort(ctx, account)
 		if err != nil {
-			return nil, err
+			filters[account.ID] = append([]string(nil), fallback...)
+			continue
 		}
-		filters[account.ID] = resolveAggregateMailboxSelection(items, target)
+		resolved := resolveAggregateMailboxSelection(items, target)
+		if len(resolved) == 0 {
+			resolved = append([]string(nil), fallback...)
+		}
+		filters[account.ID] = resolved
 	}
 	return filters, nil
 }

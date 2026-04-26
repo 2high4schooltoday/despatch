@@ -58,37 +58,11 @@ func main() {
 		log.Fatalf("open db: %v", err)
 	}
 	defer sqdb.Close()
-	for _, migration := range []string{
-		"migrations/001_init.sql",
-		"migrations/002_users_mail_login.sql",
-		"migrations/003_cleanup_rejected_users.sql",
-		"migrations/004_cleanup_rejected_users_casefold.sql",
-		"migrations/005_admin_query_indexes.sql",
-		"migrations/006_users_recovery_email.sql",
-		"migrations/007_mail_accounts.sql",
-		"migrations/008_mail_index.sql",
-		"migrations/009_preferences_and_search.sql",
-		"migrations/010_drafts_schedule.sql",
-		"migrations/011_rules_sieve.sql",
-		"migrations/012_mfa_totp_webauthn.sql",
-		"migrations/013_crypto_keys.sql",
-		"migrations/014_session_management.sql",
-		"migrations/015_sync_state.sql",
-		"migrations/016_quota_and_health.sql",
-		"migrations/017_mfa_onboarding_flags.sql",
-		"migrations/018_mfa_usability_trusted_devices.sql",
-		"migrations/019_users_mail_secret.sql",
-		"migrations/020_mail_index_scoped_ids.sql",
-		"migrations/021_password_reset_token_reservations.sql",
-		"migrations/022_draft_compose_context.sql",
-		"migrations/023_drafts_nullable_account.sql",
-		"migrations/024_draft_attachments_and_send_errors.sql",
-		"migrations/025_session_mail_profiles.sql",
-		"migrations/026_draft_context_account.sql",
-		"migrations/027_sender_profiles.sql",
-		"migrations/028_contacts.sql",
-		"migrations/029_mail_rules.sql",
-	} {
+	migrations, err := db.SortedMigrationFiles("migrations")
+	if err != nil {
+		log.Fatalf("discover migrations: %v", err)
+	}
+	for _, migration := range migrations {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			log.Fatalf("migration %s: %v", migration, err)
 		}

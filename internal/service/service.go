@@ -372,8 +372,10 @@ func (s *Service) Login(ctx context.Context, email, password, ip, userAgent stri
 	if err := s.st.UpsertUserMailSecret(ctx, u.ID, mailSecret); err != nil {
 		return "", models.User{}, err
 	}
-	if err := s.EnsureAuthenticatedMailAccount(ctx, u); err != nil {
-		log.Printf("auth mail account bootstrap failed user=%s: %v", u.ID, err)
+	if s.usesPAMAuth() {
+		if err := s.EnsureAuthenticatedMailAccount(ctx, u); err != nil {
+			log.Printf("auth mail account bootstrap failed user=%s: %v", u.ID, err)
+		}
 	}
 
 	now := time.Now().UTC()
@@ -482,8 +484,10 @@ func (s *Service) UnlockSessionMailSecret(ctx context.Context, userID, sessionID
 	if err := s.st.UpdateSessionMailSecret(ctx, sessionID, mailSecret); err != nil {
 		return err
 	}
-	if err := s.EnsureAuthenticatedMailAccount(ctx, u); err != nil {
-		log.Printf("mail account bootstrap after unlock failed user=%s session=%s: %v", u.ID, sessionID, err)
+	if s.usesPAMAuth() {
+		if err := s.EnsureAuthenticatedMailAccount(ctx, u); err != nil {
+			log.Printf("mail account bootstrap after unlock failed user=%s session=%s: %v", u.ID, sessionID, err)
+		}
 	}
 	meta, _ := json.Marshal(map[string]string{
 		"session_id": sessionID,

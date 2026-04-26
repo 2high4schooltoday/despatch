@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -84,6 +85,31 @@ CREATE TABLE sessions (
 	}
 	if u.ProvisionState != "pending" {
 		t.Fatalf("expected default provision_state pending, got %q", u.ProvisionState)
+	}
+}
+
+func TestSortedMigrationFilesIncludesLatestSchemaUpdates(t *testing.T) {
+	files, err := SortedMigrationFiles(filepath.Join("..", "..", "migrations"))
+	if err != nil {
+		t.Fatalf("sorted migration files: %v", err)
+	}
+	if len(files) == 0 {
+		t.Fatal("expected migrations to exist")
+	}
+	foundProvidersMigration := false
+	for i, file := range files {
+		if i > 0 && filepath.Base(files[i-1]) > filepath.Base(file) {
+			t.Fatalf("expected migrations to be sorted, got %s before %s", filepath.Base(files[i-1]), filepath.Base(file))
+		}
+		if filepath.Base(file) == "032_mail_account_providers.sql" {
+			foundProvidersMigration = true
+		}
+	}
+	if !foundProvidersMigration {
+		t.Fatal("expected migration list to include 032_mail_account_providers.sql")
+	}
+	if _, err := os.Stat(files[0]); err != nil {
+		t.Fatalf("expected first migration file to exist: %v", err)
 	}
 }
 

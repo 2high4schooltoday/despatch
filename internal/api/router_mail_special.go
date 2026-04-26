@@ -223,6 +223,42 @@ func resolveAggregateMailboxSelection(mailboxes []mail.Mailbox, mailboxName stri
 	return out
 }
 
+func fallbackAggregateMailboxSelection(mailboxName string) []string {
+	target := strings.TrimSpace(mailboxName)
+	if target == "" {
+		return nil
+	}
+	candidates := []string{target}
+	switch normalizeAggregateMailboxRole("", target) {
+	case "inbox":
+		candidates = append(candidates, "INBOX", "Inbox")
+	case "drafts":
+		candidates = append(candidates, "Drafts")
+	case "sent":
+		candidates = append(candidates, "Sent", "Sent Messages")
+	case "trash":
+		candidates = append(candidates, "Trash", "Deleted Messages")
+	case "archive":
+		candidates = append(candidates, "Archive", "All Mail")
+	case "junk":
+		candidates = append(candidates, "Junk", "Spam")
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		trimmed := strings.TrimSpace(candidate)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
+}
+
 func specialMailboxMappingsForResponse(mappings map[string]string) []specialMailboxMappingDTO {
 	out := make([]specialMailboxMappingDTO, 0, len(mappings))
 	for _, role := range specialMailboxRoles {

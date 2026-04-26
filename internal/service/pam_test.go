@@ -162,6 +162,50 @@ func newPAMTestService(t *testing.T, acceptedPass string, acceptedUsers ...strin
 	return svc, st
 }
 
+func newSQLLocalTestService(t *testing.T) (*Service, *store.Store) {
+	t.Helper()
+	tmp := filepath.Join(t.TempDir(), "app.db")
+	sqdb, err := db.OpenSQLite(tmp, 2, 1, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() { _ = sqdb.Close() })
+	for _, migration := range []string{
+		filepath.Join("..", "..", "migrations", "001_init.sql"),
+		filepath.Join("..", "..", "migrations", "002_users_mail_login.sql"),
+		filepath.Join("..", "..", "migrations", "003_cleanup_rejected_users.sql"),
+		filepath.Join("..", "..", "migrations", "004_cleanup_rejected_users_casefold.sql"),
+		filepath.Join("..", "..", "migrations", "005_admin_query_indexes.sql"),
+		filepath.Join("..", "..", "migrations", "006_users_recovery_email.sql"),
+		filepath.Join("..", "..", "migrations", "007_mail_accounts.sql"),
+		filepath.Join("..", "..", "migrations", "019_users_mail_secret.sql"),
+		filepath.Join("..", "..", "migrations", "032_mail_account_providers.sql"),
+	} {
+		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
+			t.Fatalf("apply migrations: %v", err)
+		}
+	}
+
+	st := store.New(sqdb)
+	cfg := config.Config{
+		DovecotAuthMode:     "sql",
+		SessionEncryptKey:   "this_is_a_test_session_key_that_is_long_enough_123456",
+		SessionIdleMinutes:  30,
+		SessionAbsoluteHour: 24,
+		PasswordMinLength:   12,
+		PasswordMaxLength:   128,
+		IMAPHost:            "127.0.0.1",
+		IMAPPort:            993,
+		IMAPTLS:             true,
+		SMTPHost:            "127.0.0.1",
+		SMTPPort:            25,
+		SMTPTLS:             false,
+		SMTPStartTLS:        false,
+	}
+	svc := New(cfg, st, mail.NoopClient{}, mail.NoopProvisioner{}, nil)
+	return svc, st
+}
+
 func TestPAMModeLoginUsesMailCredentials(t *testing.T) {
 	ctx := context.Background()
 	svc, st := newPAMTestService(t, "PamPass123!")
@@ -230,6 +274,91 @@ func TestPAMModeLoginBootstrapsIndexedAccount(t *testing.T) {
 	}
 	if account.SecretEnc == "" {
 		t.Fatalf("expected bootstrapped account to persist encrypted secret")
+	}
+}
+
+func TestSQLEnsureAuthenticatedMailAccountBootstrapsIndexedAccountForLocalInstance(t *testing.T) {
+	ctx := context.Background()
+	svc, st := newSQLLocalTestService(t)
+
+	pwHash, err := auth.HashPassword("LocalPass123!")
+	if err != nil {
+		t.Fatalf("hash local: %v", err)
+	}
+	u, err := st.CreateUser(ctx, "alice@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	if _, _, err := svc.Login(ctx, "alice@example.com", "LocalPass123!", "127.0.0.1", "test-agent"); err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+	user, err := st.GetUserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if err := svc.EnsureAuthenticatedMailAccount(ctx, user); err != nil {
+		t.Fatalf("ensure authenticated mail account: %v", err)
+	}
+
+	accounts, err := st.ListMailAccounts(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("list mail accounts: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected 1 indexed account, got %d", len(accounts))
+	}
+	account := accounts[0]
+	if account.Login != "alice@example.com" {
+		t.Fatalf("expected account login alice@example.com, got %q", account.Login)
+	}
+	if !account.IsDefault {
+		t.Fatalf("expected bootstrapped account to be default")
+	}
+	if account.IMAPHost != "127.0.0.1" || account.IMAPPort != 993 {
+		t.Fatalf("unexpected IMAP settings: %s:%d", account.IMAPHost, account.IMAPPort)
+	}
+	if account.SMTPHost != "127.0.0.1" || account.SMTPPort != 25 {
+		t.Fatalf("unexpected SMTP settings: %s:%d", account.SMTPHost, account.SMTPPort)
+	}
+	if account.SecretEnc == "" {
+		t.Fatalf("expected bootstrapped account to persist encrypted secret")
+	}
+}
+
+func TestSQLEnsureAuthenticatedMailAccountDoesNotBootstrapIndexedAccountForExternalInstance(t *testing.T) {
+	ctx := context.Background()
+	svc, st := newSQLLocalTestService(t)
+	if err := st.UpsertSetting(ctx, instanceModeSettingKey, InstanceModeExternalAccounts); err != nil {
+		t.Fatalf("set instance mode: %v", err)
+	}
+
+	pwHash, err := auth.HashPassword("LocalPass123!")
+	if err != nil {
+		t.Fatalf("hash local: %v", err)
+	}
+	u, err := st.CreateUser(ctx, "alice@example.com", pwHash, "user", models.UserActive)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	if _, _, err := svc.Login(ctx, "alice@example.com", "LocalPass123!", "127.0.0.1", "test-agent"); err != nil {
+		t.Fatalf("login failed: %v", err)
+	}
+	user, err := st.GetUserByID(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("reload user: %v", err)
+	}
+	if err := svc.EnsureAuthenticatedMailAccount(ctx, user); err != nil {
+		t.Fatalf("ensure authenticated mail account: %v", err)
+	}
+
+	accounts, err := st.ListMailAccounts(ctx, u.ID)
+	if err != nil {
+		t.Fatalf("list mail accounts: %v", err)
+	}
+	if len(accounts) != 0 {
+		t.Fatalf("expected no indexed accounts in external mode, got %+v", accounts)
 	}
 }
 

@@ -55,10 +55,6 @@ func quotaHealthFromCache(item models.QuotaCache) (available, supported bool, la
 
 func (h *Handlers) V2ListAccountHealth(w http.ResponseWriter, r *http.Request) {
 	u, _ := middleware.User(r.Context())
-	if err := h.svc.EnsureAuthenticatedMailAccount(r.Context(), u); err != nil {
-		util.WriteError(w, 500, "internal_error", err.Error(), middleware.RequestID(r.Context()))
-		return
-	}
 	accounts, err := h.svc.Store().ListMailAccounts(r.Context(), u.ID)
 	if err != nil {
 		util.WriteError(w, 500, "internal_error", err.Error(), middleware.RequestID(r.Context()))

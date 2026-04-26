@@ -694,6 +694,45 @@ func TestV2AccountsListBackfillsPAMSessionAccount(t *testing.T) {
 	}
 }
 
+func TestV2AccountsListBackfillsSQLLocalSessionAccount(t *testing.T) {
+	router, st := newV2RouterWithMailClientAndStore(t, mail.NoopClient{}, nil)
+
+	sess, csrf, _ := loginV2WithResponse(t, router)
+	admin, err := st.GetUserByEmail(context.Background(), "admin@example.com")
+	if err != nil {
+		t.Fatalf("load admin: %v", err)
+	}
+	accounts, err := st.ListMailAccounts(context.Background(), admin.ID)
+	if err != nil {
+		t.Fatalf("list accounts after login: %v", err)
+	}
+	for _, account := range accounts {
+		if err := st.DeleteMailAccount(context.Background(), admin.ID, account.ID); err != nil {
+			t.Fatalf("delete account %s: %v", account.ID, err)
+		}
+	}
+
+	list := doV2AuthedJSON(t, router, http.MethodGet, "/api/v2/accounts", nil, sess, csrf)
+	if list.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", list.Code, list.Body.String())
+	}
+	var out struct {
+		Items []models.MailAccount `json:"items"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if len(out.Items) != 1 {
+		t.Fatalf("expected 1 bootstrapped account got=%d body=%s", len(out.Items), list.Body.String())
+	}
+	if out.Items[0].Login != "admin@example.com" {
+		t.Fatalf("expected bootstrapped login admin@example.com, got %q", out.Items[0].Login)
+	}
+	if !out.Items[0].IsDefault {
+		t.Fatalf("expected bootstrapped account to be default")
+	}
+}
+
 func TestV2TOTPFlowWithMailSecVerifier(t *testing.T) {
 	socketPath := startFakeMailSecServer(t)
 	router := newV2RouterWithConfig(t, func(cfg *config.Config) {

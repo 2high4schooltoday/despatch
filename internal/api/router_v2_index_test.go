@@ -136,6 +136,31 @@ func TestV2ListMessagesUsesIndexedSummaries(t *testing.T) {
 	}
 }
 
+func TestFallbackAggregateMailboxSelectionIncludesCanonicalRoleCandidates(t *testing.T) {
+	got := fallbackAggregateMailboxSelection("Inbox")
+	want := []string{"Inbox", "INBOX"}
+	if len(got) < len(want) {
+		t.Fatalf("expected inbox fallback candidates, got %+v", got)
+	}
+	for _, candidate := range want {
+		found := false
+		for _, item := range got {
+			if strings.EqualFold(strings.TrimSpace(item), candidate) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected candidate %q in %+v", candidate, got)
+		}
+	}
+
+	custom := fallbackAggregateMailboxSelection("Projects/Alpha")
+	if len(custom) != 1 || custom[0] != "Projects/Alpha" {
+		t.Fatalf("expected custom mailbox fallback to preserve exact mailbox, got %+v", custom)
+	}
+}
+
 func TestV2IndexedPresentationBackfillsBlankThreadIDFromHeaders(t *testing.T) {
 	router, st, account := newIndexedRouterWithStore(t)
 	raw := strings.Join([]string{

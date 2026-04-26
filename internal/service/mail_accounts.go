@@ -11,7 +11,11 @@ import (
 )
 
 func (s *Service) EnsureAuthenticatedMailAccount(ctx context.Context, u models.User) error {
-	if !s.usesPAMAuth() {
+	mode, err := s.InstanceMode(ctx)
+	if err != nil {
+		return err
+	}
+	if !InstanceModeUsesLocalMail(mode) {
 		return nil
 	}
 	login := strings.TrimSpace(MailAuthLogin(u))
@@ -29,7 +33,10 @@ func (s *Service) EnsureAuthenticatedMailAccount(ctx context.Context, u models.U
 		return nil
 	}
 
-	candidates := pamLoginCandidates("", login, u.Email)
+	candidates := []string{login}
+	if s.usesPAMAuth() {
+		candidates = pamLoginCandidates("", login, u.Email)
+	}
 	s.mailAccountMu.Lock()
 	defer s.mailAccountMu.Unlock()
 
