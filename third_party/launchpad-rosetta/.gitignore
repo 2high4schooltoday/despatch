@@ -1,0 +1,4 @@
+target/
+.DS_Store
+bindings/javascript/node_modules/
+bindings/python/**/__pycache__/

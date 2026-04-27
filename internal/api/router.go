@@ -35,6 +35,7 @@ import (
 	"despatch/internal/update"
 	"despatch/internal/util"
 	"despatch/internal/version"
+	"despatch/internal/webi18n"
 )
 
 type Handlers struct {
@@ -47,6 +48,7 @@ type Handlers struct {
 	mailboxCache    *mailboxListCache
 	threadCache     *threadResponseCache
 	readiness       *readinessProbeCache
+	webI18n         *webi18n.Runtime
 }
 
 var mailClientFactory = func(cfg config.Config) mail.Client {
@@ -66,6 +68,12 @@ const (
 )
 
 func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
+	var runtimeI18n *webi18n.Runtime
+	if loaded, err := webi18n.Load(filepath.Join("web", "locales"), "despatch"); err != nil {
+		log.Printf("web_i18n_init_failed err=%v", err)
+	} else {
+		runtimeI18n = loaded
+	}
 	h := &Handlers{
 		cfg:             cfg,
 		svc:             svc,
@@ -76,6 +84,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 		mailboxCache:    newMailboxListCache(),
 		threadCache:     newThreadResponseCache(),
 		readiness:       newReadinessProbeCache(cfg, svc),
+		webI18n:         runtimeI18n,
 	}
 	h.readiness.prime()
 	r := chi.NewRouter()
@@ -162,6 +171,7 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 		r.Get("/public/captcha/config", h.PublicCaptchaConfig)
 		r.Get("/public/password-reset/capabilities", h.PublicPasswordResetCapabilities)
 		r.Get("/public/auth/capabilities", h.PublicAuthCapabilities)
+		r.Get("/public/i18n/{locale}", h.PublicI18nBundle)
 		r.Get("/setup/status", h.SetupStatus)
 		r.With(middleware.RateLimit(h.limiter, "setup_complete", 20, time.Minute, h.cfg.TrustProxy)).Post("/setup/complete", h.SetupComplete)
 		r.With(middleware.RateLimit(h.limiter, "register", 10, time.Minute, h.cfg.TrustProxy)).Post("/register", h.Register)
@@ -473,6 +483,19 @@ func (h *Handlers) PublicAuthCapabilities(w http.ResponseWriter, r *http.Request
 	util.WriteJSON(w, 200, h.authCapabilities(r))
 }
 
+func (h *Handlers) PublicI18nBundle(w http.ResponseWriter, r *http.Request) {
+	if h.webI18n == nil {
+		http.NotFound(w, r)
+		return
+	}
+	bundle, ok := h.webI18n.BundleFor(chi.URLParam(r, "locale"))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	util.WriteJSON(w, http.StatusOK, bundle)
+}
+
 func (h *Handlers) SetupStatus(w http.ResponseWriter, r *http.Request) {
 	status, err := h.svc.SetupStatus(r.Context())
 	if err != nil {
@@ -616,6 +639,7 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	applyAuthStageFields(out, stage)
 	out["mail_secret_required"] = strings.TrimSpace(sess.MailSecret) == ""
+	h.applyUserLocaleField(r.Context(), out, user.ID)
 	util.WriteJSON(w, 200, out)
 }
 
@@ -685,6 +709,48 @@ func firstNonEmptyString(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func normalizeLocaleTag(value string) string {
+	raw := strings.TrimSpace(strings.ReplaceAll(value, "_", "-"))
+	if raw == "" {
+		return ""
+	}
+	parts := strings.Split(raw, "-")
+	for index, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if index == 0 {
+			parts[index] = strings.ToLower(part)
+			continue
+		}
+		if len(part) == 2 {
+			parts[index] = strings.ToUpper(part)
+			continue
+		}
+		parts[index] = strings.ToLower(part)
+	}
+	return strings.Join(parts, "-")
+}
+
+func (h *Handlers) userPreferredLocale(ctx context.Context, userID string) string {
+	if h == nil || h.svc == nil {
+		return ""
+	}
+	prefs, err := h.svc.Store().GetUserPreferences(ctx, userID)
+	if err != nil {
+		return ""
+	}
+	return normalizeLocaleTag(prefs.Locale)
+}
+
+func (h *Handlers) applyUserLocaleField(ctx context.Context, out map[string]any, userID string) {
+	if out == nil {
+		return
+	}
+	out["locale"] = h.userPreferredLocale(ctx, userID)
 }
 
 func loginRequestIdentifier(req loginRequest) string {
@@ -818,6 +884,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		payload := map[string]any{"user_id": user.ID, "email": user.Email, "identifier": user.Email, "role": user.Role, "csrf_token": csrfToken}
 		applyAuthStageFields(payload, stage)
 		payload["mail_secret_required"] = strings.TrimSpace(sess.MailSecret) == ""
+		h.applyUserLocaleField(r.Context(), payload, user.ID)
 		util.WriteJSON(w, 200, payload)
 		return
 	}
@@ -920,6 +987,7 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 		"mail_secret_required": strings.TrimSpace(sess.MailSecret) == "",
 	}
 	applyAuthStageFields(out, stage)
+	h.applyUserLocaleField(r.Context(), out, u.ID)
 	util.WriteJSON(w, 200, out)
 }
 

@@ -106,6 +106,7 @@ func newV2RouterWithMailClientStoreAndHook(t *testing.T, despatch mail.Client, m
 		filepath.Join("..", "..", "migrations", "030_mail_triage.sql"),
 		filepath.Join("..", "..", "migrations", "031_reply_funnels.sql"),
 		filepath.Join("..", "..", "migrations", "032_mail_account_providers.sql"),
+		filepath.Join("..", "..", "migrations", "033_user_preferences_locale.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -538,6 +539,7 @@ func TestV2PreferencesFlow(t *testing.T) {
 	}
 
 	put := doV2AuthedJSON(t, router, http.MethodPut, "/api/v2/preferences", map[string]any{
+		"locale":              "ru",
 		"theme":               "paper-light",
 		"page_size":           80,
 		"grouping_mode":       "today_yesterday",
@@ -561,8 +563,40 @@ func TestV2PreferencesFlow(t *testing.T) {
 	if got := out["theme"]; got != "paper-light" {
 		t.Fatalf("expected theme=paper-light got=%v", got)
 	}
+	if got := out["locale"]; got != "ru" {
+		t.Fatalf("expected locale=ru got=%v", got)
+	}
 	if got := int(out["page_size"].(float64)); got != 80 {
 		t.Fatalf("expected page_size=80 got=%d", got)
+	}
+}
+
+func TestSavedLocaleAppearsInMeAndNextLogin(t *testing.T) {
+	router := newV2Router(t)
+	sess, csrf := loginV2(t, router)
+
+	update := doV2AuthedJSON(t, router, http.MethodPatch, "/api/v2/preferences", map[string]any{
+		"locale": "ru",
+	}, sess, csrf)
+	if update.Code != http.StatusOK {
+		t.Fatalf("expected 200 updating locale, got %d body=%s", update.Code, update.Body.String())
+	}
+
+	me := doV1AuthedJSON(t, router, http.MethodGet, "/api/v1/me", nil, sess, csrf)
+	if me.Code != http.StatusOK {
+		t.Fatalf("expected /api/v1/me 200, got %d body=%s", me.Code, me.Body.String())
+	}
+	var mePayload map[string]any
+	if err := json.Unmarshal(me.Body.Bytes(), &mePayload); err != nil {
+		t.Fatalf("decode /api/v1/me payload: %v body=%s", err, me.Body.String())
+	}
+	if got := mePayload["locale"]; got != "ru" {
+		t.Fatalf("expected /api/v1/me locale=ru got=%v", got)
+	}
+
+	_, _, loginPayload := loginV1WithResponse(t, router, "admin@example.com", "SecretPass123!")
+	if got := loginPayload["locale"]; got != "ru" {
+		t.Fatalf("expected next /api/v1/login locale=ru got=%v payload=%v", got, loginPayload)
 	}
 }
 

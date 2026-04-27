@@ -556,7 +556,7 @@ func (s *Store) ListIndexedMailboxCounts(ctx context.Context, accountID string) 
 
 func (s *Store) GetUserPreferences(ctx context.Context, userID string) (models.UserPreferences, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT user_id,theme,density,layout_mode,keymap_json,remote_image_policy,timezone,page_size,grouping_mode,default_sender_id,updated_at
+		`SELECT user_id,locale,theme,density,layout_mode,keymap_json,remote_image_policy,timezone,page_size,grouping_mode,default_sender_id,updated_at
 		 FROM user_preferences
 		 WHERE user_id=?`,
 		userID,
@@ -564,6 +564,7 @@ func (s *Store) GetUserPreferences(ctx context.Context, userID string) (models.U
 	var item models.UserPreferences
 	err := row.Scan(
 		&item.UserID,
+		&item.Locale,
 		&item.Theme,
 		&item.Density,
 		&item.LayoutMode,
@@ -589,6 +590,7 @@ func (s *Store) GetUserPreferences(ctx context.Context, userID string) (models.U
 
 func (s *Store) UpsertUserPreferences(ctx context.Context, in models.UserPreferences) (models.UserPreferences, error) {
 	in.UpdatedAt = time.Now().UTC()
+	in.Locale = normalizeUserPreferenceLocale(in.Locale)
 	if strings.TrimSpace(in.Theme) == "" {
 		in.Theme = "machine-dark"
 	}
@@ -614,9 +616,10 @@ func (s *Store) UpsertUserPreferences(ctx context.Context, in models.UserPrefere
 		in.GroupingMode = "day"
 	}
 	_, err := s.db.ExecContext(ctx,
-		`INSERT INTO user_preferences(user_id,theme,density,layout_mode,keymap_json,remote_image_policy,timezone,page_size,grouping_mode,default_sender_id,updated_at)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO user_preferences(user_id,locale,theme,density,layout_mode,keymap_json,remote_image_policy,timezone,page_size,grouping_mode,default_sender_id,updated_at)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(user_id) DO UPDATE SET
+		   locale=excluded.locale,
 		   theme=excluded.theme,
 		   density=excluded.density,
 		   layout_mode=excluded.layout_mode,
@@ -628,6 +631,7 @@ func (s *Store) UpsertUserPreferences(ctx context.Context, in models.UserPrefere
 		   default_sender_id=excluded.default_sender_id,
 		   updated_at=excluded.updated_at`,
 		in.UserID,
+		in.Locale,
 		in.Theme,
 		in.Density,
 		in.LayoutMode,
@@ -651,6 +655,7 @@ func (s *Store) UpsertUserPreferences(ctx context.Context, in models.UserPrefere
 func defaultUserPreferences(userID string) models.UserPreferences {
 	return models.UserPreferences{
 		UserID:            userID,
+		Locale:            "",
 		Theme:             "machine-dark",
 		Density:           "comfortable",
 		LayoutMode:        "three-pane",
@@ -662,6 +667,30 @@ func defaultUserPreferences(userID string) models.UserPreferences {
 		DefaultSenderID:   "",
 		UpdatedAt:         time.Now().UTC(),
 	}
+}
+
+func normalizeUserPreferenceLocale(raw string) string {
+	value := strings.TrimSpace(strings.ReplaceAll(raw, "_", "-"))
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, "-")
+	for i := range parts {
+		part := strings.TrimSpace(parts[i])
+		if part == "" {
+			continue
+		}
+		if i == 0 {
+			parts[i] = strings.ToLower(part)
+			continue
+		}
+		if len(part) == 2 {
+			parts[i] = strings.ToUpper(part)
+			continue
+		}
+		parts[i] = strings.ToLower(part)
+	}
+	return strings.Join(parts, "-")
 }
 
 func isOptionalSchemaErr(err error) bool {

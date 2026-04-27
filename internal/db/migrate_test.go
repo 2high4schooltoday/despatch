@@ -97,6 +97,7 @@ func TestSortedMigrationFilesIncludesLatestSchemaUpdates(t *testing.T) {
 		t.Fatal("expected migrations to exist")
 	}
 	foundProvidersMigration := false
+	foundLocalePreferenceMigration := false
 	for i, file := range files {
 		if i > 0 && filepath.Base(files[i-1]) > filepath.Base(file) {
 			t.Fatalf("expected migrations to be sorted, got %s before %s", filepath.Base(files[i-1]), filepath.Base(file))
@@ -104,9 +105,15 @@ func TestSortedMigrationFilesIncludesLatestSchemaUpdates(t *testing.T) {
 		if filepath.Base(file) == "032_mail_account_providers.sql" {
 			foundProvidersMigration = true
 		}
+		if filepath.Base(file) == "033_user_preferences_locale.sql" {
+			foundLocalePreferenceMigration = true
+		}
 	}
 	if !foundProvidersMigration {
 		t.Fatal("expected migration list to include 032_mail_account_providers.sql")
+	}
+	if !foundLocalePreferenceMigration {
+		t.Fatal("expected migration list to include 033_user_preferences_locale.sql")
 	}
 	if _, err := os.Stat(files[0]); err != nil {
 		t.Fatalf("expected first migration file to exist: %v", err)

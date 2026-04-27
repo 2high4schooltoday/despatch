@@ -1451,7 +1451,12 @@ func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, i
 			return "", models.User{}, err
 		}
 	}
-	recoveryEmail, err := normalizeDistinctRecoveryEmail(adminIdentifier, req.AdminRecoveryEmail)
+	var recoveryEmail string
+	if NormalizeInstanceMode(mode) == InstanceModeExternalAccounts {
+		recoveryEmail, err = normalizeDistinctRecoveryEmailOptional(adminIdentifier, req.AdminRecoveryEmail)
+	} else {
+		recoveryEmail, err = normalizeDistinctRecoveryEmail(adminIdentifier, req.AdminRecoveryEmail)
+	}
 	if err != nil {
 		return "", models.User{}, err
 	}

@@ -3,6 +3,8 @@
 /rust/target/
 /dist/
 /node_modules/
+/third_party/launchpad-rosetta/target/
+/third_party/launchpad-rosetta/bindings/javascript/node_modules/
 /test-results/
 .env
 !.env.example

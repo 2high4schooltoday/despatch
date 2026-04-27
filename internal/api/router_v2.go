@@ -95,6 +95,7 @@ func (h *Handlers) V2Login(w http.ResponseWriter, r *http.Request) {
 		"mail_secret_required": strings.TrimSpace(sess.MailSecret) == "",
 	}
 	applyAuthStageFields(out, stage)
+	h.applyUserLocaleField(r.Context(), out, user.ID)
 	util.WriteJSON(w, 200, out)
 }
 
@@ -381,6 +382,7 @@ func (h *Handlers) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		"mail_secret_required": strings.TrimSpace(sess.MailSecret) == "",
 	}
 	applyAuthStageFields(out, stage)
+	h.applyUserLocaleField(r.Context(), out, user.ID)
 	util.WriteJSON(w, 200, out)
 }
 
@@ -4745,6 +4747,9 @@ func parsePaginationV2(r *http.Request) (int, int) {
 }
 
 func applyPreferencesPatch(current *models.UserPreferences, patch map[string]any) {
+	if v, ok := patch["locale"].(string); ok {
+		current.Locale = strings.TrimSpace(v)
+	}
 	if v, ok := patch["theme"].(string); ok {
 		current.Theme = strings.TrimSpace(v)
 	}

@@ -359,6 +359,32 @@ func TestSetupCompleteExternalAccountsAllowsAdminUsername(t *testing.T) {
 	}
 }
 
+func TestSetupCompleteExternalAccountsAllowsMissingRecoveryEmail(t *testing.T) {
+	router, st := newSetupRouterWithConfigAndStore(t, nil)
+
+	body := []byte(`{
+		"instance_mode":"external_accounts",
+		"admin_email":"opsdesk",
+		"admin_password":"SecretPass123!",
+		"region":"us-east"
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/setup/complete", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected setup complete 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	user, err := st.GetUserByEmail(context.Background(), "opsdesk")
+	if err != nil {
+		t.Fatalf("load admin user: %v", err)
+	}
+	if user.RecoveryEmail != nil {
+		t.Fatalf("expected recovery email to stay unset, got %#v", user.RecoveryEmail)
+	}
+}
+
 func TestRegisterIsDisabledInExternalAccountsMode(t *testing.T) {
 	router, _ := newSetupRouterWithConfigAndStore(t, nil)
 

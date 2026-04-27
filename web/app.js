@@ -229,6 +229,13 @@ const state = {
   },
   settings: {
     searchQuery: "",
+    interface: {
+      loaded: false,
+      loading: false,
+      locale: "",
+      persistedLocale: "",
+      requestToken: 0,
+    },
     passkeys: {
       items: [],
       detailId: "",
@@ -356,6 +363,15 @@ const mailPaneSizingMinimums = {
 };
 
 const el = {
+  languageGate: document.getElementById("language-gate"),
+  languageGateHelloStream: document.getElementById("language-gate-hello-stream"),
+  languageGateKicker: document.getElementById("language-gate-kicker"),
+  languageGateTitle: document.getElementById("language-gate-title"),
+  languageGateBody: document.getElementById("language-gate-body"),
+  languageGateLabel: document.getElementById("language-gate-label"),
+  languageGateSelect: document.getElementById("language-gate-select"),
+  languageGateHint: document.getElementById("language-gate-hint"),
+  languageGateContinue: document.getElementById("language-gate-continue"),
   appShell: document.getElementById("app-shell"),
   workspaceTitle: document.getElementById("workspace-title"),
   status: document.getElementById("status-line"),
@@ -608,14 +624,19 @@ const el = {
   settingsSearchInput: document.getElementById("settings-search-input"),
   btnSettingsSearchClear: document.getElementById("btn-settings-search-clear"),
   settingsSearchResults: document.getElementById("settings-search-results"),
+  settingsNavInterface: document.getElementById("settings-nav-interface"),
   settingsNavSignIn: document.getElementById("settings-nav-signin"),
   settingsNavMail: document.getElementById("settings-nav-mail"),
   settingsNavDevices: document.getElementById("settings-nav-devices"),
   settingsNavSessions: document.getElementById("settings-nav-sessions"),
+  settingsSectionInterface: document.getElementById("settings-section-interface"),
   settingsSectionSignIn: document.getElementById("settings-section-signin"),
   settingsSectionMail: document.getElementById("settings-section-mail"),
   settingsSectionDevices: document.getElementById("settings-section-devices"),
   settingsSectionSessions: document.getElementById("settings-section-sessions"),
+  settingsLanguageSelect: document.getElementById("settings-language-select"),
+  settingsLanguageNote: document.getElementById("settings-language-note"),
+  btnSettingsLanguageSave: document.getElementById("btn-settings-language-save"),
   settingsMailNote: document.getElementById("settings-mail-note"),
   settingsMailSessionDisplayName: document.getElementById("settings-mail-session-display-name"),
   settingsMailSessionFromEmail: document.getElementById("settings-mail-session-from-email"),
@@ -875,9 +896,11 @@ const el = {
   setupDomain: document.getElementById("setup-domain"),
   setupDomainWrap: document.getElementById("setup-domain-wrap"),
   setupAdminIdentifierLabel: document.getElementById("setup-admin-identifier-label"),
+  setupAdminCopyText: document.getElementById("setup-admin-copy-text"),
   setupAdminEmail: document.getElementById("setup-admin-email"),
   setupAdminIdentifierHint: document.getElementById("setup-admin-identifier-hint"),
   setupAdminRecoveryEmail: document.getElementById("setup-admin-recovery-email"),
+  setupAdminRecoveryEmailWrap: document.getElementById("setup-admin-recovery-email-wrap"),
   setupAdminMailboxLogin: document.getElementById("setup-admin-mailbox-login"),
   setupAdminMailboxLoginWrap: document.getElementById("setup-mailbox-login-wrap"),
   setupPassword: document.getElementById("setup-password"),
@@ -892,8 +915,10 @@ const el = {
   setupSummaryAdminLabel: document.getElementById("setup-summary-admin-label"),
   setupSummaryEmail: document.getElementById("setup-summary-email"),
   setupSummaryRecoveryEmail: document.getElementById("setup-summary-recovery-email"),
+  setupSummaryRecoveryEmailRow: document.getElementById("setup-summary-recovery-email-row"),
   setupSummaryPasskey: document.getElementById("setup-summary-passkey"),
   setupPasswordHint: document.getElementById("setup-password-hint"),
+  setupDataPrivacyText: document.getElementById("setup-data-privacy-text"),
   setupInlineStatus: document.getElementById("setup-inline-status"),
   setupCompleteNote: document.getElementById("setup-complete-note"),
   setupModalOverlay: document.getElementById("setup-modal-overlay"),
@@ -979,6 +1004,403 @@ const notificationSourceLabels = Object.freeze({
   system: "System",
 });
 
+function fallbackFormatSource(source, args) {
+  return String(source || "").replace(/\{([A-Za-z0-9_.-]+)\}/g, (match, name) => {
+    if (!args || typeof args !== "object") {
+      return match;
+    }
+    const parts = String(name || "").split(".");
+    let current = args;
+    for (const part of parts) {
+      if (!part || !Object.prototype.hasOwnProperty.call(current, part)) {
+        return match;
+      }
+      current = current[part];
+      if (current == null && part !== parts[parts.length - 1]) {
+        return match;
+      }
+    }
+    return current == null ? match : String(current);
+  });
+}
+
+const i18n = window.DespatchI18n || {};
+
+function t(source, args, fallback) {
+  const baseline = fallback === undefined ? source : fallback;
+  if (typeof i18n.translate === "function") {
+    const translated = i18n.translate(source, args);
+    if (fallback !== undefined && translated === String(source || "")) {
+      return fallbackFormatSource(baseline, args);
+    }
+    return translated;
+  }
+  return fallbackFormatSource(baseline, args);
+}
+
+function uiLocaleList() {
+  const locale = typeof i18n.currentLocale === "function"
+    ? i18n.currentLocale()
+    : (document.documentElement.lang || "en");
+  return locale ? [locale] : undefined;
+}
+
+function uiLanguageCode() {
+  const locale = typeof i18n.currentLocale === "function"
+    ? i18n.currentLocale()
+    : (document.documentElement.lang || "en");
+  return String(locale || "en").split("-")[0].toLowerCase() || "en";
+}
+
+const guestLocaleStorageKey = "despatch.ui.locale.guest.v1";
+const supportedAppLanguages = [
+  { code: "en", nativeLabel: "English", englishLabel: "English" },
+  { code: "ru", nativeLabel: "Русский", englishLabel: "Russian" },
+];
+// Keep the floating background to greetings that IBM Plex Mono can render cleanly.
+// Shared greetings are reused where multiple European languages use the same hello.
+const languageGateGreetings = [
+  "Hello!",
+  "Hallo!",
+  "Bonjour!",
+  "Ciao!",
+  "Hola!",
+  "Olá!",
+  "Ola!",
+  "Kaixo!",
+  "Bonjorn!",
+  "Demat!",
+  "Helo!",
+  "Hullo!",
+  "Dia duit!",
+  "Halò!",
+  "Tungjatjeta!",
+  "Bună!",
+  "Szia!",
+  "Cześć!",
+  "Ahoj!",
+  "Živjo!",
+  "Bok!",
+  "Zdravo!",
+  "Здраво!",
+  "Здравейте!",
+  "Привет!",
+  "Привіт!",
+  "Прывітанне!",
+  "Tere!",
+  "Sveiki!",
+  "Labas!",
+  "Moien!",
+  "Halló!",
+  "Hej!",
+  "Hei!",
+  "Allegra!",
+  "Mandi!",
+  "Bures!",
+];
+const languageGateCopy = {
+  en: {
+    kicker: "Language",
+    title: "Choose your language",
+    body: "Despatch will use this language before sign-in and during first-run setup. Signed-in accounts keep their own saved language.",
+    label: "Interface language",
+    hint: "Your device language is selected automatically when it is available.",
+    continueAuth: "Continue to sign in",
+    continueSetup: "Continue to setup",
+    loadingTitle: "Loading Despatch",
+    loadingBody: "Preparing language and session state.",
+    loadingAction: "Loading...",
+  },
+  ru: {
+    kicker: "Язык",
+    title: "Выберите язык",
+    body: "До входа и во время первоначальной настройки интерфейс Despatch будет показан на этом языке. После входа у каждого пользователя сохраняется собственный язык интерфейса.",
+    label: "Язык интерфейса",
+    hint: "Если язык этого устройства поддерживается, он будет выбран автоматически.",
+    continueAuth: "Перейти ко входу",
+    continueSetup: "Перейти к настройке",
+    loadingTitle: "Запуск Despatch",
+    loadingBody: "Подготавливаем язык интерфейса и состояние сеанса.",
+    loadingAction: "Загрузка…",
+  },
+};
+const languageGateState = {
+  backgroundReady: false,
+  resolver: null,
+  setupRequired: false,
+  selectedLocale: "en",
+};
+let localePreferenceSyncPromise = null;
+
+function normalizeSupportedLocaleCode(raw) {
+  const base = String(raw || "")
+    .trim()
+    .replace(/_/g, "-")
+    .split("-")[0]
+    .toLowerCase();
+  return base === "ru" ? "ru" : "en";
+}
+
+function currentAppLocaleCode() {
+  const locale = typeof i18n.currentLocale === "function"
+    ? i18n.currentLocale()
+    : (document.documentElement.lang || "en");
+  return normalizeSupportedLocaleCode(locale);
+}
+
+function detectSystemLocale() {
+  if (Array.isArray(navigator?.languages)) {
+    for (const item of navigator.languages) {
+      if (String(item || "").trim()) {
+        return normalizeSupportedLocaleCode(item);
+      }
+    }
+  }
+  if (navigator?.language) {
+    return normalizeSupportedLocaleCode(navigator.language);
+  }
+  return "en";
+}
+
+function storedGuestLocalePreference() {
+  try {
+    const stored = localStorage.getItem(guestLocaleStorageKey);
+    return stored ? normalizeSupportedLocaleCode(stored) : "";
+  } catch {
+    return "";
+  }
+}
+
+function persistGuestLocalePreference(locale) {
+  try {
+    const normalized = normalizeSupportedLocaleCode(locale);
+    if (!normalized || normalized === detectSystemLocale()) {
+      localStorage.removeItem(guestLocaleStorageKey);
+      return;
+    }
+    localStorage.setItem(guestLocaleStorageKey, normalized);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function signedOutPreferredLocale() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const forced = String(params.get("lang") || "").trim();
+    if (forced) {
+      return normalizeSupportedLocaleCode(forced);
+    }
+  } catch {
+    // ignore URL parsing failures
+  }
+  return storedGuestLocalePreference() || detectSystemLocale();
+}
+
+function preferredLocaleFromPayload(payload = {}) {
+  const raw = String(payload?.locale || "").trim();
+  if (!raw) return "";
+  return normalizeSupportedLocaleCode(raw);
+}
+
+function populateLanguageSelect(selectNode, selectedLocale) {
+  if (!(selectNode instanceof HTMLSelectElement)) return;
+  const next = normalizeSupportedLocaleCode(selectedLocale);
+  const prior = String(selectNode.value || "").trim();
+  selectNode.replaceChildren();
+  for (const item of supportedAppLanguages) {
+    const option = document.createElement("option");
+    option.value = item.code;
+    option.textContent = item.nativeLabel;
+    selectNode.appendChild(option);
+  }
+  selectNode.value = next || prior || "en";
+}
+
+function languageGateCopyFor(locale) {
+  return languageGateCopy[normalizeSupportedLocaleCode(locale)] || languageGateCopy.en;
+}
+
+function ensureLanguageGateBackground() {
+  if (languageGateState.backgroundReady || !el.languageGateHelloStream) return;
+  const fragment = document.createDocumentFragment();
+  const helloCount = Math.max(48, languageGateGreetings.length);
+  for (let index = 0; index < helloCount; index += 1) {
+    const word = document.createElement("span");
+    const text = languageGateGreetings[index % languageGateGreetings.length];
+    word.className = "language-gate__hello";
+    word.textContent = text;
+    word.style.setProperty("--top", `${4 + ((index * 13) % 88)}%`);
+    word.style.setProperty("--size", `${1.05 + ((index % 7) * 0.34)}rem`);
+    word.style.setProperty("--opacity", `${0.06 + ((index % 5) * 0.024)}`);
+    word.style.setProperty("--rotate", `${-11 + ((index * 5) % 23)}deg`);
+    word.style.setProperty("--duration", `${20 + (index % 9) * 2.4}s`);
+    word.style.setProperty("--delay", `${(index % 11) * -2.2}s`);
+    fragment.appendChild(word);
+  }
+  el.languageGateHelloStream.appendChild(fragment);
+  languageGateState.backgroundReady = true;
+}
+
+function renderLanguageGate(locale, opts = {}) {
+  ensureLanguageGateBackground();
+  const selected = normalizeSupportedLocaleCode(locale);
+  const copy = languageGateCopyFor(selected);
+  const loading = opts.loading === true;
+  languageGateState.selectedLocale = selected;
+  languageGateState.setupRequired = opts.setupRequired === true;
+  populateLanguageSelect(el.languageGateSelect, selected);
+  if (el.languageGateKicker) el.languageGateKicker.textContent = copy.kicker;
+  if (el.languageGateTitle) {
+    el.languageGateTitle.textContent = loading ? copy.loadingTitle : copy.title;
+  }
+  if (el.languageGateBody) {
+    el.languageGateBody.textContent = loading ? copy.loadingBody : copy.body;
+  }
+  if (el.languageGateLabel) el.languageGateLabel.textContent = copy.label;
+  if (el.languageGateHint) el.languageGateHint.textContent = copy.hint;
+  if (el.languageGateSelect) {
+    el.languageGateSelect.disabled = loading;
+    el.languageGateSelect.value = selected;
+  }
+  if (el.languageGateContinue) {
+    el.languageGateContinue.disabled = loading;
+    el.languageGateContinue.textContent = loading
+      ? copy.loadingAction
+      : (languageGateState.setupRequired ? copy.continueSetup : copy.continueAuth);
+  }
+}
+
+function showLanguageGate(options = {}) {
+  const selected = normalizeSupportedLocaleCode(options.locale || signedOutPreferredLocale());
+  renderLanguageGate(selected, options);
+  if (el.languageGate) {
+    el.languageGate.classList.remove("hidden");
+    el.languageGate.setAttribute("aria-hidden", "false");
+  }
+  return new Promise((resolve) => {
+    languageGateState.resolver = resolve;
+    window.setTimeout(() => {
+      if (el.languageGateSelect && !el.languageGateSelect.disabled) {
+        el.languageGateSelect.focus();
+      } else {
+        el.languageGateContinue?.focus();
+      }
+    }, 0);
+  });
+}
+
+function hideLanguageGate() {
+  if (el.languageGate) {
+    el.languageGate.classList.add("hidden");
+    el.languageGate.setAttribute("aria-hidden", "true");
+  }
+  languageGateState.resolver = null;
+}
+
+function initLanguageGateUI() {
+  if (!el.languageGate || el.languageGate.dataset.bound === "true") {
+    return;
+  }
+  ensureLanguageGateBackground();
+  populateLanguageSelect(el.languageGateSelect, signedOutPreferredLocale());
+  el.languageGateSelect?.addEventListener("change", () => {
+    renderLanguageGate(String(el.languageGateSelect.value || "en"), {
+      setupRequired: languageGateState.setupRequired,
+      loading: false,
+    });
+  });
+  el.languageGateContinue?.addEventListener("click", () => {
+    if (!languageGateState.resolver) return;
+    const locale = normalizeSupportedLocaleCode(el.languageGateSelect?.value || languageGateState.selectedLocale);
+    persistGuestLocalePreference(locale);
+    const resolve = languageGateState.resolver;
+    languageGateState.resolver = null;
+    resolve(locale);
+  });
+  el.languageGate.dataset.bound = "true";
+}
+
+function syncSkippedI18nAttributes() {
+  if (el.mailboxes) {
+    el.mailboxes.setAttribute("aria-label", t("mailboxes", {}, "Mailboxes"));
+  }
+  if (el.messages) {
+    el.messages.setAttribute("aria-label", t("messages", {}, "Messages"));
+  }
+  if (el.threadList) {
+    el.threadList.setAttribute("aria-label", t("conversation_messages", {}, "Conversation messages"));
+  }
+  if (el.bodyHTMLFrame) {
+    el.bodyHTMLFrame.title = t("html_message_body", {}, "HTML message body");
+  }
+}
+
+function englishCountPhrase(count, singular, plural) {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function formatSelectedCountText(count) {
+  return t("selected_count", { count }, count === 1 ? "1 selected" : `${count} selected`);
+}
+
+function formatRecipientCountText(count) {
+  return t("recipient_count", { count }, englishCountPhrase(count, "recipient", "recipients"));
+}
+
+function formatMessageCountText(count) {
+  return t("message_count", { count }, englishCountPhrase(count, "message", "messages"));
+}
+
+function formatUnreadCountText(count) {
+  return t("unread_count", { count }, count === 1 ? "1 unread" : `${count} unread`);
+}
+
+function localizeFeatureFlagText(value, fallback = "") {
+  const text = String(value || "").trim();
+  if (!text) return fallback;
+  return t(text, {}, fallback || text);
+}
+
+function formatSkippedDuplicateText(count) {
+  if (count <= 0) return "";
+  return t("skipped_duplicate_count", { count }, `, skipped ${englishCountPhrase(count, "duplicate", "duplicates")}`);
+}
+
+function formatGroupRecipientNote(label, inserted, duplicates) {
+  if (inserted <= 0) {
+    return t("group_recipients_none_added", { label }, `${label} did not add any new recipients.`);
+  }
+  const insertedText = formatRecipientCountText(inserted);
+  const duplicateText = formatSkippedDuplicateText(duplicates);
+  return t("group_recipients_added", { label, insertedText, duplicateText }, `${label} added ${insertedText}${duplicateText}.`);
+}
+
+function formatDeviceApprovalPrompt(count) {
+  if (count > 0) {
+    return t(
+      "device_approval_other_devices",
+      { count },
+      count === 1
+        ? "Approve this sign-in from one of your 1 other signed-in device."
+        : `Approve this sign-in from one of your ${count} other signed-in devices.`,
+    );
+  }
+  return t("device_approval_another_device", {}, "Approve this sign-in from another signed-in device.");
+}
+
+function localizeDocumentNow() {
+  if (typeof i18n.localizeDocument === "function") {
+    i18n.localizeDocument();
+    syncSkippedI18nAttributes();
+    return;
+  }
+  if (typeof i18n.localizeTree === "function" && document.body) {
+    i18n.localizeTree(document.body);
+  }
+  syncSkippedI18nAttributes();
+}
+
 const ThemeController = {
   getTheme() {
     return state.theme;
@@ -989,7 +1411,7 @@ const ThemeController = {
     document.documentElement.setAttribute("data-theme", next);
     localStorage.setItem("ui.theme", next);
     if (el.btnTheme) {
-      el.btnTheme.textContent = next === "machine-dark" ? "Theme: Machine" : "Theme: Paper";
+      el.btnTheme.textContent = next === "machine-dark" ? t("Theme: Machine") : t("Theme: Paper");
     }
   },
   initTheme() {
@@ -1050,7 +1472,7 @@ function normalizeNotificationDelivery(delivery, fallback = "center") {
 function formatNotificationClock(value) {
   const date = value ? new Date(value) : new Date();
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return date.toLocaleTimeString(uiLocaleList(), { hour: "numeric", minute: "2-digit" });
 }
 
 function createNotificationID() {
@@ -1590,7 +2012,12 @@ function formatHumanVersion(value) {
   if (!raw) return "";
   const match = /^v(\d+)\.(\d+)\.(\d+)-alpha\.1(?:_(\d{2}))?$/i.exec(raw);
   if (!match) return raw;
-  return `Alpha ${match[1]}.${match[2]}.${match[3]}${match[4] ? `_${match[4]}` : ""}`;
+  return t("Alpha {major}.{minor}.{patch}{suffix}", {
+    major: match[1],
+    minor: match[2],
+    patch: match[3],
+    suffix: match[4] ? `_${match[4]}` : "",
+  });
 }
 
 function isFinalApplyState(stateName) {
@@ -1620,11 +2047,12 @@ function workspaceTitleForView(name) {
 }
 
 function renderWorkspaceTitle(name) {
-  const title = workspaceTitleForView(name);
+  const sourceTitle = workspaceTitleForView(name);
+  const title = t(sourceTitle);
   if (el.workspaceTitle) {
     el.workspaceTitle.textContent = title;
   }
-  document.title = title === "Despatch" ? "Despatch" : `${title} · Despatch`;
+  document.title = sourceTitle === "Despatch" ? title : t("{title} · Despatch", { title });
 }
 
 function currentNotificationSource() {
@@ -1677,9 +2105,10 @@ function buildNotificationPayload(message, kind, config) {
   const delivery = resolveStatusDelivery(message, kind, config);
   if (delivery === "silent") return null;
   const createdAt = normalizeNotificationTimestamp(config.created_at).toISOString();
+  const defaultTitle = String(config.title || defaultNotificationTitle(kind)).trim() || defaultNotificationTitle(kind);
   return {
     kind,
-    title: String(config.title || defaultNotificationTitle(kind)).trim() || defaultNotificationTitle(kind),
+    title: t(defaultTitle),
     body: message,
     created_at: createdAt,
     expires_at: new Date(new Date(createdAt).getTime() + notificationRetentionMs).toISOString(),
@@ -1691,7 +2120,7 @@ function buildNotificationPayload(message, kind, config) {
 }
 
 function setStatus(text, type = "info", options = {}) {
-  const message = String(text || "").trim();
+  const message = t(String(text || "").trim());
   if (!message) return;
   const config = options && typeof options === "object" ? options : {};
   const kind = coerceNotificationKind(config.kind || type);
@@ -1723,17 +2152,17 @@ function apiRequestRef(err) {
 }
 
 function formatAPIError(err, fallbackMessage = "Request failed") {
-  const fallback = String(fallbackMessage || "Request failed");
+  const fallback = t(String(fallbackMessage || "Request failed"));
   if (!err || typeof err !== "object") {
     return fallback;
   }
   if (err.code === "csrf_failed") {
-    return `Action blocked by CSRF protection. Refresh the page and retry.${apiRequestRef(err)}`;
+    return `${t("Action blocked by CSRF protection. Refresh the page and retry.")}${apiRequestRef(err)}`;
   }
   if (err.status === 401 && isSessionErrorCode(String(err.code || ""))) {
     return `${reauthMessageForCode(String(err.code || ""))}${apiRequestRef(err)}`;
   }
-  const base = String(err.message || fallback).trim() || fallback;
+  const base = t(String(err.message || fallback).trim() || fallback);
   return `${base}${apiRequestRef(err)}`;
 }
 
@@ -1777,28 +2206,36 @@ function updateRegisterMFAHelp() {
   if (!el.registerMFAHelp || !el.registerMFAPreference) return;
   const value = String(el.registerMFAPreference.value || "none").toLowerCase();
   if (value === "totp") {
-    el.registerMFAHelp.textContent = "Use an authenticator app (Google Authenticator, 1Password, Authy, etc.).";
+    el.registerMFAHelp.textContent = t(
+      "use_an_authenticator_app_google_authenticator_1password_authy_etc",
+      {},
+      "Use an authenticator app (Google Authenticator, 1Password, Authy, etc.).",
+    );
     return;
   }
   if (value === "webauthn") {
-    el.registerMFAHelp.textContent = "Use Face ID, Touch ID, Windows Hello, or a hardware security key.";
+    el.registerMFAHelp.textContent = t(
+      "use_face_id_touch_id_windows_hello_or_a_hardware_security_key",
+      {},
+      "Use Face ID, Touch ID, Windows Hello, or a hardware security key.",
+    );
     return;
   }
-  el.registerMFAHelp.textContent = "You can enable MFA later in Settings > Sign-In.";
+  el.registerMFAHelp.textContent = t("you_can_enable_mfa_later_in_settings_sign_in", {}, "You can enable MFA later in Settings > Sign-In.");
 }
 
 function authCapabilityReasonMessage(reason, fallback = "Passkeys are currently unavailable.") {
   switch (String(reason || "").trim()) {
     case "mailsec_unavailable":
-      return "Passkeys are unavailable because mailsec is not running.";
+      return t("passkeys_are_unavailable_because_mailsec_is_not_running", {}, "Passkeys are unavailable because mailsec is not running.");
     case "insecure_origin":
-      return "Passkeys require HTTPS, or localhost for local development.";
+      return t("passkeys_require_https_or_localhost_for_local_development", {}, "Passkeys require HTTPS, or localhost for local development.");
     case "rp_mismatch":
-      return "Passkeys are blocked because RP ID does not match this host.";
+      return t("passkeys_are_blocked_because_rp_id_does_not_match_this_host", {}, "Passkeys are blocked because RP ID does not match this host.");
     case "origin_mismatch":
-      return "Passkeys are blocked because this origin is not allowed.";
+      return t("passkeys_are_blocked_because_this_origin_is_not_allowed", {}, "Passkeys are blocked because this origin is not allowed.");
     case "passwordless_disabled":
-      return "Passkey sign-in is turned off in Admin > System > Feature Flags.";
+      return t("passkey_sign_in_is_turned_off_in_admin_system_feature_flags", {}, "Passkey sign-in is turned off in Admin > System > Feature Flags.");
     default:
       return fallback;
   }
@@ -1813,13 +2250,13 @@ function authCapabilityDiagnosticMessage(caps = authCapabilities()) {
     .filter(Boolean);
   const details = [];
   if ((reason === "origin_mismatch" || reason === "rp_mismatch" || reason === "insecure_origin") && requestOrigin) {
-    details.push(`Current origin: ${requestOrigin}.`);
+    details.push(t("current_origin_value", { value: requestOrigin }, `Current origin: ${requestOrigin}.`));
   }
   if (reason === "origin_mismatch" && allowedOrigins.length > 0) {
-    details.push(`Allowed origins: ${allowedOrigins.join(", ")}.`);
+    details.push(t("allowed_origins_value", { value: allowedOrigins.join(", ") }, `Allowed origins: ${allowedOrigins.join(", ")}.`));
   }
   if ((reason === "origin_mismatch" || reason === "rp_mismatch") && rpID) {
-    details.push(`RP ID: ${rpID}.`);
+    details.push(t("rp_id_value", { value: rpID }, `RP ID: ${rpID}.`));
   }
   return details.join(" ");
 }
@@ -1842,16 +2279,20 @@ function renderPasskeyLoginUI() {
   el.passkeyLoginCard.setAttribute("aria-hidden", available ? "false" : "true");
   el.btnPasskeyLogin.disabled = !available;
   if (available) {
-    el.passkeyLoginHint.textContent = "Use a discoverable passkey on this device. Account discovery is automatic.";
+    el.passkeyLoginHint.textContent = t(
+      "use_a_discoverable_passkey_on_this_device_account_discovery_is_automatic",
+      {},
+      "Use a discoverable passkey on this device. Account discovery is automatic.",
+    );
     return;
   }
   if (!browserSupported) {
-    el.passkeyLoginHint.textContent = "Passkey login is not supported by this browser.";
+    el.passkeyLoginHint.textContent = t("passkey_login_is_not_supported_by_this_browser", {}, "Passkey login is not supported by this browser.");
     return;
   }
   const baseMessage = authCapabilityReasonMessage(
     caps.reason,
-    "Passkey login is not available on this server.",
+    t("passkey_login_is_not_available_on_this_server", {}, "Passkey login is not available on this server."),
   );
   const detail = authCapabilityDiagnosticMessage(caps);
   el.passkeyLoginHint.textContent = detail ? `${baseMessage} ${detail}` : baseMessage;
@@ -1864,17 +2305,17 @@ function renderPasskeySecurityNote() {
   const caps = authCapabilities();
   const lines = [];
   if (caps.passkey_mfa_available) {
-    lines.push("Passkeys are available as a second factor (MFA).");
+    lines.push(t("passkeys_are_available_as_a_second_factor_mfa", {}, "Passkeys are available as a second factor (MFA)."));
   }
   if (caps.passkey_passwordless_available) {
-    lines.push("Passkeys are available for primary sign-in.");
+    lines.push(t("passkeys_are_available_for_primary_sign_in", {}, "Passkeys are available for primary sign-in."));
   }
   const unavailableReasons = [];
   if (!caps.passkey_mfa_available) {
-    unavailableReasons.push(authCapabilityReasonMessage(caps.reason, "Passkeys are currently unavailable for MFA."));
+    unavailableReasons.push(authCapabilityReasonMessage(caps.reason, t("passkeys_are_currently_unavailable_for_mfa", {}, "Passkeys are currently unavailable for MFA.")));
   }
   if (!caps.passkey_passwordless_available) {
-    unavailableReasons.push(authCapabilityReasonMessage(caps.reason, "Passkey sign-in is currently unavailable."));
+    unavailableReasons.push(authCapabilityReasonMessage(caps.reason, t("passkey_sign_in_is_currently_unavailable", {}, "Passkey sign-in is currently unavailable.")));
   }
   for (const reason of [...new Set(unavailableReasons.filter(Boolean))]) {
     lines.push(reason);
@@ -1883,7 +2324,13 @@ function renderPasskeySecurityNote() {
   if (diagnostic) {
     lines.push(diagnostic);
   }
-  lines.push("Passkey sign-in uses built-in account discovery and does not require an email prompt.");
+  lines.push(
+    t(
+      "passkey_sign_in_uses_built_in_account_discovery_and_does_not_require_an_email_prompt",
+      {},
+      "Passkey sign-in uses built-in account discovery and does not require an email prompt.",
+    ),
+  );
   el.passkeysNote.textContent = lines.join(" ");
 }
 
@@ -2982,7 +3429,7 @@ function syncComposeDeliveryControls() {
     setComposeDeliveryNote("Scheduled send must be in the future.", "error");
     return;
   }
-  setComposeDeliveryNote(`Scheduled for ${formatDate(isoValue)}.`, "ok");
+  setComposeDeliveryNote(t("Scheduled for {date}.", { date: formatDate(isoValue) }), "ok");
 }
 
 function composeResolvedManualSender() {
@@ -3130,17 +3577,17 @@ async function applyComposeRecipientSuggestion(field, index) {
     }
     if (inserted === 0) {
       tone = "warn";
-      note = `${String(item?.label || "Group")} did not add any new recipients.`;
+      note = formatGroupRecipientNote(String(item?.label || "Group"), 0, duplicates);
     } else {
-      note = `${String(item?.label || "Group")} added ${inserted} recipient${inserted === 1 ? "" : "s"}${duplicates ? `, skipped ${duplicates} duplicate${duplicates === 1 ? "" : "s"}` : ""}.`;
+      note = formatGroupRecipientNote(String(item?.label || "Group"), inserted, duplicates);
     }
   } else {
     const email = String(item?.email || "").trim();
     if (email && addComposeRecipientToken(field, email)) {
-      note = `${email} added.`;
+      note = t("{email} added.", { email });
     } else if (email) {
       tone = "warn";
-      note = `${email} is already in this message.`;
+      note = t("{email} is already in this message.", { email });
     }
   }
   input.value = "";
@@ -3257,7 +3704,7 @@ function syncComposeServerDraftState(draft, options = {}) {
 
 function applyComposeSendFailurePresentation() {
   if (String(state.compose.draftStatus || "").toLowerCase() === "failed" && state.compose.lastSendError) {
-    setComposeDraftNote(`Send failed. ${state.compose.lastSendError}`, "error");
+    setComposeDraftNote(t("Send failed. {error}", { error: state.compose.lastSendError }), "error");
     return;
   }
   if (String(el.composeDraftNote?.textContent || "").trim().toLowerCase().startsWith("send failed.")) {
@@ -3793,7 +4240,9 @@ async function restoreComposeDraftVersion(trigger = null) {
     setComposeDraftNote("Restored an older draft snapshot. Re-add missing attachments or inline images if needed.", "warn");
     return;
   }
-  setComposeDraftNote(`Restored draft version from ${formatDate(selected?.created_at) || "history"}.`, "ok");
+  setComposeDraftNote(t("Restored draft version from {createdAt}.", {
+    createdAt: formatDate(selected?.created_at) || t("history"),
+  }), "ok");
 }
 
 function composeDraftStatusText() {
@@ -3932,7 +4381,7 @@ function buildDraftMessageSummary(draft) {
     id: String(draft?.id || ""),
     mailbox: APP_DRAFTS_MAILBOX,
     isDraft: true,
-    subject: String(draft?.subject || "").trim() || "(no subject)",
+    subject: String(draft?.subject || "").trim() || t("no_subject", {}, "(no subject)"),
     from: draftPrimaryLine(draft),
     preview: previewText,
     date: draft?.updated_at || draft?.created_at || new Date().toISOString(),
@@ -4174,7 +4623,7 @@ function syncMailSelectionControls() {
   const count = selectedMailMessageIDs().size;
   const showBar = count > 0 && !isDraftsMailboxSelected();
   el.mailSelectionCount.textContent = count > 0
-    ? (count === 1 ? "1 selected" : `${count} selected`)
+    ? formatSelectedCountText(count)
     : "No selection";
   el.mailSelectionTools.classList.toggle("hidden", !showBar);
   if (el.mailSelectionBar) {
@@ -5685,10 +6134,10 @@ function openMFAModal(options = {}) {
     closeMFAModal({ action: "cancel", value: "" });
   }
   const {
-    title = "Multi-Factor Authentication",
+    title = t("Multi-Factor Authentication"),
     body = "",
     bodyHTML = "",
-    inputLabel = "Code",
+    inputLabel = t("Code"),
     inputType = "text",
     inputValue = "",
     showInput = false,
@@ -5701,8 +6150,8 @@ function openMFAModal(options = {}) {
   const actionDefs = Array.isArray(actions) && actions.length > 0
     ? actions
     : [
-      { id: "confirm", label: "Confirm", kind: "primary" },
-      { id: "cancel", label: "Cancel", kind: "ghost" },
+      { id: "confirm", label: t("Confirm"), kind: "primary" },
+      { id: "cancel", label: t("Cancel"), kind: "ghost" },
     ];
 
   state.ui.mfaModalOpen = true;
@@ -5738,7 +6187,7 @@ function openMFAModal(options = {}) {
     button.className = "cmd-btn";
     if (action.kind === "primary") button.classList.add("cmd-btn--primary");
     if (action.kind === "danger") button.classList.add("cmd-btn--danger");
-    button.textContent = String(action.label || action.id || "Action");
+    button.textContent = String(action.label || action.id || t("Action"));
     button.dataset.actionId = String(action.id || "action");
     button.addEventListener("click", () => {
       const value = showInput && el.mfaModalInput ? String(el.mfaModalInput.value || "") : "";
@@ -5982,11 +6431,11 @@ function printRecoveryCodes(codes) {
   const text = Array.isArray(codes) ? codes.join("\n") : "";
   const popup = window.open("", "_blank", "noopener,noreferrer");
   if (!popup) {
-    setStatus("Popup blocked. Use Download instead to save recovery codes.", "error");
+    setStatus(t("Popup blocked. Use Download instead to save recovery codes."), "error");
     return;
   }
-  popup.document.write("<!doctype html><html><head><title>Recovery Codes</title></head><body>");
-  popup.document.write("<h1>Recovery Codes</h1>");
+  popup.document.write(`<!doctype html><html><head><title>${escapeHtml(t("Recovery Codes"))}</title></head><body>`);
+  popup.document.write(`<h1>${escapeHtml(t("Recovery Codes"))}</h1>`);
   popup.document.write(`<pre>${text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]))}</pre>`);
   popup.document.write("</body></html>");
   popup.document.close();
@@ -6000,12 +6449,12 @@ function createRecoveryCodesPanel(codes, options = {}) {
   wrapper.className = "mfa-recovery-card";
 
   const title = document.createElement("strong");
-  title.textContent = "Recovery codes";
+  title.textContent = t("Recovery codes");
   wrapper.appendChild(title);
 
   const hint = document.createElement("p");
   hint.className = "hint";
-  hint.textContent = "Store these codes offline. Each code can be used only once if you lose access to your MFA device.";
+  hint.textContent = t("Store these codes offline. Each code can be used only once if you lose access to your MFA device.");
   wrapper.appendChild(hint);
 
   const list = document.createElement("ol");
@@ -6023,17 +6472,17 @@ function createRecoveryCodesPanel(codes, options = {}) {
   const copyBtn = document.createElement("button");
   copyBtn.type = "button";
   copyBtn.className = "cmd-btn cmd-btn--dense";
-  copyBtn.textContent = "Copy";
+  copyBtn.textContent = t("Copy");
   copyBtn.addEventListener("click", async () => {
     const ok = await copyTextToClipboard(values.join("\n"));
-    setStatus(ok ? "Recovery codes copied." : "Failed to copy recovery codes.", ok ? "ok" : "error");
+    setStatus(ok ? t("Recovery codes copied.") : t("Failed to copy recovery codes."), ok ? "ok" : "error");
   });
   actions.appendChild(copyBtn);
 
   const downloadBtn = document.createElement("button");
   downloadBtn.type = "button";
   downloadBtn.className = "cmd-btn cmd-btn--dense";
-  downloadBtn.textContent = "Download .txt";
+  downloadBtn.textContent = t("Download .txt");
   downloadBtn.addEventListener("click", () => {
     downloadTextFile("despatch-recovery-codes.txt", values.join("\n"));
   });
@@ -6042,7 +6491,7 @@ function createRecoveryCodesPanel(codes, options = {}) {
   const printBtn = document.createElement("button");
   printBtn.type = "button";
   printBtn.className = "cmd-btn cmd-btn--dense";
-  printBtn.textContent = "Print";
+  printBtn.textContent = t("Print");
   printBtn.addEventListener("click", () => printRecoveryCodes(values));
   actions.appendChild(printBtn);
 
@@ -6056,7 +6505,7 @@ function createRecoveryCodesPanel(codes, options = {}) {
     ackInput.type = "checkbox";
     ackInput.checked = !!options.ackDefault;
     const ackText = document.createElement("span");
-    ackText.textContent = options.ackLabel || "I saved these recovery codes.";
+    ackText.textContent = options.ackLabel || t("I saved these recovery codes.");
     ackWrap.appendChild(ackInput);
     ackWrap.appendChild(ackText);
     wrapper.appendChild(ackWrap);
@@ -6070,7 +6519,7 @@ function createRecoveryCodesPanel(codes, options = {}) {
     rememberInput.type = "checkbox";
     rememberInput.checked = options.rememberDefault !== false;
     const rememberText = document.createElement("span");
-    rememberText.textContent = "Remember this device for 30 days";
+    rememberText.textContent = t("Remember this device for 30 days");
     rememberWrap.appendChild(rememberInput);
     rememberWrap.appendChild(rememberText);
     wrapper.appendChild(rememberWrap);
@@ -6090,7 +6539,7 @@ function createBackupConfirmationPanel(options = {}) {
 
   const text = document.createElement("p");
   text.className = "hint";
-  text.textContent = options.body || "Confirm that you saved your recovery codes to complete MFA setup.";
+  text.textContent = options.body || t("Confirm that you saved your recovery codes to complete MFA setup.");
   wrapper.appendChild(text);
 
   const ackWrap = document.createElement("label");
@@ -6099,7 +6548,7 @@ function createBackupConfirmationPanel(options = {}) {
   ackInput.type = "checkbox";
   ackInput.checked = !!options.ackDefault;
   const ackText = document.createElement("span");
-  ackText.textContent = options.ackLabel || "I saved my recovery codes.";
+  ackText.textContent = options.ackLabel || t("I saved my recovery codes.");
   ackWrap.appendChild(ackInput);
   ackWrap.appendChild(ackText);
   wrapper.appendChild(ackWrap);
@@ -6110,7 +6559,7 @@ function createBackupConfirmationPanel(options = {}) {
   rememberInput.type = "checkbox";
   rememberInput.checked = options.rememberDefault !== false;
   const rememberText = document.createElement("span");
-  rememberText.textContent = "Remember this device for 30 days";
+  rememberText.textContent = t("Remember this device for 30 days");
   rememberWrap.appendChild(rememberInput);
   rememberWrap.appendChild(rememberText);
   wrapper.appendChild(rememberWrap);
@@ -6127,7 +6576,7 @@ function createRememberDevicePanel(defaultChecked = true) {
   wrapper.className = "mfa-recovery-card";
   const text = document.createElement("p");
   text.className = "hint";
-  text.textContent = "Choose how to verify this login session.";
+  text.textContent = t("Choose how to verify this login session.");
   wrapper.appendChild(text);
   const rememberWrap = document.createElement("label");
   rememberWrap.className = "mfa-inline-check";
@@ -6135,7 +6584,7 @@ function createRememberDevicePanel(defaultChecked = true) {
   rememberInput.type = "checkbox";
   rememberInput.checked = defaultChecked !== false;
   const rememberText = document.createElement("span");
-  rememberText.textContent = "Remember this device for 30 days";
+  rememberText.textContent = t("Remember this device for 30 days");
   rememberWrap.appendChild(rememberInput);
   rememberWrap.appendChild(rememberText);
   wrapper.appendChild(rememberWrap);
@@ -6160,22 +6609,24 @@ async function verifyTOTPCodeFlow(endpoint, title = "Enter Authenticator Code", 
   let errorHint = "";
   while (true) {
     const out = await openMFAModal({
-      title,
-      body: errorHint || (title.includes("Recovery") ? "Enter one of your saved recovery codes." : "Enter the 6-digit code from your authenticator app."),
+      title: t(title),
+      body: errorHint || (title.includes("Recovery")
+        ? t("Enter one of your saved recovery codes.")
+        : t("Enter the 6-digit code from your authenticator app.")),
       showInput: true,
-      inputLabel: label,
+      inputLabel: t(label),
       inputType: "text",
       actions: [
-        { id: "confirm", label: "Verify", kind: "primary" },
-        { id: "cancel", label: "Cancel", kind: "ghost" },
+        { id: "confirm", label: t("Verify"), kind: "primary" },
+        { id: "cancel", label: t("Cancel"), kind: "ghost" },
       ],
     });
     if (!out || out.action !== "confirm") {
-      throw new Error("MFA verification was cancelled");
+      throw new Error(t("MFA verification was cancelled."));
     }
     const code = String(out.value || "").trim();
     if (!code) {
-      errorHint = "Enter a code to continue.";
+      errorHint = t("Enter a code to continue.");
       continue;
     }
     try {
@@ -6219,23 +6670,23 @@ async function runRecoveryEmailVerifyFlow(rememberDevice = true) {
   while (true) {
     const bodyParts = [];
     if (errorHint) bodyParts.push(errorHint);
-    if (deliveryHint) bodyParts.push(`We sent a ${codeLength}-digit code to ${deliveryHint}.`);
-    else bodyParts.push("Enter the code we sent to your recovery email.");
-    if (expiresAt) bodyParts.push(`This code expires ${formatDateTimeOrNA(expiresAt)}.`);
+    if (deliveryHint) bodyParts.push(t("We sent a {codeLength}-digit code to {deliveryHint}.", { codeLength, deliveryHint }));
+    else bodyParts.push(t("Enter the code we sent to your recovery email."));
+    if (expiresAt) bodyParts.push(t("This code expires {expiresAt}.", { expiresAt: formatDateTimeOrNA(expiresAt) }));
     const out = await openMFAModal({
-      title: "Enter Recovery Email Code",
+      title: t("Enter Recovery Email Code"),
       body: bodyParts.join(" "),
       showInput: true,
-      inputLabel: "Email code",
+      inputLabel: t("Email code"),
       inputType: "text",
       actions: [
-        { id: "confirm", label: "Verify", kind: "primary" },
-        { id: "resend", label: "Resend Code", kind: "ghost" },
-        { id: "cancel", label: "Cancel", kind: "ghost" },
+        { id: "confirm", label: t("Verify"), kind: "primary" },
+        { id: "resend", label: t("Resend Code"), kind: "ghost" },
+        { id: "cancel", label: t("Cancel"), kind: "ghost" },
       ],
     });
     if (!out || out.action === "cancel") {
-      throw new Error("Recovery email verification was cancelled.");
+      throw new Error(t("Recovery email verification was cancelled."));
     }
     if (out.action === "resend") {
       try {
@@ -6248,7 +6699,7 @@ async function runRecoveryEmailVerifyFlow(rememberDevice = true) {
     }
     const code = String(out.value || "").trim();
     if (!code) {
-      errorHint = "Enter the recovery email code to continue.";
+      errorHint = t("Enter the recovery email code to continue.");
       continue;
     }
     try {
@@ -6276,7 +6727,7 @@ async function runDeviceApprovalFlow(rememberDevice = true) {
   });
   const requestID = String(begin.request_id || "").trim();
   if (!requestID) {
-    throw new Error("Device approval request could not be created.");
+    throw new Error(t("Device approval request could not be created."));
   }
   let active = true;
   const pollPromise = (async () => {
@@ -6304,14 +6755,12 @@ async function runDeviceApprovalFlow(rememberDevice = true) {
     }
   })();
   const count = Number(begin.other_device_count || 0);
-  const body = count > 0
-    ? `Approve this sign-in from one of your ${count} other signed-in device${count === 1 ? "" : "s"}.`
-    : "Approve this sign-in from another signed-in device.";
+  const body = formatDeviceApprovalPrompt(count);
   const out = await openMFAModal({
-    title: "Approve From Another Device",
-    body: `${body} Keep this window open while we wait for approval.`,
+    title: t("Approve From Another Device"),
+    body: `${body} ${t("Keep this window open while we wait for approval.")}`,
     actions: [
-      { id: "cancel", label: "Cancel", kind: "ghost" },
+      { id: "cancel", label: t("Cancel"), kind: "ghost" },
     ],
   });
   active = false;
@@ -6328,24 +6777,24 @@ async function runDeviceApprovalFlow(rememberDevice = true) {
     } catch {
       // ignore cancellation cleanup errors
     }
-    throw new Error("Device approval was cancelled.");
+    throw new Error(t("Device approval was cancelled."));
   }
   if (out.action === "approved") {
     return;
   }
   if (out.action === "rejected") {
-    throw new Error("The sign-in request was rejected from another device.");
+    throw new Error(t("The sign-in request was rejected from another device."));
   }
   if (out.action === "cancelled") {
-    throw new Error("The device approval request was cancelled.");
+    throw new Error(t("The device approval request was cancelled."));
   }
   if (out.action === "expired") {
-    throw new Error("The device approval request expired. Try again.");
+    throw new Error(t("The device approval request expired. Try again."));
   }
   if (out.action === "error") {
-    throw new Error(String(out.meta?.error || "Device approval failed."));
+    throw new Error(String(out.meta?.error || t("Device approval failed.")));
   }
-  throw new Error("Device approval did not complete.");
+  throw new Error(t("Device approval did not complete."));
 }
 
 async function runTOTPSetupFlow() {
@@ -6356,7 +6805,8 @@ async function runTOTPSetupFlow() {
     skipMFAHandling: true,
   });
 
-  const instructions = Array.isArray(enroll.setup_instructions) ? enroll.setup_instructions : [];
+  const instructions = (Array.isArray(enroll.setup_instructions) ? enroll.setup_instructions : [])
+    .map((line) => t(line, {}, line));
   const setupPanel = document.createElement("div");
   setupPanel.className = "mfa-qr-wrap";
 
@@ -6364,23 +6814,23 @@ async function runTOTPSetupFlow() {
     const qr = document.createElement("img");
     qr.className = "mfa-qr-image";
     qr.src = String(enroll.qr_png_data_url);
-    qr.alt = "Authenticator app QR code";
+    qr.alt = t("Authenticator app QR code");
     setupPanel.appendChild(qr);
   }
 
   const manualWrap = document.createElement("div");
   manualWrap.className = "mfa-manual-key";
   const keyLabel = document.createElement("span");
-  keyLabel.textContent = "Can’t scan?";
+  keyLabel.textContent = t("Can’t scan?");
   const keyValue = document.createElement("code");
   keyValue.textContent = String(enroll.manual_entry_key || enroll.secret || "");
   const keyCopyBtn = document.createElement("button");
   keyCopyBtn.type = "button";
   keyCopyBtn.className = "cmd-btn cmd-btn--dense";
-  keyCopyBtn.textContent = "Copy key";
+  keyCopyBtn.textContent = t("Copy key");
   keyCopyBtn.addEventListener("click", async () => {
     const ok = await copyTextToClipboard(keyValue.textContent);
-    setStatus(ok ? "Manual key copied." : "Failed to copy manual key.", ok ? "ok" : "error");
+    setStatus(ok ? t("Manual key copied.") : t("Failed to copy manual key."), ok ? "ok" : "error");
   });
   manualWrap.appendChild(keyLabel);
   manualWrap.appendChild(keyValue);
@@ -6389,20 +6839,20 @@ async function runTOTPSetupFlow() {
 
   const appHint = document.createElement("p");
   appHint.className = "hint";
-  appHint.textContent = "Supported apps: Google Authenticator, Microsoft Authenticator, 1Password, Authy.";
+  appHint.textContent = t("Supported apps: Google Authenticator, Microsoft Authenticator, 1Password, Authy.");
   setupPanel.appendChild(appHint);
 
   const setupIntro = await openMFAModal({
-    title: "Set Up Authenticator App",
-    body: instructions.length ? instructions.join(" ") : "Scan the QR code in your authenticator app.",
+    title: t("Set Up Authenticator App"),
+    body: instructions.length ? instructions.join(" ") : t("Scan the QR code in your authenticator app."),
     extraContent: setupPanel,
     actions: [
-      { id: "continue", label: "Continue", kind: "primary" },
-      { id: "cancel", label: "Cancel", kind: "ghost" },
+      { id: "continue", label: t("Continue"), kind: "primary" },
+      { id: "cancel", label: t("Cancel"), kind: "ghost" },
     ],
   });
   if (!setupIntro || setupIntro.action !== "continue") {
-    throw new Error("TOTP setup was cancelled");
+    throw new Error(t("TOTP setup was cancelled."));
   }
 
   let errorHint = "";
@@ -6412,13 +6862,13 @@ async function runTOTPSetupFlow() {
       includeRemember: true,
       ackDefault: false,
       rememberDefault: true,
-      ackLabel: "I saved these recovery codes.",
+      ackLabel: t("I saved these recovery codes."),
     });
     const out = await openMFAModal({
-      title: "Confirm Authenticator App",
-      body: errorHint || "Enter the 6-digit code from your authenticator app, then confirm recovery codes are saved.",
+      title: t("Confirm Authenticator App"),
+      body: errorHint || t("Enter the 6-digit code from your authenticator app, then confirm recovery codes are saved."),
       showInput: true,
-      inputLabel: "Authenticator code",
+      inputLabel: t("Authenticator code"),
       inputType: "text",
       extraContent: recoveryPanel.node,
       collect: () => ({
@@ -6426,22 +6876,22 @@ async function runTOTPSetupFlow() {
         remember_device: recoveryPanel.getRemember(),
       }),
       actions: [
-        { id: "confirm", label: "Enable MFA", kind: "primary" },
-        { id: "cancel", label: "Cancel", kind: "ghost" },
+        { id: "confirm", label: t("Enable MFA"), kind: "primary" },
+        { id: "cancel", label: t("Cancel"), kind: "ghost" },
       ],
     });
     if (!out || out.action !== "confirm") {
-      throw new Error("TOTP setup was cancelled");
+      throw new Error(t("TOTP setup was cancelled."));
     }
     const code = String(out.value || "").trim();
     const ack = !!out.meta?.recovery_ack;
     const remember = !!out.meta?.remember_device;
     if (!ack) {
-      errorHint = "Confirm that recovery codes are saved before continuing.";
+      errorHint = t("Confirm that recovery codes are saved before continuing.");
       continue;
     }
     if (!code) {
-      errorHint = "Enter the authenticator code to continue.";
+      errorHint = t("Enter the authenticator code to continue.");
       continue;
     }
     try {
@@ -6472,31 +6922,31 @@ async function runMFARecoveryAckFlow(recoveryCodes = []) {
         includeRemember: true,
         ackDefault: false,
         rememberDefault: true,
-        ackLabel: "I saved these recovery codes.",
+        ackLabel: t("I saved these recovery codes."),
       })
       : createBackupConfirmationPanel({
-        body: "Finish MFA setup by confirming your recovery codes are saved.",
+        body: t("Finish MFA setup by confirming your recovery codes are saved."),
         ackDefault: false,
         rememberDefault: true,
       });
     const out = await openMFAModal({
-      title: "Finish MFA Setup",
-      body: errorHint || "Recovery codes are required as your backup sign-in method.",
+      title: t("Finish MFA Setup"),
+      body: errorHint || t("Recovery codes are required as your backup sign-in method."),
       extraContent: panel.node,
       collect: () => ({
         recovery_ack: panel.getAck(),
         remember_device: panel.getRemember(),
       }),
       actions: [
-        { id: "confirm", label: "Finish Setup", kind: "primary" },
-        { id: "cancel", label: "Cancel", kind: "ghost" },
+        { id: "confirm", label: t("Finish Setup"), kind: "primary" },
+        { id: "cancel", label: t("Cancel"), kind: "ghost" },
       ],
     });
     if (!out || out.action !== "confirm") {
-      throw new Error("MFA setup was cancelled.");
+      throw new Error(t("MFA setup was cancelled."));
     }
     if (!out.meta?.recovery_ack) {
-      errorHint = "Confirm that recovery codes are saved before continuing.";
+      errorHint = t("Confirm that recovery codes are saved before continuing.");
       continue;
     }
     try {
@@ -6518,7 +6968,7 @@ async function runMFARecoveryAckFlow(recoveryCodes = []) {
 
 async function runWebAuthnSetupFlow() {
   if (!supportsWebAuthn()) {
-    throw new Error("Passkey setup is not supported in this browser or device.");
+    throw new Error(t("Passkey setup is not supported in this browser or device."));
   }
   const begin = await api("/api/v2/security/mfa/webauthn/register/begin", {
     method: "POST",
@@ -6529,7 +6979,7 @@ async function runWebAuthnSetupFlow() {
   const options = normalizePublicKeyCreateOptions(begin);
   const credential = await navigator.credentials.create({ publicKey: options });
   if (!credential) {
-    throw new Error("Passkey registration was cancelled.");
+    throw new Error(t("Passkey registration was cancelled."));
   }
   const payload = credentialToPayload(credential);
   payload.challenge = String(begin.challenge || "");
@@ -6545,7 +6995,7 @@ async function runWebAuthnSetupFlow() {
 
 async function runWebAuthnVerifyFlow(rememberDevice = true) {
   if (!supportsWebAuthn()) {
-    throw new Error("Passkey verification is not supported in this browser.");
+    throw new Error(t("Passkey verification is not supported in this browser."));
   }
   const begin = await api("/api/v2/mfa/webauthn/begin", {
     method: "POST",
@@ -6556,7 +7006,7 @@ async function runWebAuthnVerifyFlow(rememberDevice = true) {
   const options = normalizePublicKeyGetOptions(begin);
   const credential = await navigator.credentials.get({ publicKey: options });
   if (!credential) {
-    throw new Error("Passkey verification was cancelled.");
+    throw new Error(t("Passkey verification was cancelled."));
   }
   await api("/api/v2/mfa/webauthn/finish", {
     method: "POST",
@@ -6568,11 +7018,11 @@ async function runWebAuthnVerifyFlow(rememberDevice = true) {
 
 async function runPasskeyPrimaryLoginFlow() {
   if (!supportsWebAuthn()) {
-    throw new Error("Passkey login is not supported in this browser.");
+    throw new Error(t("Passkey login is not supported in this browser."));
   }
   const caps = authCapabilities();
   if (!caps.passkey_passwordless_available) {
-    throw new Error(authCapabilityReasonMessage(caps.reason, "Passkey login is not available."));
+    throw new Error(authCapabilityReasonMessage(caps.reason, t("Passkey login is not available.")));
   }
   const begin = await api("/api/v1/login/passkey/begin", {
     method: "POST",
@@ -6582,7 +7032,7 @@ async function runPasskeyPrimaryLoginFlow() {
   const options = normalizePublicKeyGetOptions(begin);
   const credential = await navigator.credentials.get({ publicKey: options });
   if (!credential) {
-    throw new Error("Passkey login was cancelled.");
+    throw new Error(t("Passkey login was cancelled."));
   }
   return api("/api/v1/login/passkey/finish", {
     method: "POST",
@@ -6596,12 +7046,12 @@ async function runPasskeyPrimaryLoginFlow() {
 
 function formatPasskeyPrimaryLoginError(err) {
   if (!err || typeof err !== "object") {
-    return "Passkey login failed.";
+    return t("Passkey login failed.");
   }
   if (err.code !== "invalid_credentials") {
     return formatAPIError(err, "Passkey login failed.");
   }
-  return `No discoverable passkey was accepted on this device. Try again or use password sign-in.${apiRequestRef(err)}`;
+  return `${t("No discoverable passkey was accepted on this device. Try again or use password sign-in.")}${apiRequestRef(err)}`;
 }
 
 async function runMFASetupStage(stage) {
@@ -6612,7 +7062,7 @@ async function runMFASetupStage(stage) {
     return;
   }
   const switchTarget = method === "totp" ? "webauthn" : "totp";
-  const switchLabel = method === "totp" ? "Switch To Passkey" : "Switch To Authenticator App";
+  const switchLabel = method === "totp" ? t("Switch To Passkey") : t("Switch To Authenticator App");
   while (true) {
     try {
       if (method === "totp") {
@@ -6620,19 +7070,19 @@ async function runMFASetupStage(stage) {
       } else if (method === "webauthn") {
         await runWebAuthnSetupFlow();
       } else {
-        throw new Error("Unsupported MFA setup method.");
+        throw new Error(t("Unsupported MFA setup method."));
       }
       return;
     } catch (err) {
       const actions = [
-        { id: "retry", label: "Retry", kind: "primary" },
-        { id: "cancel", label: "Cancel", kind: "ghost" },
+        { id: "retry", label: t("Retry"), kind: "primary" },
+        { id: "cancel", label: t("Cancel"), kind: "ghost" },
       ];
       if (method === "totp" || method === "webauthn") {
         actions.splice(1, 0, { id: "switch", label: switchLabel, kind: "ghost" });
       }
       const out = await openMFAModal({
-        title: "MFA Setup Required",
+        title: t("MFA Setup Required"),
         body: formatAPIError(err, "Setup failed."),
         actions,
       });
@@ -6658,24 +7108,26 @@ async function runMFAVerificationStage() {
     const rememberPanel = createRememberDevicePanel(true);
     const actions = [];
     if (supportsWebAuthn()) {
-      actions.push({ id: "passkey", label: "Use Passkey", kind: "primary" });
+      actions.push({ id: "passkey", label: t("Use Passkey"), kind: "primary" });
     }
-    actions.push({ id: "totp", label: "Use Authenticator Code", kind: "primary" });
-    actions.push({ id: "device_approval", label: "Approve From Another Device", kind: "ghost" });
+    actions.push({ id: "totp", label: t("Use Authenticator Code"), kind: "primary" });
+    actions.push({ id: "device_approval", label: t("Approve From Another Device"), kind: "ghost" });
     if (userHasDistinctRecoveryEmail(state.user)) {
-      actions.push({ id: "recovery_email", label: "Use Recovery Email", kind: "ghost" });
+      actions.push({ id: "recovery_email", label: t("Use Recovery Email"), kind: "ghost" });
     }
-    actions.push({ id: "recovery", label: "Use Recovery Code", kind: "ghost" });
-    actions.push({ id: "cancel", label: "Cancel", kind: "ghost" });
+    actions.push({ id: "recovery", label: t("Use Recovery Code"), kind: "ghost" });
+    actions.push({ id: "cancel", label: t("Cancel"), kind: "ghost" });
     const out = await openMFAModal({
-      title: "MFA Verification Required",
-      body: lastError ? `Verification failed: ${lastError}` : "Choose how to verify this login session.",
+      title: t("MFA Verification Required"),
+      body: lastError
+        ? `${t("Verification failed")}: ${lastError}`
+        : t("Choose how to verify this login session."),
       extraContent: rememberPanel.node,
       collect: () => ({ remember_device: rememberPanel.getRemember() }),
       actions,
     });
     if (!out || out.action === "cancel") {
-      throw new Error("MFA verification was cancelled.");
+      throw new Error(t("MFA verification was cancelled."));
     }
     const rememberDevice = !!out.meta?.remember_device;
     try {
@@ -6731,12 +7183,16 @@ async function promptLegacyMFAIfNeeded() {
   }
   state.auth.legacyMFAOfferShownForSession = true;
   const out = await openMFAModal({
-    title: "Secure Your Account",
-    body: "Set up multi-factor authentication now for stronger account security.",
+    title: t("secure_your_account", {}, "Secure Your Account"),
+    body: t(
+      "set_up_multi_factor_authentication_now_for_stronger_account_security",
+      {},
+      "Set up multi-factor authentication now for stronger account security.",
+    ),
     actions: [
-      { id: "totp", label: "Set Up Authenticator App", kind: "primary" },
-      { id: "passkey", label: "Set Up Passkey", kind: "primary" },
-      { id: "later", label: "Not now", kind: "ghost" },
+      { id: "totp", label: t("set_up_authenticator_app", {}, "Set Up Authenticator App"), kind: "primary" },
+      { id: "passkey", label: t("set_up_passkey", {}, "Set Up Passkey"), kind: "primary" },
+      { id: "later", label: t("not_now", {}, "Not now"), kind: "ghost" },
     ],
   });
   if (!out || out.action === "later") {
@@ -6764,7 +7220,7 @@ async function promptLegacyMFAIfNeeded() {
       logErrors: false,
     });
     state.user.legacy_mfa_prompt = false;
-    setStatus("MFA has been enabled for this account.", "ok");
+    setStatus(t("MFA has been enabled for this account."), "ok");
   } catch (err) {
     setStatus(formatAPIError(err, "MFA setup failed."), "error");
   } finally {
@@ -7100,7 +7556,7 @@ function mountCapWidget(paths) {
   widget.setAttribute("cap-api-endpoint", paths.endpoint);
   widget.setAttribute("data-cap-api-endpoint", paths.endpoint);
   widget.setAttribute("data-cap-hidden-field-name", "cap_internal_token");
-  widget.setAttribute("data-cap-language", "en");
+  widget.setAttribute("data-cap-language", uiLanguageCode());
   widget.setAttribute("data-cap-max-retries", "3");
   widget.addEventListener("solve", (event) => {
     const detailToken = String(event?.detail?.token || "").trim();
@@ -7159,12 +7615,28 @@ function renderResetCapabilityNote() {
   const reasonText = describeResetSenderReason(senderReason);
   if (!enabled) {
     const suffix = reasonText ? ` ${reasonText}` : "";
-    el.resetCapabilityNote.textContent = `Reset is currently unavailable (${authMode} mode, delivery ${delivery}, sender ${senderStatus}).${suffix}`;
+    el.resetCapabilityNote.textContent = t("Reset is currently unavailable ({authMode} mode, delivery {delivery}, sender {senderStatus}).{suffix}", {
+      authMode,
+      delivery,
+      senderStatus,
+      suffix,
+    });
     return;
   }
   const mappingNote = cap.requires_mapped_login ? "Mapped mailbox login is required." : "Mapped mailbox login is optional.";
   const senderNote = reasonText ? ` ${reasonText}` : "";
-  el.resetCapabilityNote.textContent = `Reset enabled (${authMode}, delivery ${delivery}, token TTL ${ttl} min, sender ${senderAddress}, status ${senderStatus}).${senderNote} ${mappingNote}`.trim();
+  el.resetCapabilityNote.textContent = t(
+    "Reset enabled ({authMode}, delivery {delivery}, token TTL {ttl} min, sender {senderAddress}, status {senderStatus}).{senderNote} {mappingNote}",
+    {
+      authMode,
+      delivery,
+      ttl,
+      senderAddress,
+      senderStatus,
+      senderNote,
+      mappingNote,
+    },
+  ).trim();
 }
 
 async function loadResetCapabilities() {
@@ -7284,13 +7756,20 @@ async function initCaptchaUI() {
     state.captcha.widgetBlocked = true;
     setCaptchaToken("");
     const assetHint = paths
-      ? `Check self-hosted CAP assets: ${paths.scriptURL} and ${paths.wasmURL}.`
+      ? t("Check self-hosted CAP assets: {scriptURL} and {wasmURL}.", {
+        scriptURL: paths.scriptURL,
+        wasmURL: paths.wasmURL,
+      })
       : "Check CAPTCHA_WIDGET_API_URL and CAP standalone route.";
     const secureHint = !window.isSecureContext
       ? " Browser context is not secure; CAPTCHA worker hashing requires HTTPS."
       : "";
     setCaptchaError("Captcha widget failed to load from self-hosted CAP assets.");
-    setCaptchaNote(`CAP asset server unavailable. ${assetHint}${secureHint} (${err.message})`, "error");
+    setCaptchaNote(t("CAP asset server unavailable. {assetHint}{secureHint} ({error}).", {
+      assetHint,
+      secureHint,
+      error: err.message,
+    }), "error");
   }
   syncRegisterSubmitState();
 }
@@ -7370,7 +7849,7 @@ function setSetupCooldown(waitSec) {
       OOBEController.refreshNavState();
       return;
     }
-    setSetupInlineStatus(`Too many attempts. Retry in ${remaining}s.`, "error");
+    setSetupInlineStatus(t("Too many attempts. Retry in {remaining}s.", { remaining }), "error");
     OOBEController.refreshNavState();
   }, 250);
 }
@@ -8651,18 +9130,20 @@ async function exportContactsFile(format) {
 }
 
 function setActiveSettingsSection(name) {
-  const next = ["signin", "mail", "devices", "sessions"].includes(String(name || "")) ? String(name) : "signin";
+  const next = ["interface", "signin", "mail", "devices", "sessions"].includes(String(name || "")) ? String(name) : "signin";
   state.ui.activeSettingsSection = next;
   state.ui.settingsNav.domain = next;
   state.ui.settingsNav.page = "list";
   state.ui.settingsNav.detailId = "";
   const sections = {
+    interface: el.settingsSectionInterface,
     signin: el.settingsSectionSignIn,
     mail: el.settingsSectionMail,
     devices: el.settingsSectionDevices,
     sessions: el.settingsSectionSessions,
   };
   const nav = {
+    interface: el.settingsNavInterface,
     signin: el.settingsNavSignIn,
     mail: el.settingsNavMail,
     devices: el.settingsNavDevices,
@@ -8670,6 +9151,72 @@ function setActiveSettingsSection(name) {
   };
   Object.entries(sections).forEach(([key, node]) => renderSection(node, key === next));
   renderDomainSidebar(nav, next);
+}
+
+async function loadInterfaceSettings() {
+  const requestToken = Number(state.settings.interface.requestToken || 0) + 1;
+  state.settings.interface.requestToken = requestToken;
+  state.settings.interface.loading = true;
+  const currentLocale = currentAppLocaleCode();
+  state.settings.interface.locale = currentLocale;
+  state.settings.interface.loaded = false;
+  state.settings.interface.persistedLocale = preferredLocaleFromPayload(state.user || {});
+  populateLanguageSelect(el.settingsLanguageSelect, currentLocale);
+  if (el.settingsLanguageSelect) el.settingsLanguageSelect.disabled = true;
+  if (el.btnSettingsLanguageSave) el.btnSettingsLanguageSave.disabled = true;
+  if (!state.user) {
+    state.settings.interface.loading = false;
+    if (el.settingsLanguageSelect) el.settingsLanguageSelect.disabled = false;
+    if (el.btnSettingsLanguageSave) el.btnSettingsLanguageSave.disabled = false;
+    return;
+  }
+  try {
+    const prefs = await api("/api/v2/preferences", { logErrors: false });
+    if (requestToken !== state.settings.interface.requestToken) {
+      return;
+    }
+    const persistedLocale = preferredLocaleFromPayload(prefs);
+    state.settings.interface.persistedLocale = persistedLocale;
+    state.settings.interface.locale = persistedLocale || currentLocale;
+    state.settings.interface.loaded = true;
+    populateLanguageSelect(el.settingsLanguageSelect, state.settings.interface.locale);
+  } catch (err) {
+    if (requestToken !== state.settings.interface.requestToken) {
+      return;
+    }
+    state.settings.interface.loaded = false;
+    setStatus(formatAPIError(err, t("failed_to_load_interface_settings", {}, "Failed to load interface settings.")), "error");
+  } finally {
+    if (requestToken === state.settings.interface.requestToken) {
+      state.settings.interface.loading = false;
+      if (el.settingsLanguageSelect) el.settingsLanguageSelect.disabled = false;
+      if (el.btnSettingsLanguageSave) el.btnSettingsLanguageSave.disabled = false;
+    }
+  }
+}
+
+async function saveInterfaceLanguagePreference() {
+  if (!state.user || !el.settingsLanguageSelect) return;
+  const selectedLocale = normalizeSupportedLocaleCode(el.settingsLanguageSelect.value || currentAppLocaleCode());
+  await api("/api/v2/preferences", {
+    method: "PATCH",
+    json: { locale: selectedLocale },
+    logErrors: false,
+  });
+  state.settings.interface.persistedLocale = selectedLocale;
+  state.settings.interface.locale = selectedLocale;
+  state.settings.interface.loaded = true;
+  if (state.user) {
+    state.user.locale = selectedLocale;
+  }
+  if (currentAppLocaleCode() !== selectedLocale) {
+    setStatus(t("language_saved_reloading_interface", {}, "Language saved. Reloading interface..."), "ok");
+    window.setTimeout(() => {
+      window.location.reload();
+    }, 140);
+    return;
+  }
+  setStatus(t("language_saved", {}, "Language saved."), "ok");
 }
 
 function setActiveAdminSection(name) {
@@ -11408,10 +11955,10 @@ async function deleteMailSettingsIdentity() {
 
 function formatDateTimeOrNA(raw) {
   const value = String(raw || "").trim();
-  if (!value) return "n/a";
+  if (!value) return t("n/a");
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString();
+  return parsed.toLocaleString(uiLocaleList());
 }
 
 function renderJumpResults(container, items, onPick) {
@@ -11464,6 +12011,18 @@ function buildJumpResults(entries, rawQuery) {
 
 function settingsSearchEntries() {
   const entries = [
+    {
+      label: t("Interface"),
+      subtitle: t("Settings domain"),
+      keywords: ["interface", "language", "locale", "settings", "язык", "интерфейс", "локаль"],
+      target: { domain: "interface" },
+    },
+    {
+      label: t("Language"),
+      subtitle: t("Interface"),
+      keywords: ["language", "locale", "account language", "язык", "язык интерфейса"],
+      target: { domain: "interface" },
+    },
     {
       label: "Sign-In",
       subtitle: "Settings domain",
@@ -11699,6 +12258,10 @@ function adminSearchEntries() {
 }
 
 async function loadActiveSettingsSection() {
+  if (state.ui.activeSettingsSection === "interface") {
+    await loadInterfaceSettings();
+    return;
+  }
   if (state.ui.activeSettingsSection === "mail") {
     await loadMailSettingsSection();
     return;
@@ -11722,6 +12285,7 @@ async function navigateSettingsTarget(target) {
   state.ui.settingsNav.detailId = "";
   await loadActiveSettingsSection();
   revealSection({
+    interface: el.settingsSectionInterface,
     signin: el.settingsSectionSignIn,
     mail: el.settingsSectionMail,
     devices: el.settingsSectionDevices,
@@ -11828,7 +12392,7 @@ function renderPasskeyCredentials(items) {
   if (rows.length === 0) {
     const empty = document.createElement("p");
     empty.className = "settings-list-empty";
-    empty.textContent = "No passkeys enrolled.";
+    empty.textContent = t("no_passkeys_enrolled", {}, "No passkeys enrolled.");
     el.passkeysList.appendChild(empty);
     state.ui.settingsNav.page = "list";
     state.ui.settingsNav.detailId = "";
@@ -11998,19 +12562,27 @@ function setupModeUsesExternalMail(mode = state.setup.instanceMode) {
   return normalized === "external_accounts" || normalized === "hybrid";
 }
 
+function setupModeSupportsRecoveryEmail(mode = state.setup.instanceMode) {
+  return normalizeSetupInstanceMode(mode) !== "external_accounts";
+}
+
 function setupModeAdminIdentifierLabel(mode = state.setup.instanceMode) {
-  return normalizeSetupInstanceMode(mode) === "external_accounts" ? "Admin username" : "Admin email";
+  return normalizeSetupInstanceMode(mode) === "external_accounts"
+    ? t("Admin username")
+    : t("Admin email");
 }
 
 function setupModeLoginIdentifierLabel(mode = state.setup.instanceMode) {
-  return normalizeSetupInstanceMode(mode) === "external_accounts" ? "Username" : "Email";
+  return normalizeSetupInstanceMode(mode) === "external_accounts"
+    ? t("Username")
+    : t("Email");
 }
 
 function setupModeSummaryLabel(mode = state.setup.instanceMode) {
   const normalized = normalizeSetupInstanceMode(mode);
-  if (normalized === "external_accounts") return "External mail accounts";
-  if (normalized === "hybrid") return "Local server and external accounts";
-  return "Local server mail";
+  if (normalized === "external_accounts") return t("External mail accounts");
+  if (normalized === "hybrid") return t("Local server and external accounts");
+  return t("Local server mail");
 }
 
 function setupModeDefaultAdminValue(mode = state.setup.instanceMode, domain = state.setup.baseDomain) {
@@ -12022,9 +12594,19 @@ function setupModeDefaultAdminValue(mode = state.setup.instanceMode, domain = st
 function setupModeIdentifierHint(mode = state.setup.instanceMode, domain = state.setup.baseDomain) {
   const normalized = normalizeSetupInstanceMode(mode);
   if (normalized === "external_accounts") {
-    return "Choose the admin username used to sign in to Despatch. It can be any short name you want. Recovery email must be different from the username.";
+    return t("Choose the admin username used to sign in to Despatch. It can be any short name you want.");
   }
-  return `The admin email defaults to ${setupModeDefaultAdminValue(normalized, domain)}. Recovery email must be different from the admin email.`;
+  return t(
+    "The admin email defaults to {value}. Recovery email must be different from the admin email.",
+    { value: setupModeDefaultAdminValue(normalized, domain) },
+  );
+}
+
+function setupModeAdminCopy(mode = state.setup.instanceMode) {
+  if (normalizeSetupInstanceMode(mode) === "external_accounts") {
+    return t("Create the first admin sign-in used to manage Despatch.");
+  }
+  return t("Create the first admin sign-in used to manage Despatch and recover access later if needed.");
 }
 
 function setupModeAutoOpenTarget(mode = state.setup.instanceMode) {
@@ -12032,11 +12614,11 @@ function setupModeAutoOpenTarget(mode = state.setup.instanceMode) {
 }
 
 function setupThemeLabel(themeName) {
-  return themeName === "paper-light" ? "Paper" : "Machine";
+  return themeName === "paper-light" ? t("Paper") : t("Machine");
 }
 
 function setupAutomaticUpdatesLabel(enabled) {
-  return enabled === false ? "Manual updates only" : "Automatic updates on";
+  return enabled === false ? t("Manual updates only") : t("Automatic updates on");
 }
 
 function validDomain(domain) {
@@ -12072,18 +12654,23 @@ function renderAuthModeAvailability() {
 
 function renderAuthIdentifierUI() {
   const loginLabel = setupModeLoginIdentifierLabel();
+  const usernameMode = normalizeSetupInstanceMode(state.setup.instanceMode) === "external_accounts";
   if (el.loginIdentifierLabel) {
     el.loginIdentifierLabel.textContent = loginLabel;
   }
   if (el.loginIdentifierInput) {
-    el.loginIdentifierInput.placeholder = loginLabel === "Username" ? "admin" : "admin@example.com";
+    el.loginIdentifierInput.placeholder = usernameMode ? "admin" : "admin@example.com";
     el.loginIdentifierInput.autocomplete = "username";
   }
   if (el.resetRequestLabel) {
-    el.resetRequestLabel.textContent = loginLabel === "Username" ? "Username Or Recovery Email" : "Account Or Recovery Email";
+    el.resetRequestLabel.textContent = usernameMode
+      ? t("Username Or Recovery Email")
+      : t("Account Or Recovery Email");
   }
   if (el.resetRequestEmail) {
-    el.resetRequestEmail.placeholder = loginLabel === "Username" ? "username or recovery@example.net" : "account@example.com or recovery@example.net";
+    el.resetRequestEmail.placeholder = usernameMode
+      ? t("username or recovery@example.net")
+      : t("account@example.com or recovery@example.net");
     el.resetRequestEmail.autocomplete = "username";
   }
   renderAuthModeAvailability();
@@ -12123,7 +12710,7 @@ async function completeSetup() {
       base_domain: setupModeUsesLocalMail() ? domain : "",
       admin_email: identifier,
       admin_identifier: identifier,
-      admin_recovery_email: recoveryEmail,
+      admin_recovery_email: setupModeSupportsRecoveryEmail() ? recoveryEmail : "",
       admin_mailbox_login: mailboxLogin,
       admin_password: password,
       region,
@@ -12160,7 +12747,7 @@ async function completeSetup() {
     || identifier
     || "admin",
   ).trim();
-  setStatus(`SETUP COMPLETE. SIGNED IN AS ${liveIdentifier.toUpperCase()}.`, "ok");
+  setStatus(t("Setup complete. Signed in as {identifier}.", { identifier: liveIdentifier }), "ok");
 }
 
 const OOBEController = {
@@ -12176,7 +12763,7 @@ const OOBEController = {
     if (el.setupPasskeyPrimaryEnabled) el.setupPasskeyPrimaryEnabled.checked = state.setup.passkeyPrimaryEnabled !== false;
     el.setupRegion.value = el.setupRegion.value || "us-east";
     if (el.setupCompleteNote) {
-      el.setupCompleteNote.textContent = "Auto opening mail in 3 seconds.";
+      el.setupCompleteNote.textContent = t("Auto opening mail in 3 seconds.");
     }
     state.setup.adminEmailTouched = false;
     state.setup.lastAutoAdminEmail = "";
@@ -12204,6 +12791,7 @@ const OOBEController = {
     const normalized = normalizeSetupInstanceMode(mode);
     const domain = normalizeDomain(el.setupDomain?.value || state.setup.baseDomain || "example.com");
     const usesLocalMail = setupModeUsesLocalMail(normalized);
+    const supportsRecoveryEmail = setupModeSupportsRecoveryEmail(normalized);
     const autoIdentifier = setupModeDefaultAdminValue(normalized, domain);
     const currentIdentifier = String(el.setupAdminEmail?.value || "").trim().toLowerCase();
     const shouldAutoFill = opts.forceDefault === true
@@ -12221,8 +12809,17 @@ const OOBEController = {
     if (el.setupDomainWrap) {
       el.setupDomainWrap.classList.toggle("hidden", !usesLocalMail);
     }
+    if (el.setupAdminRecoveryEmailWrap) {
+      el.setupAdminRecoveryEmailWrap.classList.toggle("hidden", !supportsRecoveryEmail);
+    }
+    if (el.setupSummaryRecoveryEmailRow) {
+      el.setupSummaryRecoveryEmailRow.classList.toggle("hidden", !supportsRecoveryEmail);
+    }
     if (el.setupAdminIdentifierLabel) {
       el.setupAdminIdentifierLabel.textContent = setupModeAdminIdentifierLabel(normalized);
+    }
+    if (el.setupAdminCopyText) {
+      el.setupAdminCopyText.textContent = setupModeAdminCopy(normalized);
     }
     if (el.setupAdminIdentifierHint) {
       el.setupAdminIdentifierHint.textContent = setupModeIdentifierHint(normalized, domain);
@@ -12234,6 +12831,14 @@ const OOBEController = {
         el.setupAdminEmail.value = autoIdentifier;
         state.setup.adminEmailTouched = false;
       }
+    }
+    if (!supportsRecoveryEmail && el.setupAdminRecoveryEmail) {
+      el.setupAdminRecoveryEmail.value = "";
+    }
+    if (el.setupDataPrivacyText) {
+      el.setupDataPrivacyText.textContent = supportsRecoveryEmail
+        ? t("Despatch stores the admin sign-in, recovery email, sign-in preference, and password hash needed to run the first account. Recovery email is only used for account recovery and password reset.")
+        : t("Despatch stores the admin sign-in, chosen sign-in preference, and password hash needed to run the first account.");
     }
     state.setup.lastAutoAdminEmail = autoIdentifier;
     renderAuthIdentifierUI();
@@ -12265,12 +12870,15 @@ const OOBEController = {
   updateProgress() {
     if (!el.setupProgressLabel || !el.setupProgressTitle) return;
     const stepIndex = Math.max(0, Math.min(state.setup.step, setupSteps.length - 1));
-    el.setupProgressTitle.textContent = setupStepTitles[stepIndex] || "Setup";
+    el.setupProgressTitle.textContent = t(setupStepTitles[stepIndex] || "Setup");
     if (stepIndex === setupCompleteStep) {
-      el.setupProgressLabel.textContent = "Setup complete";
+      el.setupProgressLabel.textContent = t("Setup complete");
       return;
     }
-    el.setupProgressLabel.textContent = `Step ${stepIndex + 1} of ${setupSteps.length}`;
+    el.setupProgressLabel.textContent = t("Step {step} of {total}", {
+      step: stepIndex + 1,
+      total: setupSteps.length,
+    });
   },
 
   setStep(step) {
@@ -12306,9 +12914,13 @@ const OOBEController = {
     el.setupClose.disabled = !showDiscard || state.setup.submitting || retryRemaining > 0;
     el.setupNext.classList.toggle("hidden", isComplete);
     if (retryRemaining > 0) {
-      el.setupNext.textContent = `Retry in ${retryRemaining}s`;
+      el.setupNext.textContent = t("Retry in {seconds}s", { seconds: retryRemaining });
     } else {
-      el.setupNext.textContent = state.setup.submitting ? "Initializing..." : isReview ? "Initialize" : "Continue";
+      el.setupNext.textContent = state.setup.submitting
+        ? t("Initializing...")
+        : isReview
+          ? t("Initialize")
+          : t("Continue");
     }
     if (!isComplete) setSetupInlineStatus("");
     this.updateProgress();
@@ -12318,6 +12930,7 @@ const OOBEController = {
   updateSummary() {
     const mode = normalizeSetupInstanceMode(state.setup.instanceMode);
     const usesLocalMail = setupModeUsesLocalMail(mode);
+    const supportsRecoveryEmail = setupModeSupportsRecoveryEmail(mode);
     el.setupSummaryRegion.textContent = el.setupRegion.options[el.setupRegion.selectedIndex]?.text || "-";
     if (el.setupSummaryMode) {
       el.setupSummaryMode.textContent = setupModeSummaryLabel(mode);
@@ -12331,16 +12944,18 @@ const OOBEController = {
     if (el.setupSummaryDomainRow) {
       el.setupSummaryDomainRow.classList.toggle("hidden", !usesLocalMail);
     }
-    el.setupSummaryDomain.textContent = usesLocalMail ? (normalizeDomain(el.setupDomain.value) || "-") : "Not used";
+    el.setupSummaryDomain.textContent = usesLocalMail ? (normalizeDomain(el.setupDomain.value) || "-") : t("Not used");
     if (el.setupSummaryAdminLabel) {
       el.setupSummaryAdminLabel.textContent = `${setupModeAdminIdentifierLabel(mode)}:`;
     }
     el.setupSummaryEmail.textContent = String(el.setupAdminEmail.value || "-").trim().toLowerCase();
     if (el.setupSummaryRecoveryEmail) {
-      el.setupSummaryRecoveryEmail.textContent = normalizeRecoveryEmailInput(el.setupAdminRecoveryEmail?.value) || "-";
+      el.setupSummaryRecoveryEmail.textContent = supportsRecoveryEmail
+        ? (normalizeRecoveryEmailInput(el.setupAdminRecoveryEmail?.value) || "-")
+        : t("Not used");
     }
     if (el.setupSummaryPasskey) {
-      el.setupSummaryPasskey.textContent = el.setupPasskeyPrimaryEnabled?.checked ? "Enabled" : "Disabled";
+      el.setupSummaryPasskey.textContent = el.setupPasskeyPrimaryEnabled?.checked ? t("Enabled") : t("Disabled");
     }
   },
 
@@ -12353,30 +12968,34 @@ const OOBEController = {
       const recoveryEmail = normalizeRecoveryEmailInput(el.setupAdminRecoveryEmail?.value);
       if (usesLocalMail) {
         if (!validDomain(domain)) {
-          throw new Error("Enter a valid domain (example: mail.example.com or example.com)");
+          throw new Error(t("Enter a valid domain (example: mail.example.com or example.com)."));
         }
         if (!validEmail(identifier)) {
-          throw new Error("Enter a valid admin email");
+          throw new Error(t("Enter a valid admin email."));
         }
         if (!identifier.endsWith(`@${domain}`)) {
-          throw new Error(`Admin email must use @${domain}`);
+          throw new Error(t("Admin email must use @{domain}.", { domain }));
         }
       } else {
         if (identifier.length < 3) {
-          throw new Error("Admin username must be at least 3 characters");
+          throw new Error(t("Admin username must be at least 3 characters"));
         }
         if (identifier.length > 64) {
-          throw new Error("Admin username must be at most 64 characters");
+          throw new Error(t("Admin username must be at most 64 characters"));
         }
         if (/\s/.test(identifier)) {
-          throw new Error("Admin username cannot contain spaces");
+          throw new Error(t("Admin username cannot contain spaces"));
         }
       }
-      if (!validEmail(recoveryEmail)) {
-        throw new Error("Enter a valid recovery email");
-      }
-      if (recoveryEmail === identifier) {
-        throw new Error(`Recovery email must be different from the admin ${usesLocalMail ? "email" : "username"}`);
+      if (setupModeSupportsRecoveryEmail(mode) || recoveryEmail) {
+        if (!validEmail(recoveryEmail)) {
+          throw new Error(t("Enter a valid recovery email"));
+        }
+        if (recoveryEmail === identifier) {
+          throw new Error(usesLocalMail
+            ? t("Recovery email must be different from the admin email.")
+            : t("Recovery email must be different from the username."));
+        }
       }
     }
 
@@ -12384,23 +13003,26 @@ const OOBEController = {
       const p1 = el.setupPassword.value;
       const p2 = el.setupPasswordConfirm.value;
       if (p1.length === 0) {
-        throw new Error("Admin password is required");
+        throw new Error(t("Admin password is required."));
       }
       if (p1 !== p2) {
-        throw new Error("Password and verify password must match");
+        throw new Error(t("Password and verify password must match."));
       }
       if (state.setup.authMode !== "pam") {
         const minLen = Number(state.setup.passwordMinLength || 12);
         const maxLen = Number(state.setup.passwordMaxLength || 128);
         const classMin = Number(state.setup.passwordClassMin || 3);
         if (p1.length < minLen) {
-          throw new Error(`Admin password must be at least ${minLen} characters`);
+          throw new Error(t("Admin password must be at least {count} characters.", { count: minLen }));
         }
         if (p1.length > maxLen) {
-          throw new Error(`Admin password must be at most ${maxLen} characters`);
+          throw new Error(t("Admin password must be at most {count} characters.", { count: maxLen }));
         }
         if (passwordClassCount(p1) < classMin) {
-          throw new Error(`Password must include at least ${classMin} character classes (lower/upper/number/symbol)`);
+          throw new Error(t(
+            "Password must include at least {count} character classes (lower/upper/number/symbol).",
+            { count: classMin },
+          ));
         }
       }
     }
@@ -12451,7 +13073,7 @@ const OOBEController = {
     if (state.setup.step === setupReviewStep) {
       state.setup.submitting = true;
       this.refreshNavState();
-      setSetupInlineStatus("Initializing setup...", "info");
+      setSetupInlineStatus(t("Initializing setup..."), "info");
       try {
         await completeSetup();
         state.setup.submitting = false;
@@ -12464,7 +13086,7 @@ const OOBEController = {
         if (err.code === "rate_limited") {
           const wait = Number(err.retryAfterSec || 60);
           setSetupCooldown(wait);
-          const wrapped = new Error(`Too many setup attempts. Wait about ${wait} seconds and try again.`);
+          const wrapped = new Error(t("Too many setup attempts. Wait about {seconds} seconds and try again.", { seconds: wait }));
           wrapped.code = "rate_limited";
           wrapped.requestID = err.requestID || "";
           throw wrapped;
@@ -12477,7 +13099,7 @@ const OOBEController = {
   updatePasswordHint() {
     if (!el.setupPasswordHint) return;
     if (state.setup.authMode === "pam" && setupModeUsesLocalMail()) {
-      el.setupPasswordHint.textContent = "PAM mode: use the mailbox password already managed on this server. Add Mailbox Login if sign-in uses a different local account name.";
+      el.setupPasswordHint.textContent = t("PAM mode: use the mailbox password already managed on this server. Add Mailbox Login if sign-in uses a different local account name.");
       if (el.setupAdminMailboxLoginWrap) {
         el.setupAdminMailboxLoginWrap.classList.remove("hidden");
       }
@@ -12491,7 +13113,10 @@ const OOBEController = {
     }
     const minLen = Number(state.setup.passwordMinLength || 12);
     const classMin = Number(state.setup.passwordClassMin || 3);
-    el.setupPasswordHint.textContent = `Use at least ${minLen} characters and ${classMin} character classes (lower/upper/number/symbol).`;
+    el.setupPasswordHint.textContent = t(
+      "Use at least {minLen} characters and {classMin} character classes (lower/upper/number/symbol).",
+      { minLen, classMin },
+    );
   },
 
   back() {
@@ -12503,15 +13128,15 @@ const OOBEController = {
   scheduleAutoOpenMail() {
     if (state.setup.autoOpenTimer) clearTimeout(state.setup.autoOpenTimer);
     const target = setupModeAutoOpenTarget();
-    const targetLabel = target === "admin" ? "Admin" : "mail";
+    const targetLabel = target === "admin" ? t("Admin") : t("mail");
     let ticks = 3;
     if (el.setupCompleteNote) {
-      el.setupCompleteNote.textContent = `Auto opening ${targetLabel} in ${ticks} seconds.`;
+      el.setupCompleteNote.textContent = t("Auto opening {target} in {seconds} seconds.", { target: targetLabel, seconds: ticks });
     }
     const interval = setInterval(() => {
       ticks -= 1;
       if (ticks > 0 && el.setupCompleteNote) {
-        el.setupCompleteNote.textContent = `Auto opening ${targetLabel} in ${ticks} seconds.`;
+        el.setupCompleteNote.textContent = t("Auto opening {target} in {seconds} seconds.", { target: targetLabel, seconds: ticks });
       }
     }, 1000);
     state.setup.autoOpenTimer = window.setTimeout(async () => {
@@ -12533,7 +13158,7 @@ const OOBEController = {
     showView("mail");
     setActiveMailPane("messages");
     if (!state.user) {
-      routeToAuthWithMessage("Sign in required before opening mailbox.", "session_missing");
+      routeToAuthWithMessage(t("Sign in required before opening mailbox."), "session_missing");
       return;
     }
     await loadMailboxes();
@@ -12561,13 +13186,13 @@ const OOBEController = {
     }
     state.setup.modalType = type;
     if (type === "cancel") {
-      el.setupModalTitle.textContent = "Discard Setup Progress?";
-      el.setupModalBody.textContent = "This clears the values entered so far and returns to the welcome step.";
-      el.setupModalConfirm.textContent = "Discard";
+      el.setupModalTitle.textContent = t("Discard Setup Progress?");
+      el.setupModalBody.textContent = t("This clears the values entered so far and returns to the welcome step.");
+      el.setupModalConfirm.textContent = t("Discard");
     } else {
-      el.setupModalTitle.textContent = "Reset Entered Values?";
-      el.setupModalBody.textContent = "This removes all values entered in the assistant and returns to the welcome step.";
-      el.setupModalConfirm.textContent = "Reset";
+      el.setupModalTitle.textContent = t("Reset Entered Values?");
+      el.setupModalBody.textContent = t("This removes all values entered in the assistant and returns to the welcome step.");
+      el.setupModalConfirm.textContent = t("Reset");
     }
     el.setupModalOverlay.classList.remove("hidden");
     el.setupModalOverlay.setAttribute("aria-hidden", "false");
@@ -12593,10 +13218,10 @@ const OOBEController = {
     this.closeConfirm();
     this.init();
     if (type === "cancel") {
-      setStatus("SETUP PROGRESS DISCARDED.", "info");
+      setStatus(t("Setup progress discarded."), "info");
       return;
     }
-    setStatus("SETUP FORM RESET", "info");
+    setStatus(t("Setup form reset."), "info");
   },
 };
 
@@ -12608,7 +13233,7 @@ async function enterSetupIfRequired() {
   applyNavVisibility();
   setActiveTab(el.tabSetup);
   showView("setup");
-  setStatus("FIRST-RUN SETUP REQUIRED", "info");
+  setStatus(t("first_run_setup_required", {}, "FIRST-RUN SETUP REQUIRED"), "info");
   return true;
 }
 
@@ -12616,15 +13241,15 @@ async function unlockMailSecretForSession() {
   let errorHint = "";
   while (true) {
     const password = await showPromptModal({
-      title: "Unlock Mailbox Password",
-      body: errorHint || "Enter your mailbox password once to unlock message access for this passkey session.",
-      label: "Mailbox Password",
+      title: t("Unlock Mailbox Password"),
+      body: errorHint || t("Enter your mailbox password once to unlock message access for this passkey session."),
+      label: t("Mailbox Password"),
       inputType: "password",
-      confirmText: "Unlock",
-      cancelText: "Cancel",
+      confirmText: t("Unlock"),
+      cancelText: t("Cancel"),
     });
     if (!password) {
-      throw new Error("Mailbox password is required before mail can be loaded.");
+      throw new Error(t("Mailbox password is required before mail can be loaded."));
     }
     try {
       await api("/api/v1/session/mail-secret/unlock", {
@@ -12633,11 +13258,11 @@ async function unlockMailSecretForSession() {
         skipUnauthorizedHandling: true,
         skipMFAHandling: true,
       });
-      setStatus("Mailbox password unlocked for this session.", "ok");
+      setStatus(t("Mailbox password unlocked for this session."), "ok");
       return;
     } catch (err) {
       if (err.code === "invalid_credentials") {
-        errorHint = "Mailbox password was not accepted. Try again.";
+        errorHint = t("Mailbox password was not accepted. Try again.");
         continue;
       }
       throw err;
@@ -12652,7 +13277,51 @@ async function ensureMailSecretUnlocked(payload = null) {
   await unlockMailSecretForSession();
 }
 
+function maybeReloadForPreferredLocale(payload = {}) {
+  const preferredLocale = preferredLocaleFromPayload(payload);
+  if (!preferredLocale || preferredLocale === currentAppLocaleCode()) {
+    return false;
+  }
+  window.location.reload();
+  return true;
+}
+
+async function ensureUserLocalePreference() {
+  if (localePreferenceSyncPromise) {
+    return localePreferenceSyncPromise;
+  }
+  if (!state.user || requiresMFAStageAuthentication(state.user)) {
+    return null;
+  }
+  if (preferredLocaleFromPayload(state.user)) {
+    return null;
+  }
+  const locale = currentAppLocaleCode();
+  localePreferenceSyncPromise = (async () => {
+    try {
+      await api("/api/v2/preferences", {
+        method: "PATCH",
+        json: { locale },
+        logErrors: false,
+      });
+      if (state.user) {
+        state.user.locale = locale;
+      }
+      state.settings.interface.persistedLocale = locale;
+      state.settings.interface.locale = locale;
+    } catch {
+      // Best effort only.
+    } finally {
+      localePreferenceSyncPromise = null;
+    }
+  })();
+  return localePreferenceSyncPromise;
+}
+
 async function finalizePrimaryLogin(loginPayload) {
+  if (maybeReloadForPreferredLocale(loginPayload)) {
+    return false;
+  }
   const loginStage = authStageFromPayload(loginPayload);
   if (loginStage.auth_stage !== "authenticated") {
     await ensureMFAStageAuthenticated(loginStage);
@@ -12692,11 +13361,12 @@ async function refreshSession(opts = {}) {
     });
     state.user = me;
     if (!opts.quiet) {
-      setStatus(`Signed in as ${me.email}.`, "ok");
+      setStatus(t("signed_in_as_email", { email: me.email }, `Signed in as ${me.email}.`), "ok");
     }
     applyNavVisibility();
     syncSessionKeepalive();
     syncMFAApprovalPolling();
+    await ensureUserLocalePreference();
     if (!opts.skipPostAuthLoads) {
       await promptRecoveryEmailIfNeeded();
       await promptLegacyMFAIfNeeded();
@@ -12869,26 +13539,37 @@ async function promptRecoveryEmailIfNeeded() {
   while (state.user && userNeedsRecoveryEmail(state.user)) {
     const seed = String(state.user.recovery_email || state.user.email || "").trim();
     const input = await showPromptModal({
-      title: "Set Recovery Email",
-      body: "Password reset stays unavailable for this account until a recovery email different from your login email is saved.",
-      label: "Recovery Email",
+      title: t("set_recovery_email", {}, "Set Recovery Email"),
+      body: t(
+        "recovery_email_required_for_password_reset",
+        {},
+        "Password reset stays unavailable for this account until a recovery email different from your login email is saved.",
+      ),
+      label: t("recovery_email", {}, "Recovery Email"),
       inputType: "email",
       defaultValue: seed,
-      confirmText: "Save",
-      cancelText: "Skip For Now",
+      confirmText: t("save", {}, "Save"),
+      cancelText: t("skip_for_now", {}, "Skip For Now"),
     });
     if (input === null) {
-      setStatus("Recovery email is missing. Password reset delivery stays disabled until it is set.", "info");
+      setStatus(
+        t(
+          "recovery_email_missing_password_reset_delivery_stays_disabled_until_it_is_set",
+          {},
+          "Recovery email is missing. Password reset delivery stays disabled until it is set.",
+        ),
+        "info",
+      );
       return;
     }
     const candidate = String(input || "").trim().toLowerCase();
     const login = String(state.user.email || "").trim().toLowerCase();
     if (!candidate || !validEmail(candidate)) {
-      setStatus("Enter a valid recovery email address.", "error");
+      setStatus(t("enter_a_valid_recovery_email_address", {}, "Enter a valid recovery email address."), "error");
       continue;
     }
     if (candidate === login) {
-      setStatus("Recovery email must be different from login email.", "error");
+      setStatus(t("recovery_email_must_be_different_from_login_email", {}, "Recovery email must be different from login email."), "error");
       continue;
     }
     try {
@@ -12899,10 +13580,10 @@ async function promptRecoveryEmailIfNeeded() {
       const next = String(res.recovery_email || candidate).trim().toLowerCase();
       state.user.recovery_email = next;
       state.user.needs_recovery_email = false;
-      setStatus("Recovery email saved.", "ok");
+      setStatus(t("recovery_email_saved", {}, "Recovery email saved."), "ok");
       return;
     } catch (err) {
-      setStatus(formatAPIError(err, "Failed to save recovery email."), "error");
+      setStatus(formatAPIError(err, t("failed_to_save_recovery_email", {}, "Failed to save recovery email.")), "error");
     }
   }
 }
@@ -12927,13 +13608,13 @@ function mailboxRoleRank(role) {
 
 function mailboxDisplayLabel(mailbox) {
   const role = normalizeMailboxRole(mailbox?.role, mailbox?.name);
-  if (role === "inbox") return "Inbox";
-  if (role === "drafts") return "Drafts";
-  if (role === "sent") return "Sent";
-  if (role === "trash") return "Trash";
-  if (role === "archive") return "Archive";
-  if (role === "junk") return "Junk";
-  return String(mailbox?.name || "Mailbox");
+  if (role === "inbox") return t("inbox", {}, "Inbox");
+  if (role === "drafts") return t("drafts", {}, "Drafts");
+  if (role === "sent") return t("sent", {}, "Sent");
+  if (role === "trash") return t("trash", {}, "Trash");
+  if (role === "archive") return t("archive_", {}, "Archive");
+  if (role === "junk") return t("junk", {}, "Junk");
+  return String(mailbox?.name || t("mailbox", {}, "Mailbox"));
 }
 
 function mailboxNameMatches(left, right) {
@@ -14160,7 +14841,7 @@ function writeMailFilterControls(filters = appliedMailFilters()) {
     el.mailFilterCategory.replaceChildren();
     const baseOption = document.createElement("option");
     baseOption.value = "";
-    baseOption.textContent = "Any category";
+    baseOption.textContent = t("any_category", {}, "Any category");
     el.mailFilterCategory.appendChild(baseOption);
     for (const item of Array.isArray(triageCatalog.categories) ? triageCatalog.categories : []) {
       const option = document.createElement("option");
@@ -14286,34 +14967,46 @@ function renderAppliedMailFilterChips() {
   if (!el.mailFilterActiveRow || !el.mailFilterActiveChips) return;
   const filters = appliedMailFilters();
   const entries = [];
-  if (filters.query) entries.push({ kind: "query", label: `Query: ${filters.query}` });
-  if (filters.from) entries.push({ kind: "from", label: `From: ${filters.from}` });
-  if (filters.to) entries.push({ kind: "to", label: `To: ${filters.to}` });
-  if (filters.subject) entries.push({ kind: "subject", label: `Subject: ${filters.subject}` });
-  if (filters.dateFrom) entries.push({ kind: "dateFrom", label: `Date from: ${filters.dateFrom}` });
-  if (filters.dateTo) entries.push({ kind: "dateTo", label: `Date to: ${filters.dateTo}` });
-  if (filters.unread) entries.push({ kind: "unread", label: "Unread" });
-  if (filters.flagged) entries.push({ kind: "flagged", label: "Flagged" });
-  if (filters.hasAttachments) entries.push({ kind: "hasAttachments", label: "Attachments" });
-  if (filters.waiting) entries.push({ kind: "waiting", label: "Waiting" });
-  if (filters.followUp) entries.push({ kind: "followUp", label: "Follow Up" });
-  if (filters.snoozed) entries.push({ kind: "snoozed", label: "Snoozed" });
+  if (filters.query) entries.push({ kind: "query", label: t("query_value", { value: filters.query }, `Query: ${filters.query}`) });
+  if (filters.from) entries.push({ kind: "from", label: t("from_value", { value: filters.from }, `From: ${filters.from}`) });
+  if (filters.to) entries.push({ kind: "to", label: t("to_value", { value: filters.to }, `To: ${filters.to}`) });
+  if (filters.subject) entries.push({ kind: "subject", label: t("subject_value", { value: filters.subject }, `Subject: ${filters.subject}`) });
+  if (filters.dateFrom) entries.push({ kind: "dateFrom", label: t("date_from_value", { value: filters.dateFrom }, `Date from: ${filters.dateFrom}`) });
+  if (filters.dateTo) entries.push({ kind: "dateTo", label: t("date_to_value", { value: filters.dateTo }, `Date to: ${filters.dateTo}`) });
+  if (filters.unread) entries.push({ kind: "unread", label: t("unread", {}, "Unread") });
+  if (filters.flagged) entries.push({ kind: "flagged", label: t("flagged", {}, "Flagged") });
+  if (filters.hasAttachments) entries.push({ kind: "hasAttachments", label: t("attachments", {}, "Attachments") });
+  if (filters.waiting) entries.push({ kind: "waiting", label: t("waiting", {}, "Waiting") });
+  if (filters.followUp) entries.push({ kind: "followUp", label: t("follow_up", {}, "Follow Up") });
+  if (filters.snoozed) entries.push({ kind: "snoozed", label: t("snoozed", {}, "Snoozed") });
   if (filters.categoryID) {
     entries.push({
       kind: "categoryID",
       value: filters.categoryID,
-      label: `Category: ${mailTriageCategoryNameByID(filters.categoryID) || filters.categoryID}`,
+      label: t(
+        "category_value",
+        { value: mailTriageCategoryNameByID(filters.categoryID) || filters.categoryID },
+        `Category: ${mailTriageCategoryNameByID(filters.categoryID) || filters.categoryID}`,
+      ),
     });
   }
   for (const tagID of filters.tagIDs) {
     entries.push({
       kind: "tagID",
       value: tagID,
-      label: `Tag: ${mailTriageTagNameByID(tagID) || tagID}`,
+      label: t(
+        "tag_value",
+        { value: mailTriageTagNameByID(tagID) || tagID },
+        `Tag: ${mailTriageTagNameByID(tagID) || tagID}`,
+      ),
     });
   }
   for (const accountID of filters.accountIDs) {
-    entries.push({ kind: "accountID", value: accountID, label: `Account: ${mailAccountChipLabel(accountID)}` });
+    entries.push({
+      kind: "accountID",
+      value: accountID,
+      label: t("account_value", { value: mailAccountChipLabel(accountID) }, `Account: ${mailAccountChipLabel(accountID)}`),
+    });
   }
   el.mailFilterActiveChips.replaceChildren();
   for (const entry of entries) {
@@ -14822,15 +15515,17 @@ function currentMailFiltersPayload() {
 }
 
 function currentMailViewLabel() {
-  if (isDraftsMailboxSelected()) return "Drafts";
+  if (isDraftsMailboxSelected()) return t("drafts", {}, "Drafts");
   if (state.mail.viewKind === "saved") {
-    return String(selectedSavedSearchRecord()?.name || "Saved View").trim();
+    const raw = String(selectedSavedSearchRecord()?.name || "").trim();
+    return raw || t("saved_view", {}, "Saved View");
   }
   if (state.mail.viewKind === "smart") {
-    return (
+    const view = (
       MAIL_TRIAGE_VIEWS.find((item) => item.id === state.mail.smartView)
       || MAIL_SMART_VIEWS.find((item) => item.id === state.mail.smartView)
-    )?.name || "View";
+    )?.name || "";
+    return view ? t(view) : t("view", {}, "View");
   }
   return mailboxDisplayLabel(mailboxRecordByName(state.mailbox) || { name: state.mailbox || "INBOX" });
 }
@@ -15896,7 +16591,7 @@ function renderMailboxes() {
       let navKey = "";
       let active = false;
       if (kind === "smart") {
-        label = String(entry?.name || "View");
+        label = t(String(entry?.name || "View"));
         navKey = mailNavKeyForSmart(entry?.id || "");
         active = currentMailNavKey() === navKey;
         btn.onclick = async () => {
@@ -15909,7 +16604,7 @@ function renderMailboxes() {
           setActiveMailPane("messages");
         };
       } else if (kind === "saved") {
-        label = String(entry?.name || "Saved View");
+        label = String(entry?.name || "").trim() || t("saved_view", {}, "Saved View");
         navKey = mailNavKeyForSaved(entry?.id || "");
         active = currentMailNavKey() === navKey;
         btn.onclick = async () => {
@@ -15922,7 +16617,7 @@ function renderMailboxes() {
           setActiveMailPane("messages");
         };
       } else if (kind === "favorite") {
-        label = String(entry?.label || "Favorite").trim() || "Favorite";
+        label = String(entry?.label || "").trim() || t("favorite", {}, "Favorite");
         meta = favoriteDisplayMeta(entry);
         if ((String(entry?.kind || "").trim().toLowerCase() === "thread" || String(entry?.kind || "").trim().toLowerCase() === "message") && String(entry?.from || "").trim()) {
           meta = `${meta} · ${String(entry.from || "").trim()}`;
@@ -15971,7 +16666,7 @@ function renderMailboxes() {
             if (menu.open) closeOpenRowMenus(menu);
           });
           const summary = document.createElement("summary");
-          summary.textContent = "Manage";
+          summary.textContent = t("manage", {}, "Manage");
           menu.appendChild(summary);
           const body = document.createElement("div");
           body.className = "row-menu-body";
@@ -15979,7 +16674,9 @@ function renderMailboxes() {
             const favoriteBtn = document.createElement("button");
             favoriteBtn.type = "button";
             favoriteBtn.className = "menu-action-btn";
-            favoriteBtn.textContent = mailboxFavoriteRecord(entry) ? "Unfavorite" : "Favorite";
+            favoriteBtn.textContent = mailboxFavoriteRecord(entry)
+              ? t("unfavorite", {}, "Unfavorite")
+              : t("favorite", {}, "Favorite");
             favoriteBtn.onclick = async (event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -15996,7 +16693,7 @@ function renderMailboxes() {
             const renameBtn = document.createElement("button");
             renameBtn.type = "button";
             renameBtn.className = "menu-action-btn";
-            renameBtn.textContent = "Rename";
+            renameBtn.textContent = t("rename", {}, "Rename");
             renameBtn.onclick = async (event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -16039,20 +16736,20 @@ function renderMailboxes() {
     }
   };
 
-  appendSection("Favorites", visibleMailFavorites(), "favorite");
+  appendSection(t("favorites", {}, "Favorites"), visibleMailFavorites(), "favorite");
   if (showTriageSection) {
-    appendSection("Triage", MAIL_TRIAGE_VIEWS, "smart");
+    appendSection(t("triage", {}, "Triage"), MAIL_TRIAGE_VIEWS, "smart");
   }
   if (showIndexedSections) {
-    appendSection("Smart Views", MAIL_SMART_VIEWS, "smart");
-    appendSection("Saved Views", visibleSavedSearches(), "saved");
+    appendSection(t("smart_views", {}, "Smart Views"), MAIL_SMART_VIEWS, "smart");
+    appendSection(t("saved_views", {}, "Saved Views"), visibleSavedSearches(), "saved");
   }
-  appendSection("System", system, "mailbox");
-  appendSection("Folders", folders, "mailbox");
+  appendSection(t("system", {}, "System"), system, "mailbox");
+  appendSection(t("folders", {}, "Folders"), folders, "mailbox");
   if (el.mailboxes.children.length === 0) {
     const empty = document.createElement("li");
     empty.className = "message-empty";
-    empty.textContent = "No mailboxes available.";
+    empty.textContent = t("no_mailboxes_available", {}, "No mailboxes available.");
     el.mailboxes.appendChild(empty);
   }
   renderMailIndexStatus();
@@ -16424,7 +17121,7 @@ function optimisticComposeSummary(snapshot, mailboxName, options = {}) {
     id: `sent-local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     mailbox: mailboxName,
     from: String(snapshot?.from || state.user?.email || "").trim(),
-    subject: String(snapshot?.subject || "").trim() || "(no subject)",
+    subject: String(snapshot?.subject || "").trim() || t("no_subject", {}, "(no subject)"),
     date: new Date().toISOString(),
     seen: true,
     flagged: false,
@@ -16564,7 +17261,7 @@ function renderMailSummaryBody({
   subjectAfterHTML = "",
 }) {
   const preview = String(previewText || "").trim();
-  const subjectLabel = String(subject || "").trim() || "(no subject)";
+  const subjectLabel = String(subject || "").trim() || t("no_subject", {}, "(no subject)");
   const copyClasses = ["mail-row-copy", `${structPrefix}-copy`];
   if (!preview) {
     copyClasses.push("mail-row-copy--no-preview", `${structPrefix}-copy--no-preview`);
@@ -16598,7 +17295,7 @@ function renderMessages(items) {
   if (state.messages.length === 0) {
     const empty = document.createElement("li");
     empty.className = "message-empty";
-    empty.textContent = "No messages to display.";
+    empty.textContent = t("no_messages_to_display", {}, "No messages to display.");
     el.messages.appendChild(empty);
     syncMailSelectionControls();
     applyMailActionAvailability();
@@ -17284,7 +17981,7 @@ async function openReaderInspectDocument(kind, trigger = null) {
 }
 
 function buildReaderPrintDocument(message) {
-  const subject = String(message?.subject || "").trim() || "(no subject)";
+  const subject = String(message?.subject || "").trim() || t("no_subject", {}, "(no subject)");
   const metaRows = [
     ["From", String(message?.from || "-").trim() || "-"],
     ["To", Array.isArray(message?.to) ? message.to.join(", ") || "-" : "-"],
@@ -17436,7 +18133,7 @@ async function downloadSelectedMessageEml() {
 
 function renderSelectedMessageChrome(message = state.selectedMessage) {
   if (!message) {
-    if (el.messageSubjectAnchor) el.messageSubjectAnchor.textContent = "(no subject)";
+    if (el.messageSubjectAnchor) el.messageSubjectAnchor.textContent = t("no_subject", {}, "(no subject)");
     renderMessageMeta([]);
     renderMailTriageContainer(el.readerTriageChips, null);
     renderReaderInspectControls(null);
@@ -17445,19 +18142,19 @@ function renderSelectedMessageChrome(message = state.selectedMessage) {
     return;
   }
   if (el.messageSubjectAnchor) {
-    el.messageSubjectAnchor.textContent = message.subject || "(no subject)";
+    el.messageSubjectAnchor.textContent = message.subject || t("no_subject", {}, "(no subject)");
   }
   const metaRows = [
-    ["From", message.from || "-"],
-    ["To", (message.to || []).join(", ") || "-"],
-    ["Date", formatDate(message.date) || "-"],
+    [t("from", {}, "From"), message.from || "-"],
+    [t("to", {}, "To"), (message.to || []).join(", ") || "-"],
+    [t("date", {}, "Date"), formatDate(message.date) || "-"],
   ];
   if (shouldShowOwningAccountChip(message)) {
-    metaRows.splice(2, 0, ["Account", mailAccountChipLabel(message.account_id)]);
+    metaRows.splice(2, 0, [t("account", {}, "Account"), mailAccountChipLabel(message.account_id)]);
   }
   const status = readerStatusText(message);
   if (status) {
-    metaRows.push(["Status", status]);
+    metaRows.push([t("status", {}, "Status"), status]);
   }
   renderMessageMeta(metaRows);
   renderMailTriageContainer(el.readerTriageChips, message, { compact: false, maxTags: 8, className: "reader-triage-chips" });
@@ -17652,7 +18349,7 @@ function renderReaderBody(message = state.selectedMessage) {
     if (el.bodyHTMLFrame) el.bodyHTMLFrame.srcdoc = "";
     if (el.bodyPlain) {
       el.bodyPlain.classList.remove("hidden");
-      el.bodyPlain.textContent = "Select a message.";
+      el.bodyPlain.textContent = t("select_a_message", {}, "Select a message.");
     }
     return;
   }
@@ -17712,7 +18409,7 @@ function clearReaderSelection() {
   state.mail.selectedDraftID = "";
   state.thread = createThreadState({ expanded });
   closeReaderInspectMenu();
-  if (el.messageSubjectAnchor) el.messageSubjectAnchor.textContent = "(no subject)";
+  if (el.messageSubjectAnchor) el.messageSubjectAnchor.textContent = t("no_subject", {}, "(no subject)");
   renderMessageMeta([]);
   renderMailTriageContainer(el.readerTriageChips, null);
   renderReaderInspectControls(null);
@@ -18227,7 +18924,7 @@ function formatReaderPlainBody(raw) {
 function withPrefixSubject(prefix, value) {
   const subject = String(value || "").trim();
   if (subject === "") {
-    return `${prefix}: (no subject)`;
+    return `${prefix}: ${t("no_subject", {}, "(no subject)")}`;
   }
   const re = new RegExp(`^${prefix}\\s*:`, "i");
   if (re.test(subject)) {
@@ -18269,7 +18966,7 @@ function buildReplyBodyPrefillHTML(message) {
 function buildForwardBodyPrefill(message) {
   const from = String(message?.from || "-");
   const to = Array.isArray(message?.to) ? message.to.join(", ") : "-";
-  const subject = String(message?.subject || "(no subject)");
+  const subject = String(message?.subject || t("no_subject", {}, "(no subject)"));
   const date = formatDate(message?.date) || "-";
   const body = String(message?.body || "");
   return `----- Forwarded message -----\nFrom: ${from}\nDate: ${date}\nSubject: ${subject}\nTo: ${to}\n\n${body}`;
@@ -18278,7 +18975,7 @@ function buildForwardBodyPrefill(message) {
 function buildForwardBodyPrefillHTML(message) {
   const from = String(message?.from || "-").trim() || "-";
   const to = Array.isArray(message?.to) ? message.to.join(", ") : "-";
-  const subject = String(message?.subject || "(no subject)");
+  const subject = String(message?.subject || t("no_subject", {}, "(no subject)"));
   const date = formatDate(message?.date) || "-";
   const bodyHTML = composeParagraphHTMLFromText(String(message?.body || ""));
   return `<div class="compose-quoted-block" data-compose-quoted="forward"><p class="compose-quoted-lead">----- Forwarded message -----</p><div class="compose-quoted-meta"><p><strong>From:</strong> ${escapeHtml(from)}</p><p><strong>Date:</strong> ${escapeHtml(date)}</p><p><strong>Subject:</strong> ${escapeHtml(subject)}</p><p><strong>To:</strong> ${escapeHtml(to)}</p></div><blockquote>${bodyHTML}</blockquote></div>`;
@@ -19786,16 +20483,16 @@ function renderAdminRegistrationDetail() {
   el.adminRegsDetail.appendChild(title);
   const status = document.createElement("p");
   status.className = "hint";
-  status.textContent = `Status: ${String(item.status || "pending")}`;
+  status.textContent = t("Status: {status}", { status: String(item.status || "pending") });
   el.adminRegsDetail.appendChild(status);
   const created = document.createElement("p");
   created.className = "hint";
-  created.textContent = `Created: ${formatDate(item.created_at) || "n/a"}`;
+  created.textContent = t("Created: {createdAt}", { createdAt: formatDate(item.created_at) || t("n/a") });
   el.adminRegsDetail.appendChild(created);
   if (item.decided_at) {
     const decided = document.createElement("p");
     decided.className = "hint";
-    decided.textContent = `Decided: ${formatDate(item.decided_at)}`;
+    decided.textContent = t("Decided: {decidedAt}", { decidedAt: formatDate(item.decided_at) });
     el.adminRegsDetail.appendChild(decided);
   }
   if (item.reason) {
@@ -19994,11 +20691,15 @@ function renderAdminUserDetail() {
 
   const mailboxesSection = document.createElement("section");
   const mailboxesTitle = document.createElement("h5");
-  mailboxesTitle.textContent = "Mailboxes";
+  mailboxesTitle.textContent = t("mailboxes", {}, "Mailboxes");
   mailboxesSection.appendChild(mailboxesTitle);
   const mailboxesHint = document.createElement("p");
   mailboxesHint.className = "hint";
-  mailboxesHint.textContent = "Create and delete this user's folders directly against Dovecot using the mailbox credentials Despatch has stored.";
+  mailboxesHint.textContent = t(
+    "create_and_delete_this_user_s_folders_directly_against_dovecot_using_the_mailbox_credentials_despatch_has_stored",
+    {},
+    "Create and delete this user's folders directly against Dovecot using the mailbox credentials Despatch has stored.",
+  );
   mailboxesSection.appendChild(mailboxesHint);
 
   const mailboxActions = document.createElement("div");
@@ -20006,7 +20707,9 @@ function renderAdminUserDetail() {
   const refreshMailboxes = document.createElement("button");
   refreshMailboxes.type = "button";
   refreshMailboxes.className = "cmd-btn cmd-btn--dense";
-  refreshMailboxes.textContent = mailboxState.loading ? "Refreshing..." : "Refresh Mailboxes";
+  refreshMailboxes.textContent = mailboxState.loading
+    ? t("refreshing", {}, "Refreshing...")
+    : t("refresh_mailboxes", {}, "Refresh Mailboxes");
   refreshMailboxes.disabled = mailboxState.loading;
   refreshMailboxes.addEventListener("click", async () => {
     await loadAdminUserMailboxes(userID, { force: true });
@@ -20019,7 +20722,7 @@ function renderAdminUserDetail() {
   const createMailbox = document.createElement("button");
   createMailbox.type = "button";
   createMailbox.className = "cmd-btn cmd-btn--dense cmd-btn--primary";
-  createMailbox.textContent = "Create Mailbox";
+  createMailbox.textContent = t("create_mailbox", {}, "Create Mailbox");
   createMailbox.disabled = mailboxState.loading;
   createMailbox.addEventListener("click", async () => {
     await promptAdminCreateMailbox(item);
@@ -20030,7 +20733,7 @@ function renderAdminUserDetail() {
   if (mailboxState.loading && !mailboxState.loaded) {
     const loading = document.createElement("p");
     loading.className = "settings-list-empty";
-    loading.textContent = "Loading mailboxes...";
+    loading.textContent = t("loading_mailboxes", {}, "Loading mailboxes...");
     mailboxesSection.appendChild(loading);
   } else if (mailboxState.error) {
     const error = document.createElement("p");
@@ -20041,8 +20744,8 @@ function renderAdminUserDetail() {
     const empty = document.createElement("p");
     empty.className = "settings-list-empty";
     empty.textContent = mailboxState.loaded
-      ? "No mailboxes available for this user."
-      : "Mailboxes will appear here once loaded.";
+      ? t("no_mailboxes_available_for_this_user", {}, "No mailboxes available for this user.")
+      : t("mailboxes_will_appear_here_once_loaded", {}, "Mailboxes will appear here once loaded.");
     mailboxesSection.appendChild(empty);
   } else {
     for (const mailbox of mailboxState.items) {
@@ -20052,18 +20755,18 @@ function renderAdminUserDetail() {
       const unread = Number(mailbox?.unread || 0);
       const protectedMailbox = !mailbox?.can_delete;
       const metaParts = [
-        `${messages} ${pluralizeMessages(messages)}`,
-        `${unread} unread`,
+        formatMessageCountText(messages),
+        formatUnreadCountText(unread),
       ];
       if (protectedMailbox) {
-        metaParts.push("protected");
+        metaParts.push(t("protected", {}, "protected"));
       }
       const row = renderListItem({
         markerClass: protectedMailbox ? "status-chip status-chip--warning" : "status-chip status-chip--info",
-        markerText: role ? role.toUpperCase() : "MAILBOX",
-        title: mailboxName || "Mailbox",
+        markerText: role ? mailboxDisplayLabel({ role, name: mailboxName || role }) : t("mailbox", {}, "Mailbox"),
+        title: mailboxName || t("mailbox", {}, "Mailbox"),
         meta: metaParts.join(" • "),
-        actionText: protectedMailbox ? "" : "Delete",
+        actionText: protectedMailbox ? "" : t("delete", {}, "Delete"),
         onAction: protectedMailbox ? null : async () => {
           await deleteAdminMailbox(item, mailbox);
         },
@@ -20149,7 +20852,7 @@ async function loadAdminFeatureFlags() {
     if (rows.length === 0) {
       const empty = document.createElement("p");
       empty.className = "settings-list-empty";
-      empty.textContent = "No feature flags available.";
+      empty.textContent = t("no_feature_flags_available", {}, "No feature flags available.");
       el.adminFeatureFlags.appendChild(empty);
       state.ui.adminNav.page = "list";
       state.ui.adminNav.detailId = "";
@@ -20158,9 +20861,9 @@ async function loadAdminFeatureFlags() {
       const row = renderListItem({
         active: String(item.id || "") === state.admin.featureFlags.detailId,
         markerClass: item.enabled ? "status-chip status-chip--ok" : "status-chip status-chip--warning",
-        markerText: item.enabled ? "ON" : "OFF",
-        title: String(item.name || item.id || "Feature flag"),
-        meta: `${String(item.category || "General")} • ${item.editable ? "Editable" : "Read-only"}`,
+        markerText: item.enabled ? t("on", {}, "On") : t("off", {}, "Off"),
+        title: localizeFeatureFlagText(item.name || item.id || "", t("feature_flag", {}, "Feature flag")),
+        meta: `${localizeFeatureFlagText(item.category || "General", t("general", {}, "General"))} • ${t(item.editable ? "editable" : "read_only", {}, item.editable ? "Editable" : "Read-only")}`,
         onSelect: () => {
           state.admin.featureFlags.detailId = String(item.id || "");
           state.ui.adminNav.page = "detail";
@@ -20177,7 +20880,7 @@ async function loadAdminFeatureFlags() {
     el.adminFeatureFlags.replaceChildren();
     const empty = document.createElement("p");
     empty.className = "settings-list-empty";
-    empty.textContent = "Unable to load feature flags.";
+    empty.textContent = t("unable_to_load_feature_flags", {}, "Unable to load feature flags.");
     el.adminFeatureFlags.appendChild(empty);
     renderDetailView(el.adminFeatureFlagsDetail, null);
     throw err;
@@ -20198,15 +20901,18 @@ function renderAdminFeatureFlagDetail() {
   }
   renderDetailView(el.adminFeatureFlagsDetail, item, (detail, selected) => {
     const title = document.createElement("h4");
-    title.textContent = String(selected.name || selected.id || "Feature flag");
+    title.textContent = localizeFeatureFlagText(selected.name || selected.id || "", t("feature_flag", {}, "Feature flag"));
     detail.appendChild(title);
     const description = document.createElement("p");
     description.className = "hint";
-    description.textContent = String(selected.description || "");
+    description.textContent = localizeFeatureFlagText(selected.description || "", String(selected.description || ""));
     detail.appendChild(description);
     const stateNote = document.createElement("p");
     stateNote.className = "hint";
-    stateNote.textContent = `State: ${selected.enabled ? "Enabled" : "Disabled"} • Source: ${String(selected.source || "default")}`;
+    stateNote.textContent = t("state_state_source_source", {
+      state: selected.enabled ? t("enabled", {}, "Enabled") : t("disabled", {}, "Disabled"),
+      source: t(String(selected.source || "default"), {}, String(selected.source || "default")),
+    }, `State: ${selected.enabled ? "Enabled" : "Disabled"} • Source: ${String(selected.source || "default")}`);
     detail.appendChild(stateNote);
     const navActions = document.createElement("div");
     navActions.className = "settings-detail-actions";
@@ -20219,15 +20925,15 @@ function renderAdminFeatureFlagDetail() {
     if (selected.note) {
       const note = document.createElement("p");
       note.className = "hint";
-      note.textContent = String(selected.note);
+      note.textContent = localizeFeatureFlagText(selected.note, String(selected.note || ""));
       detail.appendChild(note);
     }
     if (selected.editable) {
       const toggle = renderToggleItem({
-        label: "Enabled",
+        label: t("enabled", {}, "Enabled"),
         description: selected.enabled
-          ? "This feature is currently active."
-          : "This feature is currently disabled.",
+          ? t("this_feature_is_currently_active", {}, "This feature is currently active.")
+          : t("this_feature_is_currently_disabled", {}, "This feature is currently disabled."),
         enabled: !!selected.enabled,
         disabled: false,
         onToggle: async () => {
@@ -20250,7 +20956,7 @@ function renderAdminFeatureFlagDetail() {
       const reset = document.createElement("button");
       reset.type = "button";
       reset.className = "cmd-btn cmd-btn--dense";
-      reset.textContent = "Reset To Default";
+      reset.textContent = t("reset_to_default", {}, "Reset To Default");
       reset.addEventListener("click", async () => {
         try {
           await api(`/api/v1/admin/system/feature-flags/${encodeURIComponent(String(selected.id || ""))}/reset`, {
@@ -20271,8 +20977,12 @@ function renderAdminFeatureFlagDetail() {
     const note = document.createElement("p");
     note.className = "hint";
     note.textContent = selected.requires_restart
-      ? "This flag is startup-managed and may require service restart after configuration changes."
-      : "This flag is managed by server configuration.";
+      ? t(
+        "this_flag_is_startup_managed_and_may_require_service_restart_after_configuration_changes",
+        {},
+        "This flag is startup-managed and may require service restart after configuration changes.",
+      )
+      : t("this_flag_is_managed_by_server_configuration", {}, "This flag is managed by server configuration.");
     detail.appendChild(note);
   });
 }
@@ -20287,7 +20997,7 @@ async function runBulkRegistrationDecision(decision) {
   if (decision === "reject") {
     const input = await showPromptModal({
       title: "Reject Selected Registrations",
-      body: `Provide rejection reason for ${ids.length} selected item(s).`,
+      body: t("Provide rejection reason for {count} selected item(s).", { count: ids.length }),
       label: "Reason",
       defaultValue: "Rejected by admin",
       confirmText: "Reject",
@@ -20314,12 +21024,27 @@ async function runBulkRegistrationDecision(decision) {
       .map((item) => `${item.id || "?"}:${item.code || "action_failed"}`)
       .join(", ");
     setStatus(
-      `${decision === "approve" ? "Approved" : "Rejected"} ${appliedCount} registration(s), ${failedCount} failed (${preview})`,
+      t("bulk_registration_result_failed", {
+        action: decision === "approve" ? t("Approved") : t("Rejected"),
+        appliedCount,
+        failedCount,
+        preview,
+      }, `${decision === "approve" ? "Approved" : "Rejected"} ${appliedCount} registration(s), ${failedCount} failed (${preview})`),
       "error",
     );
     return;
   }
-  setStatus(`${decision === "approve" ? "Approved" : "Rejected"} ${appliedCount} registration(s).`, "ok");
+  setStatus(
+    t(
+      "bulk_registration_result_ok",
+      {
+        action: decision === "approve" ? t("Approved") : t("Rejected"),
+        appliedCount,
+      },
+      `${decision === "approve" ? "Approved" : "Rejected"} ${appliedCount} registration(s).`,
+    ),
+    "ok",
+  );
 }
 
 async function runBulkUserAction(action) {
@@ -20331,7 +21056,7 @@ async function runBulkUserAction(action) {
   if (action === "suspend") {
     const confirmed = await showConfirmModal({
       title: "Suspend selected users?",
-      body: `${ids.length} selected user(s) will lose access until unsuspended.`,
+      body: t("suspend_selected_users_body", { count: ids.length }, `${ids.length} selected user(s) will lose access until unsuspended.`),
       confirmText: "Suspend",
       cancelText: "Cancel",
       trigger: el.btnUserSuspend,
@@ -20352,10 +21077,32 @@ async function runBulkUserAction(action) {
       .slice(0, 2)
       .map((item) => `${item.id || "?"}:${item.code || "action_failed"}`)
       .join(", ");
-    setStatus(`${action === "suspend" ? "Suspended" : "Unsuspended"} ${appliedCount} user(s), ${failedCount} failed (${preview})`, "error");
+    setStatus(
+      t(
+        "bulk_user_result_failed",
+        {
+          action: action === "suspend" ? t("Suspended") : t("Unsuspended"),
+          appliedCount,
+          failedCount,
+          preview,
+        },
+        `${action === "suspend" ? "Suspended" : "Unsuspended"} ${appliedCount} user(s), ${failedCount} failed (${preview})`,
+      ),
+      "error",
+    );
     return;
   }
-  setStatus(`${action === "suspend" ? "Suspended" : "Unsuspended"} ${appliedCount} user(s).`, "ok");
+  setStatus(
+    t(
+      "bulk_user_result_ok",
+      {
+        action: action === "suspend" ? t("Suspended") : t("Unsuspended"),
+        appliedCount,
+      },
+      `${action === "suspend" ? "Suspended" : "Unsuspended"} ${appliedCount} user(s).`,
+    ),
+    "ok",
+  );
 }
 
 function syncAdminUserMailboxState(userID) {
@@ -20571,11 +21318,11 @@ async function promptAdminCreateUser() {
   if (recoveryInput === null) return;
   const recoveryEmail = normalizeRecoveryEmailInput(recoveryInput);
   if (recoveryEmail && !validEmail(recoveryEmail)) {
-    setStatus("Enter a valid recovery email or leave it blank.", "error");
+    setStatus(t("Enter a valid recovery email or leave it blank."), "error");
     return;
   }
   if (recoveryEmail && recoveryEmail === email) {
-    setStatus("Recovery email must be different from the mailbox address.", "error");
+    setStatus(t("Recovery email must be different from the mailbox address."), "error");
     return;
   }
 
@@ -20882,7 +21629,7 @@ function formatDate(value) {
   if (!value) return "";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleString();
+  return d.toLocaleString(uiLocaleList());
 }
 
 function formatListDate(value) {
@@ -20894,18 +21641,18 @@ function formatListDate(value) {
   const nowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const deltaDays = Math.round((nowStart.getTime() - dayStart.getTime()) / 86400000);
   if (deltaDays === 0) {
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return d.toLocaleTimeString(uiLocaleList(), { hour: "2-digit", minute: "2-digit" });
   }
   if (deltaDays === 1) {
-    return "Yesterday";
+    return t("Yesterday");
   }
   if (deltaDays > 1 && deltaDays < 7) {
-    return d.toLocaleDateString([], { weekday: "short" });
+    return d.toLocaleDateString(uiLocaleList(), { weekday: "short" });
   }
   if (d.getFullYear() === now.getFullYear()) {
-    return d.toLocaleDateString([], { month: "short", day: "numeric" });
+    return d.toLocaleDateString(uiLocaleList(), { month: "short", day: "numeric" });
   }
-  return d.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  return d.toLocaleDateString(uiLocaleList(), { month: "short", day: "numeric", year: "numeric" });
 }
 
 function localDateTimeInputValue(value) {
@@ -20921,8 +21668,8 @@ function formatMailTriageChipTime(value, options = {}) {
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return raw;
   if (options.compact !== false) {
-    const day = date.toLocaleDateString([], { month: "short", day: "numeric" });
-    const time = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    const day = date.toLocaleDateString(uiLocaleList(), { month: "short", day: "numeric" });
+    const time = date.toLocaleTimeString(uiLocaleList(), { hour: "numeric", minute: "2-digit" });
     return `${day} ${time}`;
   }
   return formatDate(date.toISOString());
@@ -20936,7 +21683,7 @@ function mailTriageChipDescriptors(item, options = {}) {
     chips.push({
       kind: "category",
       label: triage.category.name,
-      title: `Category: ${triage.category.name}`,
+      title: t("category_value", { value: triage.category.name }, `Category: ${triage.category.name}`),
     });
   }
   if (triage.reminder_at || triage.is_follow_up_due) {
@@ -20944,31 +21691,42 @@ function mailTriageChipDescriptors(item, options = {}) {
     chips.push({
       kind: "follow-up",
       label: triage.is_follow_up_due
-        ? (timeLabel ? `Follow Up · Due ${timeLabel}` : "Follow Up · Due")
-        : (timeLabel && options.compact !== true ? `Follow Up · ${timeLabel}` : "Follow Up"),
-      title: triage.reminder_at ? `Follow up reminder: ${formatDate(triage.reminder_at)}` : "Follow up reminder",
+        ? (timeLabel
+          ? t("follow_up_due_at_time", { time: timeLabel }, `Follow Up · Due ${timeLabel}`)
+          : t("follow_up_due", {}, "Follow Up · Due"))
+        : (timeLabel && options.compact !== true
+          ? t("follow_up_at_time", { time: timeLabel }, `Follow Up · ${timeLabel}`)
+          : t("follow_up", {}, "Follow Up")),
+      title: triage.reminder_at
+        ? t("follow_up_reminder_at", { time: formatDate(triage.reminder_at) }, `Follow up reminder: ${formatDate(triage.reminder_at)}`)
+        : t("follow_up_reminder", {}, "Follow up reminder"),
     });
   }
   if (triage.snoozed_until || triage.is_snoozed) {
     const timeLabel = triage.snoozed_until ? formatMailTriageChipTime(triage.snoozed_until, options) : "";
     chips.push({
       kind: "snoozed",
-      label: timeLabel && options.compact !== true ? `Snoozed · ${timeLabel}` : "Snoozed",
-      title: triage.snoozed_until ? `Snoozed until ${formatDate(triage.snoozed_until)}` : "Snoozed",
+      label: timeLabel && options.compact !== true
+        ? t("snoozed_at_time", { time: timeLabel }, `Snoozed · ${timeLabel}`)
+        : t("snoozed", {}, "Snoozed"),
+      title: triage.snoozed_until
+        ? t("snoozed_until_time", { time: formatDate(triage.snoozed_until) }, `Snoozed until ${formatDate(triage.snoozed_until)}`)
+        : t("snoozed", {}, "Snoozed"),
     });
   }
   for (const tag of triage.tags.slice(0, maxTags)) {
+    const tagName = String(tag?.name || tag?.id || "").trim();
     chips.push({
       kind: "tag",
-      label: String(tag?.name || tag?.id || "").trim(),
-      title: `Tag: ${String(tag?.name || tag?.id || "").trim()}`,
+      label: tagName,
+      title: t("tag_value", { value: tagName }, `Tag: ${tagName}`),
     });
   }
   if (triage.tags.length > maxTags) {
     chips.push({
       kind: "tag",
       label: `+${triage.tags.length - maxTags}`,
-      title: `${triage.tags.length - maxTags} more tags`,
+      title: t("more_tags_count", { count: triage.tags.length - maxTags }, `${triage.tags.length - maxTags} more tags`),
     });
   }
   return chips.filter((item) => item.label);
@@ -21162,21 +21920,27 @@ function nextMailTriagePresetDate(preset) {
 async function promptMailTriageDateTime(kind, trigger = null, preset = "") {
   const defaultValue = localDateTimeInputValue(preset ? nextMailTriagePresetDate(preset) : new Date(Date.now() + 60 * 60 * 1000));
   const input = await showPromptModal({
-    title: kind === "snooze" ? "Snooze Conversation" : "Set Follow Up Reminder",
+    title: kind === "snooze"
+      ? t("snooze_conversation", {}, "Snooze Conversation")
+      : t("set_follow_up_reminder", {}, "Set Follow Up Reminder"),
     body: kind === "snooze"
-      ? "Pick when this conversation should return to your normal mailbox views."
-      : "Pick when this conversation should surface in Follow Up.",
-    label: kind === "snooze" ? "Snooze until" : "Remind at",
+      ? t(
+        "pick_when_this_conversation_should_return_to_your_normal_mailbox_views",
+        {},
+        "Pick when this conversation should return to your normal mailbox views.",
+      )
+      : t("pick_when_this_conversation_should_surface_in_follow_up", {}, "Pick when this conversation should surface in Follow Up."),
+    label: kind === "snooze" ? t("snooze_until", {}, "Snooze until") : t("remind_at", {}, "Remind at"),
     inputType: "datetime-local",
     defaultValue,
-    confirmText: kind === "snooze" ? "Snooze" : "Set Reminder",
-    cancelText: "Cancel",
+    confirmText: kind === "snooze" ? t("snooze", {}, "Snooze") : t("set_reminder", {}, "Set Reminder"),
+    cancelText: t("cancel", {}, "Cancel"),
     trigger,
   });
   if (input === null) return null;
   const date = new Date(String(input || "").trim());
   if (Number.isNaN(date.getTime())) {
-    throw new Error("Choose a valid date and time.");
+    throw new Error(t("choose_a_valid_date_and_time", {}, "Choose a valid date and time."));
   }
   return date.toISOString();
 }
@@ -21189,27 +21953,41 @@ function matchMailTriageCatalogEntryByName(items, value) {
 
 function promptTagNamesDescription() {
   const items = Array.isArray(currentMailTriageCatalog().tags) ? currentMailTriageCatalog().tags : [];
-  if (items.length === 0) return "Type one or more tag names separated by commas. New names are created when you add tags.";
-  return `Type one or more tag names separated by commas. Existing tags: ${items.slice(0, 8).map((item) => item.name).join(", ")}${items.length > 8 ? "…" : ""}`;
+  if (items.length === 0) {
+    return t(
+      "type_one_or_more_tag_names_separated_by_commas_new_names_are_created_when_you_add_tags",
+      {},
+      "Type one or more tag names separated by commas. New names are created when you add tags.",
+    );
+  }
+  return `${t(
+    "type_one_or_more_tag_names_separated_by_commas_new_names_are_created_when_you_add_tags",
+    {},
+    "Type one or more tag names separated by commas. New names are created when you add tags.",
+  )} ${t("existing_tags", {}, "Existing tags")}: ${items.slice(0, 8).map((item) => item.name).join(", ")}${items.length > 8 ? "…" : ""}`;
 }
 
 async function promptMailTriageCategoryChoice(trigger = null) {
   await ensureMailTriageCatalogLoaded({ logErrors: false });
   const catalog = currentMailTriageCatalog();
   const input = await showPromptModal({
-    title: "Set Category",
-    body: "Type an existing category or create a new one for the selected conversation.",
-    label: "Category",
+    title: t("set_category", {}, "Set Category"),
+    body: t(
+      "type_an_existing_category_or_create_a_new_one_for_the_selected_conversation",
+      {},
+      "Type an existing category or create a new one for the selected conversation.",
+    ),
+    label: t("category", {}, "Category"),
     defaultValue: "",
     choices: (Array.isArray(catalog.categories) ? catalog.categories : []).map((item) => item.name),
-    confirmText: "Save",
-    cancelText: "Cancel",
+    confirmText: t("save", {}, "Save"),
+    cancelText: t("cancel", {}, "Cancel"),
     trigger,
   });
   if (input === null) return null;
   const trimmed = String(input || "").trim();
   if (!trimmed) {
-    throw new Error("Category is required.");
+    throw new Error(t("category_is_required", {}, "Category is required."));
   }
   const existing = matchMailTriageCatalogEntryByName(catalog.categories, trimmed);
   return existing ? { category_id: existing.id } : { category_name: trimmed };
@@ -21232,19 +22010,19 @@ async function promptMailTriageTagChange(mode, trigger = null) {
   await ensureMailTriageCatalogLoaded({ logErrors: false });
   const catalog = currentMailTriageCatalog();
   const input = await showPromptModal({
-    title: mode === "remove" ? "Remove Tags" : "Add Tags",
+    title: mode === "remove" ? t("remove_tags", {}, "Remove Tags") : t("add_tags", {}, "Add Tags"),
     body: promptTagNamesDescription(),
-    label: "Tags",
+    label: t("tags", {}, "Tags"),
     defaultValue: "",
     choices: (Array.isArray(catalog.tags) ? catalog.tags : []).map((item) => item.name),
-    confirmText: mode === "remove" ? "Remove" : "Add",
-    cancelText: "Cancel",
+    confirmText: mode === "remove" ? t("remove", {}, "Remove") : t("add", {}, "Add"),
+    cancelText: t("cancel", {}, "Cancel"),
     trigger,
   });
   if (input === null) return null;
   const names = parseMailTriageNameTokens(input);
   if (names.length === 0) {
-    throw new Error("Enter at least one tag.");
+    throw new Error(t("enter_at_least_one_tag", {}, "Enter at least one tag."));
   }
   const existingIDs = [];
   const newNames = [];
@@ -21257,7 +22035,7 @@ async function promptMailTriageTagChange(mode, trigger = null) {
     }
   }
   if (mode === "remove" && existingIDs.length === 0) {
-    throw new Error("No matching tags found.");
+    throw new Error(t("no_matching_tags_found", {}, "No matching tags found."));
   }
   return mode === "remove"
     ? { remove_tag_ids: existingIDs }
@@ -21269,7 +22047,7 @@ async function applyMailTriageMutation(mutation = {}, options = {}) {
     ? options.targets
     : selectedMailTriageTargets();
   if (targets.length === 0) {
-    throw new Error("Conversation context is unavailable for the selected message.");
+    throw new Error(t("conversation_context_is_unavailable_for_the_selected_message", {}, "Conversation context is unavailable for the selected message."));
   }
   const payload = {
     targets,
@@ -21304,10 +22082,11 @@ async function pollDueMailTriageReminders() {
   for (const item of items) {
     const triageKey = String(item?.triage_key || "").trim();
     const reminderAt = String(item?.reminder_at || "").trim();
-    const subject = String(item?.subject || "").trim() || "(no subject)";
+    const subject = String(item?.subject || "").trim() || t("no_subject", {}, "(no subject)");
     const from = formatSenderDisplayName(item?.from || "");
-    setStatus(`${subject} is due for follow-up${from ? ` from ${from}` : ""}.`, "info", {
-      title: "Follow Up Due",
+    const fromPart = from ? ` ${t("from_sender", { sender: from }, `from ${from}`)}` : "";
+    setStatus(t("follow_up_due_notification", { subject, fromPart }, `${subject} is due for follow-up${from ? ` from ${from}` : ""}.`), "info", {
+      title: t("follow_up_due_title", {}, "Follow Up Due"),
       source: "mail",
       delivery: "center",
       dedupeKey: `mail-triage-reminder:${triageKey}:${reminderAt}`,
@@ -21361,7 +22140,7 @@ function bindSetupUI() {
             setActiveTab(el.tabAuth);
             showView("auth");
             setActiveAuthTask("login");
-            setStatus("SETUP ALREADY COMPLETED. SIGN IN WITH ADMIN ACCOUNT.", "info");
+            setStatus(t("SETUP ALREADY COMPLETED. SIGN IN WITH ADMIN ACCOUNT."), "info");
             setSetupInlineStatus("");
             return;
           }
@@ -21371,18 +22150,20 @@ function bindSetupUI() {
       }
       if (err.code === "pam_credentials_invalid") {
         if (!/attempted logins:/i.test(String(err.message || ""))) {
-          err.message = "PAM mode is enabled. The password or mailbox login is invalid. Try the optional Mailbox Login field if IMAP login differs from email.";
+          err.message = t("PAM mode is enabled. The password or mailbox login is invalid. Try the optional Mailbox Login field if IMAP login differs from email.");
         }
       } else if (err.code === "pam_verifier_unavailable") {
-        err.message = "Cannot validate PAM credentials right now because IMAP connectivity failed. Check IMAP host/port/TLS and try again.";
+        err.message = t("Cannot validate PAM credentials right now because IMAP connectivity failed. Check IMAP host/port/TLS and try again.");
       } else if (err.code === "recovery_email_required") {
-        err.message = "A recovery email is required before setup can finish.";
+        err.message = t("A recovery email is required before setup can finish.");
       } else if (err.code === "recovery_email_matches_login") {
-        err.message = `Recovery email must be different from the admin ${setupModeUsesLocalMail() ? "email" : "username"}.`;
+        err.message = setupModeUsesLocalMail()
+          ? t("Recovery email must be different from the admin email.")
+          : t("Recovery email must be different from the username.");
       } else if (err.code === "invalid_recovery_email") {
-        err.message = "Enter a valid recovery email address.";
+        err.message = t("Enter a valid recovery email address.");
       } else if (isSessionErrorCode(err.code)) {
-        err.message = "Setup was accepted, but browser session cookie was not established. Check HTTP/HTTPS cookie policy and then sign in from Login.";
+        err.message = t("Setup was accepted, but browser session cookie was not established. Check HTTP/HTTPS cookie policy and then sign in from Login.");
       }
       const requestRef = err.requestID ? ` (request ${err.requestID})` : "";
       const detail = err.code && err.code !== "request_failed" ? `${err.message} [${err.code}]${requestRef}` : `${err.message}${requestRef}`;
@@ -21687,6 +22468,12 @@ function bindUI() {
     });
   }
 
+  if (el.settingsNavInterface) {
+    el.settingsNavInterface.onclick = async () => {
+      setActiveSettingsSection("interface");
+      await loadCurrentSettingsSection();
+    };
+  }
   if (el.settingsNavSignIn) {
     el.settingsNavSignIn.onclick = async () => {
       setActiveSettingsSection("signin");
@@ -21705,11 +22492,20 @@ function bindUI() {
       await loadCurrentSettingsSection();
     };
   }
-  if (el.settingsNavSessions) {
-    el.settingsNavSessions.onclick = async () => {
-      setActiveSettingsSection("sessions");
-      await loadCurrentSettingsSection();
-    };
+    if (el.settingsNavSessions) {
+      el.settingsNavSessions.onclick = async () => {
+        setActiveSettingsSection("sessions");
+        await loadCurrentSettingsSection();
+      };
+    }
+  if (el.btnSettingsLanguageSave) {
+    el.btnSettingsLanguageSave.addEventListener("click", async () => {
+      try {
+        await saveInterfaceLanguagePreference();
+      } catch (err) {
+        presentAPIError(err, t("failed_to_save_language_preference", {}, "Failed to save language preference"));
+      }
+    });
   }
 
   if (el.adminNavSystem) {
@@ -22001,11 +22797,11 @@ function bindUI() {
     const loginEmail = String(fd.get("email") || "").trim().toLowerCase();
     const recoveryEmail = String(fd.get("recovery_email") || "").trim().toLowerCase();
     if (!validEmail(recoveryEmail)) {
-      setStatus("Provide a valid recovery email.", "error");
+      setStatus(t("Provide a valid recovery email."), "error");
       return;
     }
     if (loginEmail !== "" && loginEmail === recoveryEmail) {
-      setStatus("Recovery email must be different from login email.", "error");
+      setStatus(t("Recovery email must be different from login email."), "error");
       return;
     }
     const captchaToken = String(fd.get("captcha_token") || "").trim();
@@ -22812,7 +23608,7 @@ function bindUI() {
         });
         setStatus(
           targetVersion
-            ? `${formatHumanVersion(targetVersion)} is queued for installation.`
+            ? t("{version} is queued for installation.", { version: formatHumanVersion(targetVersion) })
             : "The selected release is queued for installation.",
           "info",
           {
@@ -23435,6 +24231,7 @@ function bindUI() {
       }
       try {
         await Promise.all([
+          loadInterfaceSettings(),
           loadPasskeyCredentials(),
           loadMailSettingsSection(),
           loadTrustedDevices(),
@@ -23507,7 +24304,7 @@ function bindUI() {
     showView("auth");
     setActiveAuthTask("login");
     void initCaptchaUI();
-    setStatus("Signed out.", "ok");
+    setStatus(t("signed_out", {}, "Signed out."), "ok");
   };
 
   el.btnSearch.onclick = async () => {
@@ -24178,8 +24975,10 @@ function bindUI() {
   renderReaderBody(null);
 }
 
-async function bootstrap() {
+async function runAppBootstrap() {
+  localizeDocumentNow();
   ThemeController.initTheme();
+  localizeDocumentNow();
   loadStoredNotifications();
   bindUI();
   window.addEventListener("beforeunload", () => {
@@ -24227,7 +25026,7 @@ async function bootstrap() {
     if (el.resetTokenInput && String(el.resetTokenInput.value || "").trim()) {
       applyResetLinkToken(el.resetTokenInput.value, { focus: true });
     }
-    setStatus("Authentication required.");
+    setStatus(t("authentication_required", {}, "Authentication required."));
     return;
   }
 
@@ -24281,4 +25080,65 @@ async function bootstrap() {
   }
 }
 
-bootstrap();
+async function fetchBootJSON(path) {
+  try {
+    const response = await fetch(path, {
+      credentials: "include",
+      cache: "no-cache",
+    });
+    const text = await response.text();
+    const payload = text ? (() => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return {};
+      }
+    })() : {};
+    if (!response.ok) {
+      return null;
+    }
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveBootLocaleChoice() {
+  const [setupStatus, session] = await Promise.all([
+    fetchBootJSON("/api/v1/setup/status"),
+    fetchBootJSON("/api/v1/me"),
+  ]);
+  const fallbackLocale = preferredLocaleFromPayload(session) || signedOutPreferredLocale();
+  if (session && setupStatus?.required !== true) {
+    return fallbackLocale;
+  }
+  return showLanguageGate({
+    locale: fallbackLocale,
+    setupRequired: !!setupStatus?.required,
+    loading: false,
+  });
+}
+
+async function startBoot() {
+  initLanguageGateUI();
+  if (el.languageGate) {
+    el.languageGate.classList.remove("hidden");
+    el.languageGate.setAttribute("aria-hidden", "false");
+  }
+  const initialLocale = signedOutPreferredLocale();
+  renderLanguageGate(initialLocale, { loading: true, setupRequired: false });
+  let locale = initialLocale;
+  try {
+    locale = await resolveBootLocaleChoice();
+    if (typeof i18n.init === "function") {
+      await i18n.init(locale);
+    }
+    await runAppBootstrap();
+  } catch (err) {
+    setStatus(formatAPIError(err, t("failed_to_start_despatch", {}, "Failed to start Despatch.")), "error");
+  } finally {
+    hideLanguageGate();
+  }
+}
+
+startBoot();

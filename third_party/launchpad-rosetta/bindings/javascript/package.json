@@ -1,0 +1,17 @@
+{
+  "name": "launchpad-rosetta",
+  "version": "1.3.0",
+  "description": "JavaScript bindings for the Launchpad Rosetta localization engine.",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "scripts": {
+    "build:native": "cargo build --manifest-path ../../Cargo.toml",
+    "test": "npm run build:native && node --test"
+  },
+  "dependencies": {
+    "koffi": "^2.14.0"
+  }
+}

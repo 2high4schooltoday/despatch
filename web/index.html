@@ -12,6 +12,24 @@
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
+  <div id="language-gate" class="language-gate" data-i18n-skip>
+    <div class="language-gate__aurora" aria-hidden="true"></div>
+    <div id="language-gate-hello-stream" class="language-gate__hello-stream" aria-hidden="true"></div>
+    <div class="language-gate__panel">
+      <p id="language-gate-kicker" class="language-gate__kicker">Language</p>
+      <h1 id="language-gate-title" class="language-gate__title">Choose your language</h1>
+      <p id="language-gate-body" class="language-gate__body">Despatch will use this language before sign-in and during first-run setup.</p>
+      <label class="language-gate__field" for="language-gate-select">
+        <span id="language-gate-label">Interface language</span>
+        <select id="language-gate-select" class="language-gate__select" autocomplete="off">
+          <option value="en">English</option>
+          <option value="ru">Русский</option>
+        </select>
+      </label>
+      <p id="language-gate-hint" class="language-gate__hint">Your device language is selected automatically when it is available.</p>
+      <button id="language-gate-continue" class="cmd-btn cmd-btn--primary language-gate__continue" type="button">Continue to sign in</button>
+    </div>
+  </div>
   <div class="app-shell page-office" id="app-shell">
     <header class="topbar">
       <div class="topbar-row">
@@ -168,6 +186,7 @@
               </span>
             </label>
             <div id="settings-search-results" class="settings-search-results hidden"></div>
+            <button id="settings-nav-interface" class="settings-nav-btn" type="button" aria-controls="settings-section-interface">Interface</button>
             <button id="settings-nav-signin" class="settings-nav-btn is-active" type="button" aria-controls="settings-section-signin" aria-current="page">Sign-In</button>
             <button id="settings-nav-mail" class="settings-nav-btn" type="button" aria-controls="settings-section-mail">Mail</button>
             <button id="settings-nav-devices" class="settings-nav-btn" type="button" aria-controls="settings-section-devices">Devices</button>
@@ -175,6 +194,32 @@
           </aside>
 
           <div class="settings-main">
+            <section id="settings-section-interface" class="panel settings-section hidden">
+              <header class="settings-page-head">
+                <h3>Interface</h3>
+                <p class="hint">Language is saved per account. Theme remains local to this workstation.</p>
+              </header>
+              <section class="setting-section">
+                <header class="setting-section-head">
+                  <h4>Language</h4>
+                  <p class="hint">Choose the language used after sign-in. New accounts start with the language detected from this device or browser.</p>
+                </header>
+                <article class="settings-detail">
+                  <label class="mail-settings-field">
+                    <span>Account Language</span>
+                    <select id="settings-language-select" autocomplete="off">
+                      <option value="en">English</option>
+                      <option value="ru">Русский</option>
+                    </select>
+                  </label>
+                  <p id="settings-language-note" class="hint">Changes apply after reloading the interface.</p>
+                  <div class="actions setting-actions">
+                    <button id="btn-settings-language-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Language</button>
+                  </div>
+                </article>
+              </section>
+            </section>
+
             <section id="settings-section-signin" class="panel settings-section">
               <header class="settings-page-head">
                 <h3>Sign-In</h3>
@@ -877,7 +922,7 @@
                 <div class="oobe-stage-mark" aria-hidden="true">05</div>
                 <div class="oobe-step-copy">
                   <h2>Admin account</h2>
-                  <p>Create the first admin sign-in used to manage Despatch and recover access later if needed.</p>
+                  <p id="setup-admin-copy-text">Create the first admin sign-in used to manage Despatch.</p>
                 </div>
                 <div class="oobe-field-stack">
                   <label id="setup-domain-wrap">Mail domain
@@ -886,7 +931,7 @@
                   <label><span id="setup-admin-identifier-label">Admin email</span>
                     <input id="setup-admin-email" name="admin_email" type="text" autocomplete="username">
                   </label>
-                  <label>Recovery email
+                  <label id="setup-admin-recovery-email-wrap">Recovery email
                     <input id="setup-admin-recovery-email" name="admin_recovery_email" type="email" autocomplete="email" placeholder="you@example.net">
                   </label>
                   <label id="setup-mailbox-login-wrap" class="hidden">Mailbox login (optional)
@@ -920,7 +965,7 @@
                 </label>
                 <details class="oobe-inline-details">
                   <summary>Data &amp; Privacy</summary>
-                  <p>Despatch stores the admin sign-in, recovery email, sign-in preference, and password hash needed to run the first account. Recovery email is only used for account recovery and password reset.</p>
+                  <p id="setup-data-privacy-text">Despatch stores the admin sign-in, recovery email, sign-in preference, and password hash needed to run the first account. Recovery email is only used for account recovery and password reset.</p>
                 </details>
               </div>
 
@@ -937,7 +982,7 @@
                   <div><b>Software Updates:</b> <span id="setup-summary-updates">Automatic updates on</span></div>
                   <div id="setup-summary-domain-row"><b>Domain:</b> <span id="setup-summary-domain">-</span></div>
                   <div><b id="setup-summary-admin-label">Admin:</b> <span id="setup-summary-email">-</span></div>
-                  <div><b>Recovery Email:</b> <span id="setup-summary-recovery-email">-</span></div>
+                  <div id="setup-summary-recovery-email-row"><b>Recovery Email:</b> <span id="setup-summary-recovery-email">-</span></div>
                   <div><b>Passkey Sign-In:</b> <span id="setup-summary-passkey">Enabled</span></div>
                 </div>
                 <p class="hint">Admin MFA setup is mandatory and will begin immediately after initialization.</p>
@@ -1171,7 +1216,7 @@
               </div>
               <button id="btn-mailbox-new" class="cmd-btn cmd-btn--dense" type="button">New Folder</button>
             </div>
-            <ul id="mailboxes" class="list mailbox-list" role="listbox" aria-label="Mailboxes" tabindex="0"></ul>
+            <ul id="mailboxes" class="list mailbox-list" role="listbox" aria-label="Mailboxes" tabindex="0" data-i18n-skip="true"></ul>
           </aside>
 
           <div
@@ -1199,7 +1244,7 @@
                 <button id="btn-mail-junk-activate-managed" class="cmd-btn cmd-btn--dense cmd-btn--primary hidden" type="button">Activate Despatch Rules</button>
               </div>
             </div>
-            <ul id="messages" class="message-list" role="listbox" aria-label="Messages" tabindex="0"></ul>
+            <ul id="messages" class="message-list" role="listbox" aria-label="Messages" tabindex="0" data-i18n-skip="true"></ul>
           </section>
 
           <div
@@ -1217,7 +1262,7 @@
               <button id="mail-back-to-messages" class="cmd-btn cmd-btn--dense mail-nav-back" type="button">Back</button>
             </div>
             <div class="reader-header">
-              <h4 id="message-subject-anchor" class="reader-subject">(no subject)</h4>
+              <h4 id="message-subject-anchor" class="reader-subject" data-i18n-skip="true">(no subject)</h4>
               <div id="message-meta" class="meta"></div>
               <div id="reader-triage-chips" class="mail-triage-inline hidden"></div>
             </div>
@@ -1236,7 +1281,7 @@
                 </div>
               </div>
               <div id="thread-list-wrap" class="thread-list-wrap hidden">
-                <ul id="thread-list" class="thread-list" role="listbox" aria-label="Conversation messages"></ul>
+                <ul id="thread-list" class="thread-list" role="listbox" aria-label="Conversation messages" data-i18n-skip="true"></ul>
               </div>
             </div>
             <div class="reader-view-controls" role="group" aria-label="Reader tools">
@@ -1308,9 +1353,9 @@
             </div>
             <div class="reader-body-host">
               <div id="message-body-html-wrap" class="message-body-html-wrap hidden">
-                <iframe id="message-body-html" class="message-body-html" title="HTML message body" sandbox="allow-same-origin"></iframe>
+                <iframe id="message-body-html" class="message-body-html" title="HTML message body" sandbox="allow-same-origin" data-i18n-skip="true"></iframe>
               </div>
-              <pre id="message-body-plain" class="message-body">Select a message.</pre>
+              <pre id="message-body-plain" class="message-body" data-i18n-skip="true">Select a message.</pre>
             </div>
             <div id="attachment-list" class="attachments"></div>
           </section>
@@ -1714,7 +1759,7 @@
             <div class="compose-meta-label">To</div>
             <div class="compose-meta-value">
               <div id="compose-to-field" class="compose-token-field compose-token-field--to" data-field="to">
-                <div id="compose-to-chips" class="compose-token-chips"></div>
+                <div id="compose-to-chips" class="compose-token-chips" data-i18n-skip="true"></div>
                 <input id="compose-to-input" name="to" type="text" required autocomplete="email" placeholder="recipient@example.com">
               </div>
             </div>
@@ -1727,7 +1772,7 @@
             <div class="compose-meta-label">Cc</div>
             <div class="compose-meta-value">
               <div id="compose-cc-field" class="compose-token-field" data-field="cc">
-                <div id="compose-cc-chips" class="compose-token-chips"></div>
+                <div id="compose-cc-chips" class="compose-token-chips" data-i18n-skip="true"></div>
                 <input id="compose-cc-input" name="cc" type="text" autocomplete="off" placeholder="copy@example.com">
               </div>
             </div>
@@ -1737,7 +1782,7 @@
             <div class="compose-meta-label">Bcc</div>
             <div class="compose-meta-value">
               <div id="compose-bcc-field" class="compose-token-field" data-field="bcc">
-                <div id="compose-bcc-chips" class="compose-token-chips"></div>
+                <div id="compose-bcc-chips" class="compose-token-chips" data-i18n-skip="true"></div>
                 <input id="compose-bcc-input" name="bcc" type="text" autocomplete="off" placeholder="hidden@example.com">
               </div>
             </div>
@@ -1830,8 +1875,8 @@
               </div>
             </section>
           </section>
-          <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write your message"></div>
-          <div id="compose-recipient-suggestions" class="compose-recipient-menu hidden" role="listbox" aria-label="Recipient suggestions"></div>
+          <div id="compose-editor" class="compose-editor" contenteditable="true" role="textbox" aria-multiline="true" data-placeholder="Write your message" data-i18n-skip="true"></div>
+          <div id="compose-recipient-suggestions" class="compose-recipient-menu hidden" role="listbox" aria-label="Recipient suggestions" data-i18n-skip="true"></div>
         </section>
       </form>
     </article>
@@ -1874,6 +1919,7 @@
     </article>
   </div>
 
+  <script src="/i18n.js" defer></script>
   <script src="/app.js" defer></script>
 </body>
 </html>
