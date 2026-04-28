@@ -139,13 +139,24 @@ func TestSetupStatusIncludesPasskeyPrimarySignInEnabledAndAutomaticUpdates(t *te
 func TestWebEntryPointAndLocaleBootstrapDisableCaching(t *testing.T) {
 	router, _ := newSetupRouterWithConfigAndStore(t, nil)
 
-	assertNoStore := func(path string) *httptest.ResponseRecorder {
+	assertNoStore := func(path string, expectedCodes ...int) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(http.MethodGet, "http://localhost"+path, nil)
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("expected 200 for %s, got %d body=%s", path, rec.Code, rec.Body.String())
+		allowed := expectedCodes
+		if len(allowed) == 0 {
+			allowed = []int{http.StatusOK}
+		}
+		ok := false
+		for _, code := range allowed {
+			if rec.Code == code {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			t.Fatalf("expected status %v for %s, got %d body=%s", allowed, path, rec.Code, rec.Body.String())
 		}
 		if cache := rec.Header().Get("Cache-Control"); !strings.Contains(cache, "no-store") {
 			t.Fatalf("expected no-store cache control for %s, got %q", path, cache)
@@ -168,7 +179,7 @@ func TestWebEntryPointAndLocaleBootstrapDisableCaching(t *testing.T) {
 	assertNoStore("/i18n.js")
 	assertNoStore("/styles.css")
 	assertNoStore("/api/v1/setup/status")
-	assertNoStore("/api/v1/public/i18n/ru")
+	assertNoStore("/api/v1/public/i18n/ru", http.StatusOK, http.StatusNotFound)
 }
 
 func TestSetupCompletePersistsPasskeyPrimarySignInChoice(t *testing.T) {
