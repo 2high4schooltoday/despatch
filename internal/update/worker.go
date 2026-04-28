@@ -311,6 +311,19 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 	if err := copyDir(filepath.Join(payloadRoot, "deploy"), filepath.Join(stageDir, "deploy")); err != nil {
 		return "", false, err
 	}
+	nativeLibraryName := webI18nNativeLibraryName()
+	nativeLibraryPayloadPresent := false
+	if nativeLibraryName != "" {
+		nativeLibraryPayloadPath := filepath.Join(payloadRoot, nativeLibraryName)
+		if _, err := os.Stat(nativeLibraryPayloadPath); err == nil {
+			if err := copyFile(nativeLibraryPayloadPath, filepath.Join(stageDir, nativeLibraryName), 0o755); err != nil {
+				return "", false, err
+			}
+			nativeLibraryPayloadPresent = true
+		} else if !os.IsNotExist(err) {
+			return "", false, err
+		}
+	}
 	mailSecPayloadPath := filepath.Join(payloadRoot, "despatch-mailsec-service")
 	mailSecPayloadPresent := false
 	if _, err := os.Stat(mailSecPayloadPath); err == nil {
@@ -340,6 +353,10 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 	prevWeb := filepath.Join(m.cfg.UpdateInstallDir, ".prev-web-"+sanitizePathToken(runID))
 	prevMig := filepath.Join(m.cfg.UpdateInstallDir, ".prev-migrations-"+sanitizePathToken(runID))
 	prevDeploy := filepath.Join(m.cfg.UpdateInstallDir, ".prev-deploy-"+sanitizePathToken(runID))
+	prevNativeLibrary := ""
+	if nativeLibraryName != "" {
+		prevNativeLibrary = filepath.Join(m.cfg.UpdateInstallDir, ".prev-"+nativeLibraryName+"-"+sanitizePathToken(runID))
+	}
 	prevMailSec := filepath.Join(m.cfg.UpdateInstallDir, ".prev-mailsec-"+sanitizePathToken(runID))
 
 	currentBin := filepath.Join(m.cfg.UpdateInstallDir, "despatch")
@@ -348,6 +365,10 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 	currentWeb := filepath.Join(m.cfg.UpdateInstallDir, "web")
 	currentMig := filepath.Join(m.cfg.UpdateInstallDir, "migrations")
 	currentDeploy := installDeployDir(m.cfg)
+	currentNativeLibrary := ""
+	if nativeLibraryName != "" {
+		currentNativeLibrary = filepath.Join(m.cfg.UpdateInstallDir, nativeLibraryName)
+	}
 	currentMailSec = filepath.Join(m.cfg.UpdateInstallDir, "despatch-mailsec-service")
 	stageBin := filepath.Join(stageDir, "despatch")
 	stagePam := filepath.Join(stageDir, "despatch-pam-reset-helper")
@@ -355,9 +376,17 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 	stageWeb := filepath.Join(stageDir, "web")
 	stageMig := filepath.Join(stageDir, "migrations")
 	stageDeploy := filepath.Join(stageDir, "deploy")
+	stageNativeLibrary := ""
+	if nativeLibraryName != "" {
+		stageNativeLibrary = filepath.Join(stageDir, nativeLibraryName)
+	}
 	stageMailSec := filepath.Join(stageDir, "despatch-mailsec-service")
 
-	for _, p := range []string{prevBin, prevPam, prevWorker, prevWeb, prevMig, prevDeploy, prevMailSec} {
+	previousPaths := []string{prevBin, prevPam, prevWorker, prevWeb, prevMig, prevDeploy, prevMailSec}
+	if prevNativeLibrary != "" {
+		previousPaths = append(previousPaths, prevNativeLibrary)
+	}
+	for _, p := range previousPaths {
 		_ = os.RemoveAll(p)
 	}
 
@@ -365,6 +394,7 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 	pamSwapped := false
 	workerSwapped := false
 	deploySwapped := false
+	nativeLibrarySwapped := false
 	mailSecSwapped := false
 	rollback := func() error {
 		_ = os.RemoveAll(currentWeb)
@@ -376,6 +406,9 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 		}
 		if workerSwapped {
 			_ = os.Remove(currentWorker)
+		}
+		if nativeLibrarySwapped && currentNativeLibrary != "" {
+			_ = os.Remove(currentNativeLibrary)
 		}
 		if mailSecSwapped {
 			_ = os.Remove(currentMailSec)
@@ -416,6 +449,13 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 				}
 			}
 		}
+		if nativeLibrarySwapped && prevNativeLibrary != "" && currentNativeLibrary != "" {
+			if _, err := os.Stat(prevNativeLibrary); err == nil {
+				if err := os.Rename(prevNativeLibrary, currentNativeLibrary); err != nil {
+					return err
+				}
+			}
+		}
 		if mailSecSwapped {
 			if _, err := os.Stat(prevMailSec); err == nil {
 				if err := os.Rename(prevMailSec, currentMailSec); err != nil {
@@ -452,6 +492,13 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 		return "", false, err
 	}
 	deploySwapped = true
+	if nativeLibraryPayloadPresent {
+		if err := swapPathOptional(currentNativeLibrary, stageNativeLibrary, prevNativeLibrary); err != nil {
+			_ = rollback()
+			return "", false, err
+		}
+		nativeLibrarySwapped = true
+	}
 	if mailSecPayloadPresent {
 		if err := swapPathOptional(currentMailSec, stageMailSec, prevMailSec); err != nil {
 			_ = rollback()
@@ -615,6 +662,9 @@ func (m *Manager) applyRelease(ctx context.Context, req ApplyRequest) (string, b
 	archivePreviousPathBestEffort(prevBin, filepath.Join(backupDest, "despatch"))
 	archivePreviousPathBestEffort(prevPam, filepath.Join(backupDest, "despatch-pam-reset-helper"))
 	archivePreviousPathBestEffort(prevWorker, filepath.Join(backupDest, "despatch-update-worker"))
+	if prevNativeLibrary != "" {
+		archivePreviousPathBestEffort(prevNativeLibrary, filepath.Join(backupDest, nativeLibraryName))
+	}
 	archivePreviousPathBestEffort(prevMailSec, filepath.Join(backupDest, "despatch-mailsec-service"))
 	archivePreviousPathBestEffort(prevWeb, filepath.Join(backupDest, "web"))
 	archivePreviousPathBestEffort(prevMig, filepath.Join(backupDest, "migrations"))
@@ -724,6 +774,17 @@ func (m *Manager) prepareReleasePayload(ctx context.Context, targetVersion strin
 	}
 	if err := copyDir(filepath.Join(payloadRoot, "deploy"), filepath.Join(tmpPrepared, "deploy")); err != nil {
 		return githubRelease{}, "", err
+	}
+	nativeLibraryName := webI18nNativeLibraryName()
+	if nativeLibraryName != "" {
+		nativeLibraryPayloadPath := filepath.Join(payloadRoot, nativeLibraryName)
+		if _, err := os.Stat(nativeLibraryPayloadPath); err == nil {
+			if err := copyFile(nativeLibraryPayloadPath, filepath.Join(tmpPrepared, nativeLibraryName), 0o755); err != nil {
+				return githubRelease{}, "", err
+			}
+		} else if !os.IsNotExist(err) {
+			return githubRelease{}, "", err
+		}
 	}
 	mailSecPayloadPath := filepath.Join(payloadRoot, "despatch-mailsec-service")
 	if _, err := os.Stat(mailSecPayloadPath); err == nil {
@@ -1063,6 +1124,19 @@ func findPayloadRoot(extractDir string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("release payload missing required files (despatch, despatch-pam-reset-helper, despatch-update-worker, web, migrations, deploy)")
+}
+
+func webI18nNativeLibraryName() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return "liblp_i18n.dylib"
+	case "linux":
+		return "liblp_i18n.so"
+	case "windows":
+		return "lp_i18n.dll"
+	default:
+		return ""
+	}
 }
 
 func hasRequiredPaths(root string, required []string) bool {

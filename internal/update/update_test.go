@@ -1810,6 +1810,11 @@ func TestApplyReleaseTreatsBackupArchiveFailureAsWarning(t *testing.T) {
 				t.Fatalf("write %s marker: %v", name, err)
 			}
 		}
+		if nativeLibrary := webI18nNativeLibraryName(); nativeLibrary != "" {
+			if err := os.WriteFile(filepath.Join(root, nativeLibrary), []byte(version+"-"+nativeLibrary+"\n"), 0o755); err != nil {
+				t.Fatalf("write %s: %v", nativeLibrary, err)
+			}
+		}
 		deployDir := filepath.Join(root, "deploy")
 		serviceUnit := fmt.Sprintf("[Service]\nExecStart=%s\n", filepath.Join(cfg.UpdateInstallDir, "despatch-update-worker"))
 		if err := os.WriteFile(filepath.Join(deployDir, "despatch-updater.service"), []byte(serviceUnit), 0o644); err != nil {
@@ -1857,6 +1862,9 @@ func TestApplyReleaseTreatsBackupArchiveFailureAsWarning(t *testing.T) {
 
 	assertContains(filepath.Join(cfg.UpdateInstallDir, "despatch"), "new-despatch")
 	assertContains(filepath.Join(cfg.UpdateInstallDir, "web", "version.txt"), "new-web")
+	if nativeLibrary := webI18nNativeLibraryName(); nativeLibrary != "" {
+		assertContains(filepath.Join(cfg.UpdateInstallDir, nativeLibrary), "new-"+nativeLibrary)
+	}
 	if _, err := os.Stat(filepath.Join(cfg.UpdateInstallDir, ".prev-despatch-req-backup-warning")); err != nil {
 		t.Fatalf("expected previous binary to remain for later cleanup when backup archive fails, stat err=%v", err)
 	}

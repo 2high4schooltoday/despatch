@@ -114,13 +114,21 @@ jobs:
               fi
               cargo build --release --target "${RUST_TARGET}" -p pam_reset_helper -p update_worker -p mailsec_service
             )
+            (
+              cd third_party/launchpad-rosetta
+              if [[ "${RUST_TARGET}" == "aarch64-unknown-linux-gnu" ]]; then
+                export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc
+              fi
+              cargo build --release --target "${RUST_TARGET}"
+            )
             cp "rust/target/${RUST_TARGET}/release/pam_reset_helper" "${PKG_DIR}/despatch-pam-reset-helper"
             cp "rust/target/${RUST_TARGET}/release/update_worker" "${PKG_DIR}/despatch-update-worker"
             cp "rust/target/${RUST_TARGET}/release/mailsec_service" "${PKG_DIR}/despatch-mailsec-service"
+            cp "third_party/launchpad-rosetta/target/${RUST_TARGET}/release/liblp_i18n.so" "${PKG_DIR}/liblp_i18n.so"
             cp -R web "${PKG_DIR}/web"
             cp -R migrations "${PKG_DIR}/migrations"
             cp -R deploy "${PKG_DIR}/deploy"
-            tar -C "${PKG_DIR}" -czf "dist/despatch-linux-${ARCH}.tar.gz" despatch despatch-pam-reset-helper despatch-update-worker despatch-mailsec-service web migrations deploy
+            tar -C "${PKG_DIR}" -czf "dist/despatch-linux-${ARCH}.tar.gz" despatch despatch-pam-reset-helper despatch-update-worker despatch-mailsec-service liblp_i18n.so web migrations deploy
           done
           (
             cd dist

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -65,6 +66,7 @@ type pluralDefinition struct {
 }
 
 func Load(localesDir, bundle string) (*Runtime, error) {
+	configureNativeLibraryPath(localesDir)
 	sources, err := readLocaleSources(localesDir)
 	if err != nil {
 		return nil, err
@@ -97,6 +99,91 @@ func Load(localesDir, bundle string) (*Runtime, error) {
 		runtime.locales[source.locale] = compiled
 	}
 	return runtime, nil
+}
+
+func configureNativeLibraryPath(localesDir string) {
+	if libraryPathConfigured(strings.TrimSpace(os.Getenv("LP_I18N_LIBRARY_PATH"))) {
+		return
+	}
+	for _, candidate := range nativeLibraryCandidates(localesDir) {
+		if candidate == "" {
+			continue
+		}
+		info, err := os.Stat(candidate)
+		if err != nil || info.IsDir() {
+			continue
+		}
+		_ = os.Setenv("LP_I18N_LIBRARY_PATH", candidate)
+		return
+	}
+}
+
+func libraryPathConfigured(value string) bool {
+	if value == "" {
+		return false
+	}
+	info, err := os.Stat(value)
+	if err == nil && !info.IsDir() {
+		return true
+	}
+	if err != nil || !info.IsDir() {
+		return false
+	}
+	for _, name := range nativeLibraryNames() {
+		candidate := filepath.Join(value, name)
+		if candidateInfo, statErr := os.Stat(candidate); statErr == nil && !candidateInfo.IsDir() {
+			return true
+		}
+	}
+	return false
+}
+
+func nativeLibraryCandidates(localesDir string) []string {
+	names := nativeLibraryNames()
+	if len(names) == 0 {
+		return nil
+	}
+	var roots []string
+	if trimmed := strings.TrimSpace(localesDir); trimmed != "" {
+		roots = append(roots, filepath.Clean(filepath.Join(trimmed, "..", "..")))
+	}
+	if exe, err := os.Executable(); err == nil {
+		roots = append(roots, filepath.Dir(exe))
+	}
+	seenRoots := map[string]bool{}
+	seenPaths := map[string]bool{}
+	var candidates []string
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" || seenRoots[root] {
+			continue
+		}
+		seenRoots[root] = true
+		for _, base := range []string{root, filepath.Join(root, "lib")} {
+			for _, name := range names {
+				candidate := filepath.Join(base, name)
+				if seenPaths[candidate] {
+					continue
+				}
+				seenPaths[candidate] = true
+				candidates = append(candidates, candidate)
+			}
+		}
+	}
+	return candidates
+}
+
+func nativeLibraryNames() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		return []string{"liblp_i18n.dylib"}
+	case "linux":
+		return []string{"liblp_i18n.so"}
+	case "windows":
+		return []string{"lp_i18n.dll", "liblp_i18n.dll"}
+	default:
+		return nil
+	}
 }
 
 func (runtime *Runtime) Close() error {
