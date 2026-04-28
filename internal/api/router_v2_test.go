@@ -107,6 +107,15 @@ func newV2RouterWithMailClientStoreAndHook(t *testing.T, despatch mail.Client, m
 		filepath.Join("..", "..", "migrations", "031_reply_funnels.sql"),
 		filepath.Join("..", "..", "migrations", "032_mail_account_providers.sql"),
 		filepath.Join("..", "..", "migrations", "033_user_preferences_locale.sql"),
+		filepath.Join("..", "..", "migrations", "034_user_preferences_format_locale.sql"),
+		filepath.Join("..", "..", "migrations", "035_outbound_campaigns.sql"),
+		filepath.Join("..", "..", "migrations", "036_outbound_campaign_steps.sql"),
+		filepath.Join("..", "..", "migrations", "037_outbound_enrollments.sql"),
+		filepath.Join("..", "..", "migrations", "038_outbound_events.sql"),
+		filepath.Join("..", "..", "migrations", "039_recipient_state.sql"),
+		filepath.Join("..", "..", "migrations", "040_mail_thread_bindings.sql"),
+		filepath.Join("..", "..", "migrations", "041_outbound_suppressions.sql"),
+		filepath.Join("..", "..", "migrations", "042_outbound_campaign_intelligence.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -540,7 +549,9 @@ func TestV2PreferencesFlow(t *testing.T) {
 
 	put := doV2AuthedJSON(t, router, http.MethodPut, "/api/v2/preferences", map[string]any{
 		"locale":              "ru",
+		"format_locale":       "de-DE",
 		"theme":               "paper-light",
+		"timezone":            "Europe/Berlin",
 		"page_size":           80,
 		"grouping_mode":       "today_yesterday",
 		"remote_image_policy": "ask",
@@ -566,6 +577,12 @@ func TestV2PreferencesFlow(t *testing.T) {
 	if got := out["locale"]; got != "ru" {
 		t.Fatalf("expected locale=ru got=%v", got)
 	}
+	if got := out["format_locale"]; got != "de-DE" {
+		t.Fatalf("expected format_locale=de-DE got=%v", got)
+	}
+	if got := out["timezone"]; got != "Europe/Berlin" {
+		t.Fatalf("expected timezone=Europe/Berlin got=%v", got)
+	}
 	if got := int(out["page_size"].(float64)); got != 80 {
 		t.Fatalf("expected page_size=80 got=%d", got)
 	}
@@ -576,7 +593,9 @@ func TestSavedLocaleAppearsInMeAndNextLogin(t *testing.T) {
 	sess, csrf := loginV2(t, router)
 
 	update := doV2AuthedJSON(t, router, http.MethodPatch, "/api/v2/preferences", map[string]any{
-		"locale": "ru",
+		"locale":        "ru",
+		"format_locale": "de-DE",
+		"timezone":      "Europe/Berlin",
 	}, sess, csrf)
 	if update.Code != http.StatusOK {
 		t.Fatalf("expected 200 updating locale, got %d body=%s", update.Code, update.Body.String())
@@ -593,10 +612,22 @@ func TestSavedLocaleAppearsInMeAndNextLogin(t *testing.T) {
 	if got := mePayload["locale"]; got != "ru" {
 		t.Fatalf("expected /api/v1/me locale=ru got=%v", got)
 	}
+	if got := mePayload["format_locale"]; got != "de-DE" {
+		t.Fatalf("expected /api/v1/me format_locale=de-DE got=%v", got)
+	}
+	if got := mePayload["timezone"]; got != "Europe/Berlin" {
+		t.Fatalf("expected /api/v1/me timezone=Europe/Berlin got=%v", got)
+	}
 
 	_, _, loginPayload := loginV1WithResponse(t, router, "admin@example.com", "SecretPass123!")
 	if got := loginPayload["locale"]; got != "ru" {
 		t.Fatalf("expected next /api/v1/login locale=ru got=%v payload=%v", got, loginPayload)
+	}
+	if got := loginPayload["format_locale"]; got != "de-DE" {
+		t.Fatalf("expected next /api/v1/login format_locale=de-DE got=%v payload=%v", got, loginPayload)
+	}
+	if got := loginPayload["timezone"]; got != "Europe/Berlin" {
+		t.Fatalf("expected next /api/v1/login timezone=Europe/Berlin got=%v payload=%v", got, loginPayload)
 	}
 }
 

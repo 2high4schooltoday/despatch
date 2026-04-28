@@ -98,6 +98,10 @@ func TestSortedMigrationFilesIncludesLatestSchemaUpdates(t *testing.T) {
 	}
 	foundProvidersMigration := false
 	foundLocalePreferenceMigration := false
+	foundFormatLocalePreferenceMigration := false
+	foundOutboundCampaignMigration := false
+	foundReplyOpsSuppressionMigration := false
+	foundOutboundIntelligenceMigration := false
 	for i, file := range files {
 		if i > 0 && filepath.Base(files[i-1]) > filepath.Base(file) {
 			t.Fatalf("expected migrations to be sorted, got %s before %s", filepath.Base(files[i-1]), filepath.Base(file))
@@ -108,12 +112,36 @@ func TestSortedMigrationFilesIncludesLatestSchemaUpdates(t *testing.T) {
 		if filepath.Base(file) == "033_user_preferences_locale.sql" {
 			foundLocalePreferenceMigration = true
 		}
+		if filepath.Base(file) == "034_user_preferences_format_locale.sql" {
+			foundFormatLocalePreferenceMigration = true
+		}
+		if filepath.Base(file) == "035_outbound_campaigns.sql" {
+			foundOutboundCampaignMigration = true
+		}
+		if filepath.Base(file) == "041_outbound_suppressions.sql" {
+			foundReplyOpsSuppressionMigration = true
+		}
+		if filepath.Base(file) == "042_outbound_campaign_intelligence.sql" {
+			foundOutboundIntelligenceMigration = true
+		}
 	}
 	if !foundProvidersMigration {
 		t.Fatal("expected migration list to include 032_mail_account_providers.sql")
 	}
 	if !foundLocalePreferenceMigration {
 		t.Fatal("expected migration list to include 033_user_preferences_locale.sql")
+	}
+	if !foundFormatLocalePreferenceMigration {
+		t.Fatal("expected migration list to include 034_user_preferences_format_locale.sql")
+	}
+	if !foundOutboundCampaignMigration {
+		t.Fatal("expected migration list to include 035_outbound_campaigns.sql")
+	}
+	if !foundReplyOpsSuppressionMigration {
+		t.Fatal("expected migration list to include 041_outbound_suppressions.sql")
+	}
+	if !foundOutboundIntelligenceMigration {
+		t.Fatal("expected migration list to include 042_outbound_campaign_intelligence.sql")
 	}
 	if _, err := os.Stat(files[0]); err != nil {
 		t.Fatalf("expected first migration file to exist: %v", err)

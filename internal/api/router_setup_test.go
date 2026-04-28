@@ -58,6 +58,16 @@ func newSetupRouterWithConfigAndStore(t *testing.T, mutate func(*config.Config))
 		filepath.Join("..", "..", "migrations", "030_mail_triage.sql"),
 		filepath.Join("..", "..", "migrations", "031_reply_funnels.sql"),
 		filepath.Join("..", "..", "migrations", "032_mail_account_providers.sql"),
+		filepath.Join("..", "..", "migrations", "033_user_preferences_locale.sql"),
+		filepath.Join("..", "..", "migrations", "034_user_preferences_format_locale.sql"),
+		filepath.Join("..", "..", "migrations", "035_outbound_campaigns.sql"),
+		filepath.Join("..", "..", "migrations", "036_outbound_campaign_steps.sql"),
+		filepath.Join("..", "..", "migrations", "037_outbound_enrollments.sql"),
+		filepath.Join("..", "..", "migrations", "038_outbound_events.sql"),
+		filepath.Join("..", "..", "migrations", "039_recipient_state.sql"),
+		filepath.Join("..", "..", "migrations", "040_mail_thread_bindings.sql"),
+		filepath.Join("..", "..", "migrations", "041_outbound_suppressions.sql"),
+		filepath.Join("..", "..", "migrations", "042_outbound_campaign_intelligence.sql"),
 	} {
 		if err := db.ApplyMigrationFile(sqdb, migration); err != nil {
 			t.Fatalf("apply migration %s: %v", migration, err)
@@ -117,6 +127,12 @@ func TestSetupStatusIncludesPasskeyPrimarySignInEnabledAndAutomaticUpdates(t *te
 	if label, _ := payload["admin_identifier_label"].(string); label != "Admin email" {
 		t.Fatalf("expected admin_identifier_label=Admin email, payload=%v", payload)
 	}
+	if got, _ := payload["default_format_locale"].(string); got != "" {
+		t.Fatalf("expected blank default_format_locale before setup, payload=%v", payload)
+	}
+	if got, _ := payload["default_timezone"].(string); got != "" {
+		t.Fatalf("expected blank default_timezone before setup, payload=%v", payload)
+	}
 }
 
 func TestSetupCompletePersistsPasskeyPrimarySignInChoice(t *testing.T) {
@@ -127,7 +143,8 @@ func TestSetupCompletePersistsPasskeyPrimarySignInChoice(t *testing.T) {
 		"admin_email":"webmaster@example.com",
 		"admin_recovery_email":"recovery@example.net",
 		"admin_password":"SecretPass123!",
-		"region":"us-east",
+		"default_format_locale":"en-GB",
+		"default_timezone":"Europe/London",
 		"passkey_primary_sign_in_enabled":false,
 		"automatic_updates_enabled":false
 	}`)
@@ -160,6 +177,16 @@ func TestSetupCompletePersistsPasskeyPrimarySignInChoice(t *testing.T) {
 	if user.RecoveryEmail == nil || *user.RecoveryEmail != "recovery@example.net" {
 		t.Fatalf("expected recovery email to persist, got %#v", user.RecoveryEmail)
 	}
+	if raw, ok, err := st.GetSetting(context.Background(), "ui.default_format_locale"); err != nil {
+		t.Fatalf("load default format locale: %v", err)
+	} else if !ok || raw != "en-GB" {
+		t.Fatalf("expected ui.default_format_locale=en-GB, got ok=%v raw=%q", ok, raw)
+	}
+	if raw, ok, err := st.GetSetting(context.Background(), "ui.default_timezone"); err != nil {
+		t.Fatalf("load default timezone: %v", err)
+	} else if !ok || raw != "Europe/London" {
+		t.Fatalf("expected ui.default_timezone=Europe/London, got ok=%v raw=%q", ok, raw)
+	}
 
 	capsReq := httptest.NewRequest(http.MethodGet, "http://localhost/api/v1/public/auth/capabilities", nil)
 	capsRec := httptest.NewRecorder()
@@ -184,7 +211,8 @@ func TestSetupCompleteWithoutPasskeyChoicePreservesDefault(t *testing.T) {
 		"admin_email":"webmaster@example.com",
 		"admin_recovery_email":"recovery@example.net",
 		"admin_password":"SecretPass123!",
-		"region":"us-east"
+		"default_format_locale":"en-GB",
+		"default_timezone":"Europe/London"
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/setup/complete", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -232,7 +260,8 @@ func TestSetupCompleteRejectsRecoveryEmailMatchingLogin(t *testing.T) {
 		"admin_email":"webmaster@example.com",
 		"admin_recovery_email":"webmaster@example.com",
 		"admin_password":"SecretPass123!",
-		"region":"us-east"
+		"default_format_locale":"en-GB",
+		"default_timezone":"Europe/London"
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/setup/complete", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -293,7 +322,8 @@ func TestSetupCompleteExternalAccountsAllowsAdminUsername(t *testing.T) {
 		"admin_email":"opsdesk",
 		"admin_recovery_email":"recovery@example.net",
 		"admin_password":"SecretPass123!",
-		"region":"us-east"
+		"default_format_locale":"en-GB",
+		"default_timezone":"Europe/London"
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/setup/complete", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -366,7 +396,8 @@ func TestSetupCompleteExternalAccountsAllowsMissingRecoveryEmail(t *testing.T) {
 		"instance_mode":"external_accounts",
 		"admin_email":"opsdesk",
 		"admin_password":"SecretPass123!",
-		"region":"us-east"
+		"default_format_locale":"en-GB",
+		"default_timezone":"Europe/London"
 	}`)
 	req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/setup/complete", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -393,7 +424,8 @@ func TestRegisterIsDisabledInExternalAccountsMode(t *testing.T) {
 		"admin_email":"opsdesk",
 		"admin_recovery_email":"recovery@example.net",
 		"admin_password":"SecretPass123!",
-		"region":"us-east"
+		"default_format_locale":"en-GB",
+		"default_timezone":"Europe/London"
 	}`)
 	setupReq := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/setup/complete", bytes.NewReader(setupBody))
 	setupReq.Header.Set("Content-Type", "application/json")

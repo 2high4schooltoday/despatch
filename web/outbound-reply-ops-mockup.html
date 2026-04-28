@@ -1,0 +1,827 @@
+<!doctype html>
+<html lang="en" data-theme="paper-light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Despatch - Outbound / Reply Ops Mockup</title>
+  <meta name="description" content="Interactive mockup for Despatch outbound and reply operations UI">
+  <link rel="icon" href="data:,">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <style>
+    body {
+      min-height: 100vh;
+      background:
+        linear-gradient(180deg, color-mix(in srgb, var(--bg-0) 94%, transparent), var(--bg-0));
+    }
+
+    .mock-app-shell main {
+      display: grid;
+      gap: 18px;
+      padding-bottom: 28px;
+    }
+
+    .mock-hero {
+      display: grid;
+      gap: 18px;
+      padding: 22px;
+      background: color-mix(in srgb, var(--bg-2) 88%, var(--bg-1));
+    }
+
+    .mock-hero-head {
+      display: grid;
+      gap: 16px;
+    }
+
+    .mock-pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .mock-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 10px;
+      border: 1px solid var(--line-1);
+      color: var(--fg-muted);
+      background: color-mix(in srgb, var(--bg-1) 84%, var(--bg-2));
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .mock-pill strong {
+      color: var(--fg-0);
+      font-size: 12px;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .mock-topology-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .mock-topology-card {
+      display: grid;
+      gap: 10px;
+      padding: 16px;
+      background: color-mix(in srgb, var(--bg-2) 90%, var(--bg-1));
+    }
+
+    .mock-topology-card h3 {
+      margin: 0;
+      font-size: 16px;
+    }
+
+    .mock-topology-card p {
+      margin: 0;
+      color: var(--fg-muted);
+      line-height: 1.55;
+    }
+
+    .mock-topology-list {
+      display: grid;
+      gap: 6px;
+      color: var(--fg-muted);
+      font-size: 13px;
+    }
+
+    .mock-workspace-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .mock-status {
+      padding: 14px 18px;
+      background: color-mix(in srgb, var(--bg-2) 82%, var(--bg-1));
+      font-size: 13px;
+      color: var(--fg-muted);
+    }
+
+    .mock-reply-body {
+      padding: 14px;
+      border: 1px solid var(--line);
+      background: color-mix(in srgb, var(--bg) 90%, transparent);
+      color: var(--fg-0);
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .mock-empty {
+      padding: 14px;
+      border: 1px dashed var(--line-1);
+      color: var(--fg-muted);
+      background: color-mix(in srgb, var(--bg-1) 88%, var(--bg-2));
+    }
+
+    .mock-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: color-mix(in srgb, #000 68%, transparent);
+    }
+
+    .mock-modal-card {
+      width: min(760px, 100%);
+      display: grid;
+      gap: 14px;
+      padding: 22px;
+      border: 1px solid var(--line-1);
+      background: color-mix(in srgb, var(--bg-2) 95%, var(--bg-1));
+      box-shadow: 0 24px 60px color-mix(in srgb, #000 35%, transparent);
+    }
+
+    .mock-modal-card h3,
+    .mock-modal-card p {
+      margin: 0;
+    }
+
+    .mock-modal-doc {
+      max-height: 48vh;
+      overflow: auto;
+      padding: 14px;
+      border: 1px solid var(--line-1);
+      background: color-mix(in srgb, var(--bg-1) 88%, var(--bg-2));
+      white-space: pre-wrap;
+      line-height: 1.6;
+      color: var(--fg-0);
+      font-size: 13px;
+    }
+
+    .mock-detail-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .mock-app-shell .topbar {
+      padding: 12px 16px;
+    }
+
+    .mock-app-shell .topbar-tools {
+      gap: 10px;
+    }
+
+    .mock-page-head {
+      display: grid;
+      gap: 14px;
+    }
+
+    .mock-page-head .hint {
+      max-width: 92ch;
+      font-size: 0.85rem;
+      line-height: 1.55;
+    }
+
+    .mock-page-head-copy {
+      display: grid;
+      gap: 8px;
+    }
+
+    .mock-topology-grid .panel {
+      padding: 16px;
+    }
+
+    .mock-overview-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .mock-summary-card {
+      display: grid;
+      gap: 10px;
+      padding: 16px;
+      border: 1px solid var(--line-1);
+      background: color-mix(in srgb, var(--bg-1) 88%, var(--bg-2));
+    }
+
+    .mock-summary-card h3,
+    .mock-summary-card h4,
+    .mock-summary-card p {
+      margin: 0;
+    }
+
+    .mock-summary-card h3,
+    .mock-summary-card h4 {
+      color: var(--fg-0);
+      font-size: 0.95rem;
+    }
+
+    .mock-summary-eyebrow {
+      color: var(--fg-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .mock-kv-list {
+      display: grid;
+      gap: 8px;
+    }
+
+    .mock-kv-row {
+      display: grid;
+      gap: 3px;
+    }
+
+    .mock-kv-row strong {
+      color: var(--fg-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .mock-kv-row span {
+      color: var(--fg-0);
+      line-height: 1.5;
+    }
+
+    .mock-flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .mock-flow-step {
+      display: grid;
+      gap: 8px;
+      padding: 12px;
+      border: 1px solid var(--line-1);
+      background: color-mix(in srgb, var(--bg-2) 92%, var(--bg-1));
+    }
+
+    .mock-flow-step strong {
+      color: var(--fg-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .mock-flow-step span {
+      color: var(--fg-0);
+      line-height: 1.5;
+    }
+
+    .mock-stack {
+      display: grid;
+      gap: 14px;
+    }
+
+    .mock-branch-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .mock-detail-block {
+      display: grid;
+      gap: 12px;
+    }
+
+    .mock-detail-note {
+      padding: 12px 13px;
+      border: 1px solid var(--line-1);
+      background: color-mix(in srgb, var(--bg-1) 84%, var(--bg-2));
+      color: var(--fg-muted);
+      line-height: 1.55;
+    }
+
+    .mock-step-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .reply-ops-bucket-btn.is-active {
+      color: var(--bg-0);
+      background: var(--fg-0);
+      border-color: var(--line-0);
+    }
+
+    .mock-utility-btn {
+      min-width: 0;
+    }
+
+    @media (max-width: 1100px) {
+      .mock-topology-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+
+      .mock-overview-grid,
+      .mock-flow,
+      .mock-branch-grid {
+        grid-template-columns: minmax(0, 1fr);
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app-shell mock-app-shell">
+    <header class="topbar">
+      <div class="topbar-row">
+        <div class="topbar-primary">
+          <div class="topbar-branding">
+            <div class="brand-mark">Despatch</div>
+            <div class="workspace-copy">
+              <p class="workspace-kicker">Local Interactive Preview</p>
+              <p class="workspace-title">Outbound / Reply Ops Mockup</p>
+            </div>
+          </div>
+          <nav class="tabs">
+            <button class="tab" type="button" disabled>Mail</button>
+            <button class="tab" type="button" disabled>Contacts</button>
+            <button id="mk-tab-outbound" class="tab active" type="button">Outbound</button>
+            <button id="mk-tab-reply-ops" class="tab" type="button">Reply Ops</button>
+          </nav>
+        </div>
+        <div class="topbar-tools">
+          <div class="palette" aria-hidden="true">
+            <span class="c-red"></span><span class="c-green"></span><span class="c-navy"></span><span class="c-cyan"></span>
+            <span class="c-yellow"></span><span class="c-magenta"></span><span class="c-black"></span>
+            <span class="c-g1"></span><span class="c-g2"></span><span class="c-g3"></span><span class="c-g4"></span>
+            <span class="c-g5"></span><span class="c-g6"></span><span class="c-g7"></span><span class="c-olive"></span>
+            <span class="c-teal"></span><span class="c-blue"></span><span class="c-purple"></span><span class="c-violet"></span>
+            <span class="c-crimson"></span><span class="c-rust"></span><span class="c-gold"></span>
+          </div>
+          <button id="mk-theme" class="cmd-btn cmd-btn--dense cmd-btn--ghost theme-toggle" type="button">Theme: Paper</button>
+        </div>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel mock-hero mock-page-head">
+        <div class="mock-hero-head">
+          <div class="mock-page-head-copy">
+            <p class="settings-pane-kicker">Interactive Mockup</p>
+            <h2 class="settings-pane-title">External-Mailbox-First Outbound Workstation</h2>
+            <p class="hint">This is a live localhost surface for the new outbound workstation. It is wired to mock in-memory data, but the layout, state model, and external-mailbox-first flow mirror the actual product implementation.</p>
+          </div>
+          <div class="mock-pill-row">
+            <span class="mock-pill">Primary path <strong>External mailboxes</strong></span>
+            <span class="mock-pill">Providers <strong>Gmail + Libero</strong></span>
+            <span class="mock-pill">Replies <strong>Collector funnel</strong></span>
+            <span class="mock-pill">Context <strong>Thread-native</strong></span>
+          </div>
+        </div>
+        <div id="mk-topology-grid" class="mock-topology-grid"></div>
+        <div class="mock-workspace-tabs">
+          <button id="mk-quick-open-campaign" class="cmd-btn cmd-btn--dense cmd-btn--ghost mock-utility-btn" type="button">Focus Existing Threads</button>
+          <button id="mk-quick-open-queue" class="cmd-btn cmd-btn--dense cmd-btn--ghost mock-utility-btn" type="button">Focus Collector Campaign</button>
+          <button id="mk-quick-open-positive" class="cmd-btn cmd-btn--dense cmd-btn--ghost mock-utility-btn" type="button">Jump To Manual Branch</button>
+        </div>
+      </section>
+
+      <section id="mk-status" class="panel mock-status" aria-live="polite">MOCKUP MODE - NO BACKEND CALLS</section>
+
+      <section id="mk-view-outbound" class="outbound-shell">
+        <div class="outbound-layout">
+          <aside class="outbound-sidebar">
+            <div class="settings-pane-head">
+              <div>
+                <p class="settings-pane-kicker">Campaigns</p>
+                <h2 class="settings-pane-title">Outbound</h2>
+              </div>
+              <div class="cmd-cluster">
+                <button id="btn-outbound-refresh" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Refresh</button>
+                <button id="btn-outbound-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Campaign</button>
+              </div>
+            </div>
+            <p id="outbound-note" class="settings-note"></p>
+            <div id="outbound-campaign-list" class="outbound-campaign-list"></div>
+          </aside>
+          <section class="outbound-main">
+            <section class="outbound-workspace-head">
+              <article id="outbound-summary" class="outbound-summary-panel"></article>
+              <div class="outbound-section-nav" role="tablist" aria-label="Outbound sections">
+                <button id="outbound-section-strategy" class="outbound-section-btn is-active" type="button">Strategy</button>
+                <button id="outbound-section-audience" class="outbound-section-btn" type="button">Audience</button>
+                <button id="outbound-section-health" class="outbound-section-btn" type="button">Health</button>
+              </div>
+            </section>
+
+            <article class="outbound-panel" data-outbound-section="strategy">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Strategy</p>
+                  <h3 class="settings-pane-title">Campaign Setup</h3>
+                </div>
+                <div class="cmd-cluster">
+                  <button id="btn-outbound-save" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Save</button>
+                  <button id="btn-outbound-preflight" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Preflight</button>
+                  <button id="btn-outbound-launch" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Launch</button>
+                  <button id="btn-outbound-pause" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Pause</button>
+                  <button id="btn-outbound-resume" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Resume</button>
+                  <button id="btn-outbound-archive" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Archive</button>
+                </div>
+              </div>
+              <div class="outbound-form-grid">
+                <label class="auth-field">
+                  <span class="auth-label">Name</span>
+                  <input id="outbound-campaign-name" class="auth-input" type="text" placeholder="Campaign name">
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Playbook</span>
+                  <select id="outbound-campaign-playbook" class="auth-input"></select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Goal</span>
+                  <select id="outbound-campaign-goal" class="auth-input">
+                    <option value="revive_thread">Revive thread</option>
+                    <option value="find_owner">Find owner</option>
+                    <option value="book_meeting">Book meeting</option>
+                    <option value="price_quote">Collect pricing request</option>
+                    <option value="qualify_interest">Qualify interest</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Campaign mode</span>
+                  <select id="outbound-campaign-mode" class="auth-input">
+                    <option value="existing_threads">Existing threads</option>
+                    <option value="new_threads">New threads</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Audience source</span>
+                  <select id="outbound-campaign-audience-kind" class="auth-input">
+                    <option value="manual">Manual</option>
+                    <option value="contact_group">Contact group</option>
+                    <option value="saved_search">Saved search</option>
+                    <option value="csv_import">CSV import</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Audience reference</span>
+                  <input id="outbound-campaign-audience-ref" class="auth-input" type="text" placeholder="Group ID, search ID, or leave blank">
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Sender policy</span>
+                  <select id="outbound-campaign-sender-kind" class="auth-input">
+                    <option value="thread_owner">Thread owner mailbox</option>
+                    <option value="preferred_sender">Preferred sender</option>
+                    <option value="single_sender">Single sender</option>
+                    <option value="campaign_pool">Sender pool</option>
+                    <option value="reply_funnel">Reply funnel</option>
+                  </select>
+                </label>
+                <label class="auth-field outbound-form-grid__wide">
+                  <span class="auth-label">Sender reference</span>
+                  <input id="outbound-campaign-sender-ref" class="auth-input" type="text" placeholder="Sender ID, account ID, comma-separated pool, or funnel ID">
+                </label>
+              </div>
+              <details class="outbound-disclosure">
+                <summary class="outbound-disclosure-summary">Advanced delivery controls</summary>
+                <div class="outbound-disclosure-body">
+                  <div class="outbound-switch-grid">
+                    <label class="settings-check">
+                      <input id="outbound-reply-stop" type="checkbox" checked>
+                      <span>Stop on reply</span>
+                    </label>
+                    <label class="settings-check">
+                      <input id="outbound-reply-question" type="checkbox" checked>
+                      <span>Pause on question</span>
+                    </label>
+                    <label class="settings-check">
+                      <input id="outbound-reply-domain" type="checkbox">
+                      <span>Stop same domain on reply</span>
+                    </label>
+                    <label class="settings-check">
+                      <input id="outbound-compliance-unsubscribe" type="checkbox" checked>
+                      <span>Require unsubscribe handling</span>
+                    </label>
+                    <label class="settings-check">
+                      <input id="outbound-compliance-promotional" type="checkbox">
+                      <span>Promotional campaign</span>
+                    </label>
+                    <label class="settings-check">
+                      <input id="outbound-suppression-domain" type="checkbox" checked>
+                      <span>Suppress same domain on unsubscribe</span>
+                    </label>
+                  </div>
+                  <div class="outbound-form-grid">
+                    <label class="auth-field">
+                      <span class="auth-label">Recipient collision</span>
+                      <select id="outbound-governance-recipient-collision" class="auth-input">
+                        <option value="warn">Warn</option>
+                        <option value="block">Block</option>
+                        <option value="allow">Allow</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Domain collision</span>
+                      <select id="outbound-governance-domain-collision" class="auth-input">
+                        <option value="warn">Warn</option>
+                        <option value="block">Block</option>
+                        <option value="allow">Allow</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Max active per domain</span>
+                      <input id="outbound-governance-domain-cap" class="auth-input" type="number" min="0" step="1" value="0">
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Positive reply domain action</span>
+                      <select id="outbound-governance-positive-action" class="auth-input">
+                        <option value="none">None</option>
+                        <option value="pause_domain">Pause same domain</option>
+                        <option value="stop_domain">Stop same domain</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Negative reply domain action</span>
+                      <select id="outbound-governance-negative-action" class="auth-input">
+                        <option value="none">None</option>
+                        <option value="pause_domain">Pause same domain</option>
+                        <option value="stop_domain">Stop same domain</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Unsubscribe action</span>
+                      <select id="outbound-governance-unsub-action" class="auth-input">
+                        <option value="suppress_workspace">Suppress across workspace</option>
+                        <option value="suppress_campaign">Suppress only in campaign</option>
+                        <option value="none">No auto suppression</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              </details>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="strategy">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Routing</p>
+                  <h3 class="settings-pane-title">Mailbox Routing</h3>
+                </div>
+              </div>
+              <div id="outbound-sender-control" class="outbound-collection"></div>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="strategy">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Sequence</p>
+                  <h3 class="settings-pane-title">Steps</h3>
+                </div>
+                <div class="cmd-cluster">
+                  <button id="btn-outbound-step-save" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Save Step</button>
+                  <button id="btn-outbound-step-new" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">New Step</button>
+                </div>
+              </div>
+              <div class="outbound-form-grid">
+                <label class="auth-field">
+                  <span class="auth-label">Position</span>
+                  <input id="outbound-step-position" class="auth-input" type="number" min="1" step="1" value="1">
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Step kind</span>
+                  <select id="outbound-step-kind" class="auth-input">
+                    <option value="email">Email</option>
+                    <option value="manual_task">Manual task</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Thread mode</span>
+                  <select id="outbound-step-thread-mode" class="auth-input">
+                    <option value="same_thread">Same thread</option>
+                    <option value="new_thread">New thread</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Wait before next step (minutes)</span>
+                  <input id="outbound-step-wait" class="auth-input" type="number" min="0" step="1" value="1440">
+                </label>
+                <label class="auth-field outbound-form-grid__wide">
+                  <span class="auth-label">Subject template</span>
+                  <input id="outbound-step-subject" class="auth-input" type="text" placeholder="Hi {{first_name}}">
+                </label>
+                <label class="auth-field outbound-form-grid__wide">
+                  <span class="auth-label">Body template</span>
+                  <textarea id="outbound-step-body" class="auth-input auth-textarea outbound-textarea" placeholder="Introduce the message."></textarea>
+                </label>
+                <label id="outbound-step-task-title-wrap" class="auth-field outbound-form-grid__wide hidden">
+                  <span class="auth-label">Manual task title</span>
+                  <input id="outbound-step-task-title" class="auth-input" type="text" placeholder="Review reply from thread owner">
+                </label>
+                <label id="outbound-step-task-instructions-wrap" class="auth-field outbound-form-grid__wide hidden">
+                  <span class="auth-label">Manual task instructions</span>
+                  <textarea id="outbound-step-task-instructions" class="auth-input auth-textarea outbound-textarea" placeholder="What should the operator do before the sequence resumes?"></textarea>
+                </label>
+                <label id="outbound-step-task-action-label-wrap" class="auth-field">
+                  <span class="auth-label">Primary task action</span>
+                  <input id="outbound-step-task-action-label" class="auth-input" type="text" placeholder="Open original mailbox thread">
+                </label>
+              </div>
+              <details class="outbound-disclosure">
+                <summary class="outbound-disclosure-summary">Advanced reply branching</summary>
+                <div class="outbound-disclosure-body">
+                  <div class="outbound-form-grid outbound-form-grid--branches">
+                    <label class="auth-field">
+                      <span class="auth-label">Branch on question</span>
+                      <select id="outbound-step-branch-question" class="auth-input">
+                        <option value="">No branch</option>
+                        <option value="manual_task:2">Manual review</option>
+                        <option value="manual_task:3">Manual follow-up</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Branch on objection</span>
+                      <select id="outbound-step-branch-objection" class="auth-input">
+                        <option value="">No branch</option>
+                        <option value="manual_task:2">Manual review</option>
+                        <option value="manual_task:3">Manual follow-up</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Branch on wrong person / referral</span>
+                      <select id="outbound-step-branch-referral" class="auth-input">
+                        <option value="">No branch</option>
+                        <option value="manual_task:2">Manual review</option>
+                        <option value="manual_task:3">Manual follow-up</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Branch on out of office</span>
+                      <select id="outbound-step-branch-ooo" class="auth-input">
+                        <option value="">No branch</option>
+                        <option value="manual_task:2">Manual review</option>
+                        <option value="manual_task:3">Manual follow-up</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Branch on manual review</span>
+                      <select id="outbound-step-branch-review" class="auth-input">
+                        <option value="">No branch</option>
+                        <option value="manual_task:2">Manual review</option>
+                        <option value="manual_task:3">Manual follow-up</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              </details>
+              <div id="outbound-step-list" class="outbound-collection"></div>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="audience">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Audience</p>
+                  <h3 class="settings-pane-title">Preview And Import</h3>
+                </div>
+                <div class="cmd-cluster">
+                  <button id="btn-outbound-audience-preview" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Preview</button>
+                  <button id="btn-outbound-audience-import" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Import</button>
+                </div>
+              </div>
+              <div class="outbound-form-grid">
+                <label class="auth-field">
+                  <span class="auth-label">Audience source</span>
+                  <select id="outbound-audience-kind" class="auth-input">
+                    <option value="manual">Manual</option>
+                    <option value="contact_group">Contact group</option>
+                    <option value="saved_search">Saved search</option>
+                    <option value="csv_import">CSV import</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Source reference</span>
+                  <input id="outbound-audience-ref" class="auth-input" type="text" placeholder="Group ID or search ID">
+                </label>
+                <label class="auth-field outbound-form-grid__wide">
+                  <span class="auth-label">Manual recipients or CSV text</span>
+                  <textarea id="outbound-audience-text" class="auth-input auth-textarea outbound-textarea" placeholder="alice@example.com&#10;bob@example.com, Bob&#10;email,name"></textarea>
+                </label>
+              </div>
+              <div id="outbound-audience-preview-list" class="outbound-collection"></div>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="audience">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Operations</p>
+                  <h3 class="settings-pane-title">Live Recipients</h3>
+                </div>
+              </div>
+              <div id="outbound-enrollment-list" class="outbound-collection"></div>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="health">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Health</p>
+                  <h3 class="settings-pane-title">Delivery Health</h3>
+                </div>
+              </div>
+              <div class="outbound-diagnostics">
+                <div>
+                  <h4 class="outbound-subtitle">Senders</h4>
+                  <div id="outbound-sender-diagnostics" class="outbound-collection"></div>
+                </div>
+                <div>
+                  <h4 class="outbound-subtitle">Domains</h4>
+                  <div id="outbound-domain-diagnostics" class="outbound-collection"></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="health">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Activity</p>
+                  <h3 class="settings-pane-title">Recent Events</h3>
+                </div>
+              </div>
+              <div id="outbound-event-list" class="outbound-collection"></div>
+            </article>
+          </section>
+        </div>
+      </section>
+
+      <section id="mk-view-reply-ops" class="reply-ops-shell hidden">
+        <div class="reply-ops-layout">
+          <aside class="reply-ops-sidebar">
+            <div class="settings-pane-head">
+              <div>
+                <p class="settings-pane-kicker">Queues</p>
+                <h2 class="settings-pane-title">Reply Ops</h2>
+              </div>
+              <button id="btn-reply-ops-refresh" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Refresh</button>
+            </div>
+            <p id="reply-ops-note" class="settings-note"></p>
+            <div id="reply-ops-buckets" class="reply-ops-buckets"></div>
+            <div id="reply-ops-list" class="outbound-collection"></div>
+          </aside>
+          <section class="reply-ops-main">
+            <article class="outbound-panel">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Selected reply</p>
+                  <h3 class="settings-pane-title">Reply Detail</h3>
+                </div>
+                <div class="cmd-cluster">
+                  <button id="btn-reply-ops-open-thread" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Open Thread</button>
+                  <button id="btn-reply-ops-takeover" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Take Over</button>
+                  <button id="btn-reply-ops-stop" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Stop</button>
+                </div>
+              </div>
+              <div id="reply-ops-detail" class="reply-ops-detail"></div>
+            </article>
+            <article class="outbound-panel">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Actions</p>
+                  <h3 class="settings-pane-title">Classify Or Suppress</h3>
+                </div>
+              </div>
+              <div class="reply-ops-actions">
+                <button id="reply-ops-classify-positive" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Interested</button>
+                <button id="reply-ops-classify-question" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Question</button>
+                <button id="reply-ops-classify-objection" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Objection</button>
+                <button id="reply-ops-classify-wrong" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Wrong Person</button>
+                <button id="reply-ops-classify-negative" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Not Interested</button>
+                <button id="reply-ops-classify-unsub" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Unsubscribe</button>
+                <button id="reply-ops-classify-ooo" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Out Of Office</button>
+                <button id="reply-ops-classify-bounce" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Bounce</button>
+                <button id="reply-ops-classify-hostile" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Hostile</button>
+              </div>
+              <div class="reply-ops-actions">
+                <button id="reply-ops-action-suppress-recipient" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Suppress Recipient</button>
+                <button id="reply-ops-action-suppress-domain" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Suppress Domain</button>
+                <button id="reply-ops-action-pause" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Pause Until</button>
+                <button id="reply-ops-action-resume" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Resume</button>
+              </div>
+            </article>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="mk-modal" class="mock-modal hidden" aria-hidden="true">
+    <div class="mock-modal-card" role="dialog" aria-modal="true" aria-labelledby="mk-modal-title">
+      <p id="mk-modal-kicker" class="settings-pane-kicker">Review</p>
+      <h3 id="mk-modal-title">Mockup Modal</h3>
+      <p id="mk-modal-body" class="hint"></p>
+      <div id="mk-modal-doc" class="mock-modal-doc"></div>
+      <div class="cmd-cluster">
+        <button id="mk-modal-close" class="cmd-btn cmd-btn--primary" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/outbound-reply-ops-mockup.js" defer></script>
+</body>
+</html>

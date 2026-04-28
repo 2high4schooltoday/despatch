@@ -30,6 +30,7 @@
       <button id="language-gate-continue" class="cmd-btn cmd-btn--primary language-gate__continue" type="button">Continue to sign in</button>
     </div>
   </div>
+  <datalist id="timezone-options"></datalist>
   <div class="app-shell page-office" id="app-shell">
     <header class="topbar">
       <div class="topbar-row">
@@ -43,6 +44,8 @@
             <button id="tab-auth" class="tab active" type="button" aria-controls="view-auth" aria-current="page">Auth</button>
             <button id="tab-mail" class="tab" type="button" aria-controls="view-mail">Mail</button>
             <button id="tab-contacts" class="tab" type="button" aria-controls="view-contacts">Contacts</button>
+            <button id="tab-outbound" class="tab" type="button" aria-controls="view-outbound">Outbound</button>
+            <button id="tab-reply-ops" class="tab" type="button" aria-controls="view-reply-ops">Reply Ops</button>
           </nav>
         </div>
         <div class="topbar-tools">
@@ -197,12 +200,12 @@
             <section id="settings-section-interface" class="panel settings-section hidden">
               <header class="settings-page-head">
                 <h3>Interface</h3>
-                <p class="hint">Language is saved per account. Theme remains local to this workstation.</p>
+                <p class="hint">Language, regional format, and time zone are saved per account. Theme remains local to this workstation.</p>
               </header>
               <section class="setting-section">
                 <header class="setting-section-head">
-                  <h4>Language</h4>
-                  <p class="hint">Choose the language used after sign-in. New accounts start with the language detected from this device or browser.</p>
+                  <h4>Language and Regional Format</h4>
+                  <p class="hint">Choose the interface language, the regional format used for dates and numbers, and the time zone used for times and scheduling.</p>
                 </header>
                 <article class="settings-detail">
                   <label class="mail-settings-field">
@@ -212,9 +215,18 @@
                       <option value="ru">Русский</option>
                     </select>
                   </label>
+                  <label class="mail-settings-field">
+                    <span>Regional Format</span>
+                    <select id="settings-format-locale-select" autocomplete="off"></select>
+                  </label>
+                  <label class="mail-settings-field">
+                    <span>Time Zone</span>
+                    <input id="settings-timezone-input" type="text" list="timezone-options" autocomplete="off" spellcheck="false" placeholder="Europe/Moscow">
+                  </label>
+                  <p id="settings-interface-preview" class="hint">Preview: -</p>
                   <p id="settings-language-note" class="hint">Changes apply after reloading the interface.</p>
                   <div class="actions setting-actions">
-                    <button id="btn-settings-language-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Language</button>
+                    <button id="btn-settings-language-save" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Save Interface Settings</button>
                   </div>
                 </article>
               </section>
@@ -842,21 +854,19 @@
               <div id="setup-step-2" class="oobe-step hidden">
                 <div class="oobe-stage-mark" aria-hidden="true">02</div>
                 <div class="oobe-step-copy">
-                  <h2>Where Despatch will be set up</h2>
-                  <p>Choose the default region profile used for timestamps and region-sensitive defaults in the interface.</p>
+                  <h2>Regional defaults</h2>
+                  <p>Choose how Despatch should format dates, times, and regional values before each user saves their own interface settings.</p>
                 </div>
                 <div class="oobe-field-stack">
-                  <label>Region profile
-                    <select id="setup-region" name="region" autocomplete="off">
-                      <option value="us-east">United States - East</option>
-                      <option value="us-central">United States - Central</option>
-                      <option value="us-west">United States - West</option>
-                      <option value="eu-west">Europe - West</option>
-                      <option value="apac">Asia Pacific</option>
-                    </select>
+                  <label>Regional format
+                    <select id="setup-format-locale" name="format_locale" autocomplete="off"></select>
+                  </label>
+                  <label>Time zone
+                    <input id="setup-timezone" name="timezone" type="text" list="timezone-options" autocomplete="off" spellcheck="false" placeholder="Europe/Moscow">
                   </label>
                 </div>
-                <p class="hint">This affects defaults in the web client only. Server timezone stays under host control.</p>
+                <p id="setup-region-preview" class="hint">Preview: -</p>
+                <p class="hint">These values become interface defaults until a signed-in user chooses their own regional format and time zone.</p>
               </div>
 
               <div id="setup-step-4" class="oobe-step hidden">
@@ -977,7 +987,8 @@
                 </div>
                 <div class="oobe-summary-card setup-summary">
                   <div><b>Mail Source:</b> <span id="setup-summary-mode">-</span></div>
-                  <div><b>Region:</b> <span id="setup-summary-region">-</span></div>
+                  <div><b>Regional Format:</b> <span id="setup-summary-format-locale">-</span></div>
+                  <div><b>Time Zone:</b> <span id="setup-summary-timezone">-</span></div>
                   <div><b>Theme:</b> <span id="setup-summary-theme">-</span></div>
                   <div><b>Software Updates:</b> <span id="setup-summary-updates">Automatic updates on</span></div>
                   <div id="setup-summary-domain-row"><b>Domain:</b> <span id="setup-summary-domain">-</span></div>
@@ -1495,6 +1506,402 @@
         </div>
       </section>
 
+      <section id="view-outbound" class="outbound-shell hidden">
+        <div class="outbound-layout">
+          <aside class="outbound-sidebar">
+            <div class="settings-pane-head">
+              <div>
+                <p class="settings-pane-kicker">Campaigns</p>
+                <h2 class="settings-pane-title">Outbound</h2>
+              </div>
+              <div class="cmd-cluster">
+                <button id="btn-outbound-refresh" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Refresh</button>
+                <button id="btn-outbound-new" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">New Campaign</button>
+              </div>
+            </div>
+            <p id="outbound-note" class="settings-note"></p>
+            <div id="outbound-campaign-list" class="outbound-campaign-list"></div>
+          </aside>
+          <section class="outbound-main">
+            <section class="outbound-workspace-head">
+              <article id="outbound-summary" class="outbound-summary-panel"></article>
+              <div class="outbound-section-nav" role="tablist" aria-label="Outbound sections">
+                <button id="outbound-section-strategy" class="outbound-section-btn is-active" type="button">Strategy</button>
+                <button id="outbound-section-audience" class="outbound-section-btn" type="button">Audience</button>
+                <button id="outbound-section-health" class="outbound-section-btn" type="button">Health</button>
+              </div>
+            </section>
+
+            <article class="outbound-panel" data-outbound-section="strategy">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Strategy</p>
+                  <h3 class="settings-pane-title">Campaign Setup</h3>
+                </div>
+                <div class="cmd-cluster">
+                  <button id="btn-outbound-save" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Save</button>
+                  <button id="btn-outbound-preflight" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Preflight</button>
+                  <button id="btn-outbound-launch" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Launch</button>
+                  <button id="btn-outbound-pause" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Pause</button>
+                  <button id="btn-outbound-resume" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Resume</button>
+                  <button id="btn-outbound-archive" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Archive</button>
+                </div>
+              </div>
+              <div class="outbound-form-grid">
+                <label class="auth-field">
+                  <span class="auth-label">Name</span>
+                  <input id="outbound-campaign-name" class="auth-input" type="text" placeholder="Campaign name" />
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Playbook</span>
+                  <select id="outbound-campaign-playbook" class="auth-input"></select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Campaign mode</span>
+                  <select id="outbound-campaign-mode" class="auth-input">
+                    <option value="new_threads">Start new threads</option>
+                    <option value="existing_threads">Continue existing threads</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Audience source</span>
+                  <select id="outbound-campaign-audience-kind" class="auth-input">
+                    <option value="manual">Manual</option>
+                    <option value="contact_group">Contact group</option>
+                    <option value="saved_search">Saved search</option>
+                    <option value="csv_import">CSV import</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Audience reference</span>
+                  <input id="outbound-campaign-audience-ref" class="auth-input" type="text" placeholder="Group ID, search ID, or leave blank" />
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Sender policy</span>
+                  <select id="outbound-campaign-sender-kind" class="auth-input">
+                    <option value="preferred_sender">Preferred sender</option>
+                    <option value="thread_owner">Thread owner mailbox</option>
+                    <option value="single_sender">Single sender</option>
+                    <option value="campaign_pool">Sender pool</option>
+                    <option value="reply_funnel">Reply funnel</option>
+                  </select>
+                </label>
+                <label class="auth-field outbound-form-grid__wide">
+                  <span class="auth-label">Sender reference</span>
+                  <input id="outbound-campaign-sender-ref" class="auth-input" type="text" placeholder="Sender ID, account ID, comma-separated pool, or funnel ID" />
+                </label>
+              </div>
+              <div class="cmd-cluster outbound-inline-actions">
+                <button id="btn-outbound-apply-playbook" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Apply Playbook</button>
+              </div>
+              <details class="outbound-disclosure">
+                <summary class="outbound-disclosure-summary">Advanced delivery controls</summary>
+                <div class="outbound-disclosure-body">
+                  <div class="outbound-switch-grid">
+                    <label class="settings-check">
+                      <input id="outbound-reply-stop" type="checkbox" checked />
+                      <span>Stop on reply</span>
+                    </label>
+                    <label class="settings-check">
+                      <input id="outbound-reply-question" type="checkbox" checked />
+                      <span>Pause on question</span>
+                    </label>
+                    <label class="settings-check">
+                      <input id="outbound-reply-domain" type="checkbox" />
+                      <span>Stop same domain on reply</span>
+                    </label>
+                    <label class="settings-check">
+                      <input id="outbound-compliance-unsubscribe" type="checkbox" checked />
+                      <span>Require unsubscribe handling</span>
+                    </label>
+                    <label class="settings-check">
+                      <input id="outbound-compliance-promotional" type="checkbox" />
+                      <span>Promotional campaign</span>
+                    </label>
+                    <label class="settings-check">
+                      <input id="outbound-suppression-domain" type="checkbox" checked />
+                      <span>Suppress same domain on unsubscribe</span>
+                    </label>
+                  </div>
+                  <div class="outbound-form-grid">
+                    <label class="auth-field">
+                      <span class="auth-label">Recipient collision</span>
+                      <select id="outbound-governance-recipient-collision" class="auth-input">
+                        <option value="warn">Warn</option>
+                        <option value="block">Block launch</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Domain collision</span>
+                      <select id="outbound-governance-domain-collision" class="auth-input">
+                        <option value="warn">Warn</option>
+                        <option value="block">Block launch</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Max active per domain</span>
+                      <input id="outbound-governance-domain-cap" class="auth-input" type="number" min="0" step="1" value="0" />
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Positive reply domain action</span>
+                      <select id="outbound-governance-positive-action" class="auth-input">
+                        <option value="none">No action</option>
+                        <option value="pause_workspace">Pause across workspace</option>
+                        <option value="stop_campaign">Stop this campaign</option>
+                        <option value="stop_workspace">Stop across workspace</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Negative reply domain action</span>
+                      <select id="outbound-governance-negative-action" class="auth-input">
+                        <option value="none">No action</option>
+                        <option value="stop_campaign">Stop this campaign</option>
+                        <option value="stop_workspace">Stop across workspace</option>
+                        <option value="pause_workspace">Pause across workspace</option>
+                      </select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">Unsubscribe domain action</span>
+                      <select id="outbound-governance-unsub-action" class="auth-input">
+                        <option value="suppress_workspace">Suppress across workspace</option>
+                        <option value="suppress_campaign">Suppress for this campaign</option>
+                        <option value="stop_workspace">Stop across workspace</option>
+                        <option value="stop_campaign">Stop this campaign</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+              </details>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="strategy">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Routing</p>
+                  <h3 class="settings-pane-title">Mailbox Routing</h3>
+                </div>
+              </div>
+              <div id="outbound-sender-control" class="outbound-collection"></div>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="strategy">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Sequence</p>
+                  <h3 class="settings-pane-title">Steps</h3>
+                </div>
+                <div class="cmd-cluster">
+                  <button id="btn-outbound-step-save" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Save Step</button>
+                  <button id="btn-outbound-step-new" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">New Step</button>
+                </div>
+              </div>
+              <div class="outbound-form-grid">
+                <label class="auth-field">
+                  <span class="auth-label">Step kind</span>
+                  <select id="outbound-step-kind" class="auth-input">
+                    <option value="email">Email</option>
+                    <option value="manual_task">Manual task</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Position</span>
+                  <input id="outbound-step-position" class="auth-input" type="number" min="1" step="1" value="1" />
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Thread mode</span>
+                  <select id="outbound-step-thread-mode" class="auth-input">
+                    <option value="same_thread">Same thread</option>
+                    <option value="new_thread">New thread</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Wait before next step (minutes)</span>
+                  <input id="outbound-step-wait" class="auth-input" type="number" min="0" step="1" value="1440" />
+                </label>
+                <label id="outbound-step-email-subject-wrap" class="auth-field outbound-form-grid__wide">
+                  <span class="auth-label">Subject template</span>
+                  <input id="outbound-step-subject" class="auth-input" type="text" placeholder="Hi {{first_name}}" />
+                </label>
+                <label id="outbound-step-email-body-wrap" class="auth-field outbound-form-grid__wide">
+                  <span class="auth-label">Body template</span>
+                  <textarea id="outbound-step-body" class="auth-input auth-textarea outbound-textarea" placeholder="Introduce the message."></textarea>
+                </label>
+                <label id="outbound-step-task-title-wrap" class="auth-field outbound-form-grid__wide hidden">
+                  <span class="auth-label">Task title</span>
+                  <input id="outbound-step-task-title" class="auth-input" type="text" placeholder="Review the live thread and respond by hand" />
+                </label>
+                <label id="outbound-step-task-instructions-wrap" class="auth-field outbound-form-grid__wide hidden">
+                  <span class="auth-label">Task instructions</span>
+                  <textarea id="outbound-step-task-instructions" class="auth-input auth-textarea outbound-textarea" placeholder="Explain what the operator should do before continuing."></textarea>
+                </label>
+                <label id="outbound-step-task-action-label-wrap" class="auth-field hidden">
+                  <span class="auth-label">Task completion label</span>
+                  <input id="outbound-step-task-action-label" class="auth-input" type="text" placeholder="Handled, continue sequence" />
+                </label>
+              </div>
+              <details class="outbound-disclosure">
+                <summary class="outbound-disclosure-summary">Advanced reply branching</summary>
+                <div class="outbound-disclosure-body">
+                  <div class="outbound-form-grid outbound-form-grid--branches">
+                    <label class="auth-field">
+                      <span class="auth-label">On question</span>
+                      <select id="outbound-step-branch-question" class="auth-input"></select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">On objection</span>
+                      <select id="outbound-step-branch-objection" class="auth-input"></select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">On wrong person or referral</span>
+                      <select id="outbound-step-branch-referral" class="auth-input"></select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">On out of office</span>
+                      <select id="outbound-step-branch-ooo" class="auth-input"></select>
+                    </label>
+                    <label class="auth-field">
+                      <span class="auth-label">On manual review</span>
+                      <select id="outbound-step-branch-review" class="auth-input"></select>
+                    </label>
+                  </div>
+                </div>
+              </details>
+              <div id="outbound-step-list" class="outbound-collection"></div>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="audience">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Audience</p>
+                  <h3 class="settings-pane-title">Preview And Import</h3>
+                </div>
+                <div class="cmd-cluster">
+                  <button id="btn-outbound-audience-preview" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Preview</button>
+                  <button id="btn-outbound-audience-import" class="cmd-btn cmd-btn--dense cmd-btn--primary" type="button">Import</button>
+                </div>
+              </div>
+              <div class="outbound-form-grid">
+                <label class="auth-field">
+                  <span class="auth-label">Audience source</span>
+                  <select id="outbound-audience-kind" class="auth-input">
+                    <option value="manual">Manual</option>
+                    <option value="contact_group">Contact group</option>
+                    <option value="saved_search">Saved search</option>
+                    <option value="csv_import">CSV import</option>
+                  </select>
+                </label>
+                <label class="auth-field">
+                  <span class="auth-label">Source reference</span>
+                  <input id="outbound-audience-ref" class="auth-input" type="text" placeholder="Group ID or search ID" />
+                </label>
+                <label class="auth-field outbound-form-grid__wide">
+                  <span class="auth-label">Manual recipients or CSV text</span>
+                  <textarea id="outbound-audience-text" class="auth-input auth-textarea outbound-textarea" placeholder="alice@example.com&#10;bob@example.com, Bob&#10;email,name"></textarea>
+                </label>
+              </div>
+              <div id="outbound-audience-preview-list" class="outbound-collection"></div>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="audience">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Operations</p>
+                  <h3 class="settings-pane-title">Live Recipients</h3>
+                </div>
+              </div>
+              <div id="outbound-enrollment-list" class="outbound-collection"></div>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="health">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Health</p>
+                  <h3 class="settings-pane-title">Delivery Health</h3>
+                </div>
+              </div>
+              <div class="outbound-diagnostics">
+                <div>
+                  <h4 class="outbound-subtitle">Senders</h4>
+                  <div id="outbound-sender-diagnostics" class="outbound-collection"></div>
+                </div>
+                <div>
+                  <h4 class="outbound-subtitle">Domains</h4>
+                  <div id="outbound-domain-diagnostics" class="outbound-collection"></div>
+                </div>
+              </div>
+            </article>
+
+            <article class="outbound-panel" data-outbound-section="health">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Activity</p>
+                  <h3 class="settings-pane-title">Recent Events</h3>
+                </div>
+              </div>
+              <div id="outbound-event-list" class="outbound-collection"></div>
+            </article>
+          </section>
+        </div>
+      </section>
+
+      <section id="view-reply-ops" class="reply-ops-shell hidden">
+        <div class="reply-ops-layout">
+          <aside class="reply-ops-sidebar">
+            <div class="settings-pane-head">
+              <div>
+                <p class="settings-pane-kicker">Queues</p>
+                <h2 class="settings-pane-title">Reply Ops</h2>
+              </div>
+              <button id="btn-reply-ops-refresh" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Refresh</button>
+            </div>
+            <p id="reply-ops-note" class="settings-note"></p>
+            <div id="reply-ops-buckets" class="reply-ops-buckets"></div>
+            <div id="reply-ops-list" class="outbound-collection"></div>
+          </aside>
+          <section class="reply-ops-main">
+            <article class="outbound-panel">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Selected reply</p>
+                  <h3 class="settings-pane-title">Reply Detail</h3>
+                </div>
+                <div class="cmd-cluster">
+                  <button id="btn-reply-ops-open-thread" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Open Thread</button>
+                  <button id="btn-reply-ops-takeover" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Take Over</button>
+                  <button id="btn-reply-ops-stop" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Stop</button>
+                </div>
+              </div>
+              <div id="reply-ops-detail" class="reply-ops-detail"></div>
+            </article>
+            <article class="outbound-panel">
+              <div class="outbound-panel-head">
+                <div>
+                  <p class="settings-pane-kicker">Actions</p>
+                  <h3 class="settings-pane-title">Classify Or Suppress</h3>
+                </div>
+              </div>
+              <div class="reply-ops-actions">
+                <button id="reply-ops-classify-positive" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Interested</button>
+                <button id="reply-ops-classify-question" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Question</button>
+                <button id="reply-ops-classify-objection" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Objection</button>
+                <button id="reply-ops-classify-wrong" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Wrong Person</button>
+                <button id="reply-ops-classify-negative" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Not Interested</button>
+                <button id="reply-ops-classify-unsub" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Unsubscribe</button>
+                <button id="reply-ops-classify-ooo" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Out Of Office</button>
+                <button id="reply-ops-classify-bounce" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Bounce</button>
+                <button id="reply-ops-classify-hostile" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Hostile</button>
+              </div>
+              <div class="reply-ops-actions">
+                <button id="reply-ops-action-suppress-recipient" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Suppress Recipient</button>
+                <button id="reply-ops-action-suppress-domain" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Suppress Domain</button>
+                <button id="reply-ops-action-pause" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Pause Until</button>
+                <button id="reply-ops-action-resume" class="cmd-btn cmd-btn--dense cmd-btn--ghost" type="button">Resume</button>
+              </div>
+            </article>
+          </section>
+        </div>
+      </section>
+
       <section id="view-admin" class="admin-shell hidden">
         <div class="admin-layout">
           <aside class="panel admin-nav" aria-label="Admin sections">
@@ -1805,7 +2212,7 @@
                 </select>
                 <input id="compose-scheduled-for" class="hidden" type="datetime-local" autocomplete="off">
               </div>
-              <p id="compose-delivery-note" class="compose-inline-note">Schedule uses your local time zone.</p>
+              <p id="compose-delivery-note" class="compose-inline-note">Schedule uses your selected time zone.</p>
             </div>
             <span class="compose-meta-tail"></span>
           </div>

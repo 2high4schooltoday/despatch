@@ -272,6 +272,7 @@ type IndexedMessageFilter struct {
 type UserPreferences struct {
 	UserID            string    `json:"user_id"`
 	Locale            string    `json:"locale"`
+	FormatLocale      string    `json:"format_locale"`
 	Theme             string    `json:"theme"`
 	Density           string    `json:"density"`
 	LayoutMode        string    `json:"layout_mode"`

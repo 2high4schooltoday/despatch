@@ -44,7 +44,10 @@ func indexedFilterLocation(ctx context.Context, h *Handlers, userID string) *tim
 	}
 	name := strings.TrimSpace(prefs.Timezone)
 	if name == "" {
-		return time.UTC
+		name = strings.TrimSpace(h.svc.DefaultTimezone(ctx))
+		if name == "" {
+			return time.UTC
+		}
 	}
 	loc, err := time.LoadLocation(name)
 	if err != nil {

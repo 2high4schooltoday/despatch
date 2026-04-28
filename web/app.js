@@ -147,6 +147,10 @@ const state = {
     notificationsPrimed: false,
   },
   notifications: createNotificationState(),
+  defaults: {
+    formatLocale: "",
+    timezone: "",
+  },
   captcha: {
     config: null,
     token: "",
@@ -234,6 +238,10 @@ const state = {
       loading: false,
       locale: "",
       persistedLocale: "",
+      formatLocale: "",
+      persistedFormatLocale: "",
+      timezone: "",
+      persistedTimezone: "",
       requestToken: 0,
     },
     passkeys: {
@@ -295,6 +303,32 @@ const state = {
     groupQ: "",
     accounts: [],
     senders: [],
+  },
+  outbound: {
+    playbooks: [],
+    campaigns: [],
+    selectedCampaignID: "",
+    selectedStepID: "",
+    selectedEnrollmentID: "",
+    activeSection: "strategy",
+    campaignsLoaded: false,
+    loading: false,
+    steps: [],
+    enrollments: [],
+    events: [],
+    audiencePreview: [],
+    senderDiagnostics: [],
+    domainDiagnostics: [],
+    senderControl: [],
+    preflightIssues: [],
+  },
+  replyOps: {
+    bucket: "",
+    allItems: [],
+    items: [],
+    selectedID: "",
+    detail: null,
+    loading: false,
   },
   admin: {
     registrations: {
@@ -372,6 +406,7 @@ const el = {
   languageGateSelect: document.getElementById("language-gate-select"),
   languageGateHint: document.getElementById("language-gate-hint"),
   languageGateContinue: document.getElementById("language-gate-continue"),
+  timezoneOptions: document.getElementById("timezone-options"),
   appShell: document.getElementById("app-shell"),
   workspaceTitle: document.getElementById("workspace-title"),
   status: document.getElementById("status-line"),
@@ -380,6 +415,8 @@ const el = {
   tabAuth: document.getElementById("tab-auth"),
   tabMail: document.getElementById("tab-mail"),
   tabContacts: document.getElementById("tab-contacts"),
+  tabOutbound: document.getElementById("tab-outbound"),
+  tabReplyOps: document.getElementById("tab-reply-ops"),
   tabSettings: document.getElementById("tab-settings"),
   tabAdmin: document.getElementById("tab-admin"),
   btnNotificationCenter: document.getElementById("btn-notification-center"),
@@ -395,6 +432,8 @@ const el = {
   viewSettings: document.getElementById("view-settings"),
   viewMail: document.getElementById("view-mail"),
   viewContacts: document.getElementById("view-contacts"),
+  viewOutbound: document.getElementById("view-outbound"),
+  viewReplyOps: document.getElementById("view-reply-ops"),
   viewAdmin: document.getElementById("view-admin"),
   mailLayout: document.getElementById("mail-layout"),
   mailPaneMailboxes: document.getElementById("mail-pane-mailboxes"),
@@ -635,6 +674,9 @@ const el = {
   settingsSectionDevices: document.getElementById("settings-section-devices"),
   settingsSectionSessions: document.getElementById("settings-section-sessions"),
   settingsLanguageSelect: document.getElementById("settings-language-select"),
+  settingsFormatLocaleSelect: document.getElementById("settings-format-locale-select"),
+  settingsTimezoneInput: document.getElementById("settings-timezone-input"),
+  settingsInterfacePreview: document.getElementById("settings-interface-preview"),
   settingsLanguageNote: document.getElementById("settings-language-note"),
   btnSettingsLanguageSave: document.getElementById("btn-settings-language-save"),
   settingsMailNote: document.getElementById("settings-mail-note"),
@@ -788,6 +830,94 @@ const el = {
   btnContactDelete: document.getElementById("btn-contact-delete"),
   contactsGroupsSearch: document.getElementById("contacts-groups-search"),
   contactsGroupsList: document.getElementById("contacts-groups-list"),
+  outboundNote: document.getElementById("outbound-note"),
+  btnOutboundRefresh: document.getElementById("btn-outbound-refresh"),
+  btnOutboundNew: document.getElementById("btn-outbound-new"),
+  outboundCampaignList: document.getElementById("outbound-campaign-list"),
+  outboundSummary: document.getElementById("outbound-summary"),
+  outboundSectionStrategy: document.getElementById("outbound-section-strategy"),
+  outboundSectionAudience: document.getElementById("outbound-section-audience"),
+  outboundSectionHealth: document.getElementById("outbound-section-health"),
+  btnOutboundSave: document.getElementById("btn-outbound-save"),
+  btnOutboundPreflight: document.getElementById("btn-outbound-preflight"),
+  btnOutboundLaunch: document.getElementById("btn-outbound-launch"),
+  btnOutboundPause: document.getElementById("btn-outbound-pause"),
+  btnOutboundResume: document.getElementById("btn-outbound-resume"),
+  btnOutboundArchive: document.getElementById("btn-outbound-archive"),
+  btnOutboundApplyPlaybook: document.getElementById("btn-outbound-apply-playbook"),
+  outboundCampaignName: document.getElementById("outbound-campaign-name"),
+  outboundCampaignPlaybook: document.getElementById("outbound-campaign-playbook"),
+  outboundCampaignMode: document.getElementById("outbound-campaign-mode"),
+  outboundCampaignAudienceKind: document.getElementById("outbound-campaign-audience-kind"),
+  outboundCampaignAudienceRef: document.getElementById("outbound-campaign-audience-ref"),
+  outboundCampaignSenderKind: document.getElementById("outbound-campaign-sender-kind"),
+  outboundCampaignSenderRef: document.getElementById("outbound-campaign-sender-ref"),
+  outboundReplyStop: document.getElementById("outbound-reply-stop"),
+  outboundReplyQuestion: document.getElementById("outbound-reply-question"),
+  outboundReplyDomain: document.getElementById("outbound-reply-domain"),
+  outboundComplianceUnsubscribe: document.getElementById("outbound-compliance-unsubscribe"),
+  outboundCompliancePromotional: document.getElementById("outbound-compliance-promotional"),
+  outboundSuppressionDomain: document.getElementById("outbound-suppression-domain"),
+  outboundGovernanceRecipientCollision: document.getElementById("outbound-governance-recipient-collision"),
+  outboundGovernanceDomainCollision: document.getElementById("outbound-governance-domain-collision"),
+  outboundGovernanceDomainCap: document.getElementById("outbound-governance-domain-cap"),
+  outboundGovernancePositiveAction: document.getElementById("outbound-governance-positive-action"),
+  outboundGovernanceNegativeAction: document.getElementById("outbound-governance-negative-action"),
+  outboundGovernanceUnsubAction: document.getElementById("outbound-governance-unsub-action"),
+  btnOutboundStepSave: document.getElementById("btn-outbound-step-save"),
+  btnOutboundStepNew: document.getElementById("btn-outbound-step-new"),
+  outboundStepKind: document.getElementById("outbound-step-kind"),
+  outboundStepPosition: document.getElementById("outbound-step-position"),
+  outboundStepThreadMode: document.getElementById("outbound-step-thread-mode"),
+  outboundStepWait: document.getElementById("outbound-step-wait"),
+  outboundStepSubject: document.getElementById("outbound-step-subject"),
+  outboundStepBody: document.getElementById("outbound-step-body"),
+  outboundStepEmailSubjectWrap: document.getElementById("outbound-step-email-subject-wrap"),
+  outboundStepEmailBodyWrap: document.getElementById("outbound-step-email-body-wrap"),
+  outboundStepTaskTitleWrap: document.getElementById("outbound-step-task-title-wrap"),
+  outboundStepTaskInstructionsWrap: document.getElementById("outbound-step-task-instructions-wrap"),
+  outboundStepTaskActionLabelWrap: document.getElementById("outbound-step-task-action-label-wrap"),
+  outboundStepTaskTitle: document.getElementById("outbound-step-task-title"),
+  outboundStepTaskInstructions: document.getElementById("outbound-step-task-instructions"),
+  outboundStepTaskActionLabel: document.getElementById("outbound-step-task-action-label"),
+  outboundStepBranchQuestion: document.getElementById("outbound-step-branch-question"),
+  outboundStepBranchObjection: document.getElementById("outbound-step-branch-objection"),
+  outboundStepBranchReferral: document.getElementById("outbound-step-branch-referral"),
+  outboundStepBranchOOO: document.getElementById("outbound-step-branch-ooo"),
+  outboundStepBranchReview: document.getElementById("outbound-step-branch-review"),
+  outboundStepList: document.getElementById("outbound-step-list"),
+  outboundAudienceKind: document.getElementById("outbound-audience-kind"),
+  outboundAudienceRef: document.getElementById("outbound-audience-ref"),
+  outboundAudienceText: document.getElementById("outbound-audience-text"),
+  btnOutboundAudiencePreview: document.getElementById("btn-outbound-audience-preview"),
+  btnOutboundAudienceImport: document.getElementById("btn-outbound-audience-import"),
+  outboundAudiencePreviewList: document.getElementById("outbound-audience-preview-list"),
+  outboundEnrollmentList: document.getElementById("outbound-enrollment-list"),
+  outboundSenderControl: document.getElementById("outbound-sender-control"),
+  outboundEventList: document.getElementById("outbound-event-list"),
+  outboundSenderDiagnostics: document.getElementById("outbound-sender-diagnostics"),
+  outboundDomainDiagnostics: document.getElementById("outbound-domain-diagnostics"),
+  replyOpsNote: document.getElementById("reply-ops-note"),
+  btnReplyOpsRefresh: document.getElementById("btn-reply-ops-refresh"),
+  replyOpsBuckets: document.getElementById("reply-ops-buckets"),
+  replyOpsList: document.getElementById("reply-ops-list"),
+  replyOpsDetail: document.getElementById("reply-ops-detail"),
+  btnReplyOpsOpenThread: document.getElementById("btn-reply-ops-open-thread"),
+  btnReplyOpsTakeover: document.getElementById("btn-reply-ops-takeover"),
+  btnReplyOpsStop: document.getElementById("btn-reply-ops-stop"),
+  replyOpsClassifyPositive: document.getElementById("reply-ops-classify-positive"),
+  replyOpsClassifyQuestion: document.getElementById("reply-ops-classify-question"),
+  replyOpsClassifyObjection: document.getElementById("reply-ops-classify-objection"),
+  replyOpsClassifyWrong: document.getElementById("reply-ops-classify-wrong"),
+  replyOpsClassifyNegative: document.getElementById("reply-ops-classify-negative"),
+  replyOpsClassifyUnsub: document.getElementById("reply-ops-classify-unsub"),
+  replyOpsClassifyOOO: document.getElementById("reply-ops-classify-ooo"),
+  replyOpsClassifyBounce: document.getElementById("reply-ops-classify-bounce"),
+  replyOpsClassifyHostile: document.getElementById("reply-ops-classify-hostile"),
+  replyOpsActionSuppressRecipient: document.getElementById("reply-ops-action-suppress-recipient"),
+  replyOpsActionSuppressDomain: document.getElementById("reply-ops-action-suppress-domain"),
+  replyOpsActionPause: document.getElementById("reply-ops-action-pause"),
+  replyOpsActionResume: document.getElementById("reply-ops-action-resume"),
   btnContactGroupNew: document.getElementById("btn-contact-group-new"),
   contactGroupDetail: document.getElementById("contact-group-detail"),
   contactGroupForm: document.getElementById("contact-group-form"),
@@ -888,7 +1018,9 @@ const el = {
   setupModeLocal: document.getElementById("setup-mode-local"),
   setupModeExternal: document.getElementById("setup-mode-external"),
   setupModeHybrid: document.getElementById("setup-mode-hybrid"),
-  setupRegion: document.getElementById("setup-region"),
+  setupFormatLocale: document.getElementById("setup-format-locale"),
+  setupTimezone: document.getElementById("setup-timezone"),
+  setupRegionPreview: document.getElementById("setup-region-preview"),
   setupThemeMachine: document.getElementById("setup-theme-machine"),
   setupThemePaper: document.getElementById("setup-theme-paper"),
   setupUpdatesAuto: document.getElementById("setup-updates-auto"),
@@ -907,7 +1039,8 @@ const el = {
   setupPasswordConfirm: document.getElementById("setup-password-confirm"),
   setupPasskeyPrimaryEnabled: document.getElementById("setup-passkey-primary-enabled"),
   setupSummaryMode: document.getElementById("setup-summary-mode"),
-  setupSummaryRegion: document.getElementById("setup-summary-region"),
+  setupSummaryFormatLocale: document.getElementById("setup-summary-format-locale"),
+  setupSummaryTimezone: document.getElementById("setup-summary-timezone"),
   setupSummaryTheme: document.getElementById("setup-summary-theme"),
   setupSummaryUpdates: document.getElementById("setup-summary-updates"),
   setupSummaryDomainRow: document.getElementById("setup-summary-domain-row"),
@@ -967,7 +1100,7 @@ const setupSteps = [
 const setupStepTitles = [
   "Welcome",
   "How Despatch Will Get Mail",
-  "Where Despatch will be set up",
+  "Regional defaults",
   "Choose your look",
   "Software updates",
   "Admin account",
@@ -1057,6 +1190,89 @@ const supportedAppLanguages = [
   { code: "en", nativeLabel: "English", englishLabel: "English" },
   { code: "ru", nativeLabel: "Русский", englishLabel: "Russian" },
 ];
+const commonRegionalFormatLocales = [
+  "en-US",
+  "en-GB",
+  "en-AU",
+  "de-DE",
+  "de-CH",
+  "fr-FR",
+  "fr-CA",
+  "it-IT",
+  "es-ES",
+  "es-MX",
+  "pt-PT",
+  "pt-BR",
+  "nl-NL",
+  "pl-PL",
+  "cs-CZ",
+  "sk-SK",
+  "hu-HU",
+  "ro-RO",
+  "bg-BG",
+  "hr-HR",
+  "sl-SI",
+  "sr-RS",
+  "sv-SE",
+  "nb-NO",
+  "da-DK",
+  "fi-FI",
+  "et-EE",
+  "lv-LV",
+  "lt-LT",
+  "ru-RU",
+  "uk-UA",
+  "tr-TR",
+  "el-GR",
+];
+const fallbackTimeZones = [
+  "UTC",
+  "Europe/London",
+  "Europe/Dublin",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Amsterdam",
+  "Europe/Zurich",
+  "Europe/Madrid",
+  "Europe/Rome",
+  "Europe/Prague",
+  "Europe/Warsaw",
+  "Europe/Athens",
+  "Europe/Helsinki",
+  "Europe/Bucharest",
+  "Europe/Sofia",
+  "Europe/Kyiv",
+  "Europe/Riga",
+  "Europe/Vilnius",
+  "Europe/Tallinn",
+  "Europe/Belgrade",
+  "Europe/Zagreb",
+  "Europe/Ljubljana",
+  "Europe/Brussels",
+  "Europe/Copenhagen",
+  "Europe/Oslo",
+  "Europe/Stockholm",
+  "Europe/Moscow",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Toronto",
+  "America/Vancouver",
+  "America/Mexico_City",
+  "America/Sao_Paulo",
+  "Asia/Tokyo",
+  "Asia/Seoul",
+  "Asia/Singapore",
+  "Asia/Hong_Kong",
+  "Asia/Kolkata",
+  "Asia/Dubai",
+  "Australia/Sydney",
+  "Pacific/Auckland",
+];
+const regionalFormatSampleDate = new Date(Date.UTC(2026, 3, 28, 13, 45, 0));
+const intlFormatterCache = new Map();
+const regionalFormatOptionLabelCache = new Map();
 // Keep the floating background to greetings that IBM Plex Mono can render cleanly.
 // Shared greetings are reused where multiple European languages use the same hello.
 const languageGateGreetings = [
@@ -1130,7 +1346,7 @@ const languageGateState = {
   setupRequired: false,
   selectedLocale: "en",
 };
-let localePreferenceSyncPromise = null;
+let interfacePreferenceSyncPromise = null;
 
 function normalizeSupportedLocaleCode(raw) {
   const base = String(raw || "")
@@ -1148,6 +1364,43 @@ function currentAppLocaleCode() {
   return normalizeSupportedLocaleCode(locale);
 }
 
+function normalizeLocaleTag(raw) {
+  const value = String(raw || "").trim().replace(/_/g, "-");
+  if (!value) return "";
+  const parts = value.split("-").filter(Boolean);
+  if (!parts.length) return "";
+  return parts.map((part, index) => {
+    if (index === 0) return part.toLowerCase();
+    if (part.length === 2) return part.toUpperCase();
+    return part.toLowerCase();
+  }).join("-");
+}
+
+function normalizeRegionalFormatLocale(raw) {
+  const normalized = normalizeLocaleTag(raw);
+  if (!normalized) return "";
+  try {
+    const supported = Intl.DateTimeFormat.supportedLocalesOf([normalized], { localeMatcher: "lookup" });
+    return supported[0] || "";
+  } catch {
+    return "";
+  }
+}
+
+function fallbackRegionalFormatLocale() {
+  return normalizeRegionalFormatLocale(currentAppLocaleCode() === "ru" ? "ru-RU" : "en-US") || "en-US";
+}
+
+function normalizeTimeZoneName(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: value }).resolvedOptions().timeZone || value;
+  } catch {
+    return "";
+  }
+}
+
 function detectSystemLocale() {
   if (Array.isArray(navigator?.languages)) {
     for (const item of navigator.languages) {
@@ -1160,6 +1413,35 @@ function detectSystemLocale() {
     return normalizeSupportedLocaleCode(navigator.language);
   }
   return "en";
+}
+
+function detectSystemFormatLocale() {
+  if (Array.isArray(navigator?.languages)) {
+    for (const item of navigator.languages) {
+      const normalized = normalizeRegionalFormatLocale(item);
+      if (normalized) {
+        return normalized;
+      }
+    }
+  }
+  try {
+    const resolved = new Intl.DateTimeFormat().resolvedOptions().locale;
+    const normalized = normalizeRegionalFormatLocale(resolved);
+    if (normalized) {
+      return normalized;
+    }
+  } catch {
+    // ignore runtime failures
+  }
+  return "";
+}
+
+function detectSystemTimeZone() {
+  try {
+    return normalizeTimeZoneName(new Intl.DateTimeFormat().resolvedOptions().timeZone);
+  } catch {
+    return "";
+  }
 }
 
 function storedGuestLocalePreference() {
@@ -1203,6 +1485,16 @@ function preferredLocaleFromPayload(payload = {}) {
   return normalizeSupportedLocaleCode(raw);
 }
 
+function preferredFormatLocaleFromPayload(payload = {}) {
+  const raw = String(payload?.format_locale ?? payload?.formatLocale ?? "").trim();
+  return normalizeRegionalFormatLocale(raw);
+}
+
+function preferredTimeZoneFromPayload(payload = {}) {
+  const raw = String(payload?.timezone ?? payload?.timeZone ?? "").trim();
+  return normalizeTimeZoneName(raw);
+}
+
 function populateLanguageSelect(selectNode, selectedLocale) {
   if (!(selectNode instanceof HTMLSelectElement)) return;
   const next = normalizeSupportedLocaleCode(selectedLocale);
@@ -1215,6 +1507,264 @@ function populateLanguageSelect(selectNode, selectedLocale) {
     selectNode.appendChild(option);
   }
   selectNode.value = next || prior || "en";
+}
+
+function currentRegionalFormatLocale() {
+  return preferredFormatLocaleFromPayload(state.user || {})
+    || normalizeRegionalFormatLocale(state.settings.interface.persistedFormatLocale)
+    || detectSystemFormatLocale()
+    || normalizeRegionalFormatLocale(state.defaults.formatLocale)
+    || fallbackRegionalFormatLocale();
+}
+
+function currentRegionalTimeZone() {
+  return preferredTimeZoneFromPayload(state.user || {})
+    || normalizeTimeZoneName(state.settings.interface.persistedTimezone)
+    || detectSystemTimeZone()
+    || normalizeTimeZoneName(state.defaults.timezone)
+    || "UTC";
+}
+
+function formatterCacheKey(locale, timeZone, options) {
+  return JSON.stringify([locale, timeZone, options]);
+}
+
+function getIntlFormatter(locale, timeZone, options) {
+  const key = formatterCacheKey(locale, timeZone, options);
+  if (intlFormatterCache.has(key)) {
+    return intlFormatterCache.get(key);
+  }
+  const formatter = new Intl.DateTimeFormat(locale, { timeZone, ...options });
+  intlFormatterCache.set(key, formatter);
+  return formatter;
+}
+
+function formatDateTimeWithProfile(value, options = {}) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const locale = normalizeRegionalFormatLocale(options.formatLocale || currentRegionalFormatLocale()) || fallbackRegionalFormatLocale();
+  const timeZone = normalizeTimeZoneName(options.timeZone || currentRegionalTimeZone()) || "UTC";
+  const formatterOptions = { ...options };
+  delete formatterOptions.formatLocale;
+  delete formatterOptions.timeZone;
+  return getIntlFormatter(locale, timeZone, formatterOptions).format(date);
+}
+
+function zonedDateTimeParts(date, timeZone) {
+  const formatter = getIntlFormatter(
+    "en-US-u-ca-iso8601-nu-latn",
+    timeZone,
+    {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    },
+  );
+  const fields = {};
+  for (const part of formatter.formatToParts(date)) {
+    if (part.type === "literal") continue;
+    fields[part.type] = part.value;
+  }
+  return {
+    year: Number(fields.year || 0),
+    month: Number(fields.month || 0),
+    day: Number(fields.day || 0),
+    hour: Number(fields.hour || 0),
+    minute: Number(fields.minute || 0),
+    second: Number(fields.second || 0),
+  };
+}
+
+function zonedDayIndex(date, timeZone) {
+  const parts = zonedDateTimeParts(date, timeZone);
+  return Math.floor(Date.UTC(parts.year, parts.month - 1, parts.day) / 86400000);
+}
+
+function wallClockDate(parts) {
+  return new Date(Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour || 0, parts.minute || 0, parts.second || 0, 0));
+}
+
+function wallClockPartsFromDate(date) {
+  return {
+    year: date.getUTCFullYear(),
+    month: date.getUTCMonth() + 1,
+    day: date.getUTCDate(),
+    hour: date.getUTCHours(),
+    minute: date.getUTCMinutes(),
+    second: date.getUTCSeconds(),
+  };
+}
+
+function wallClockInputValueFromParts(parts) {
+  const pad = (num) => String(num).padStart(2, "0");
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour || 0)}:${pad(parts.minute || 0)}`;
+}
+
+function timeZoneOffsetMs(date, timeZone) {
+  const parts = zonedDateTimeParts(date, timeZone);
+  const utcMs = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, parts.second);
+  return utcMs - date.getTime();
+}
+
+function zonedWallClockToISO(raw, timeZone) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!match) return "";
+  const parts = {
+    year: Number(match[1]),
+    month: Number(match[2]),
+    day: Number(match[3]),
+    hour: Number(match[4]),
+    minute: Number(match[5]),
+    second: 0,
+  };
+  const normalizedTimeZone = normalizeTimeZoneName(timeZone) || "UTC";
+  const targetUTC = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0, 0);
+  let guess = targetUTC;
+  for (let index = 0; index < 3; index += 1) {
+    const offset = timeZoneOffsetMs(new Date(guess), normalizedTimeZone);
+    const next = targetUTC - offset;
+    if (next === guess) break;
+    guess = next;
+  }
+  const date = new Date(guess);
+  return Number.isNaN(date.getTime()) ? "" : date.toISOString();
+}
+
+function zonedWallClockInputValue(value, timeZone) {
+  const date = value instanceof Date ? value : new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) return "";
+  const parts = zonedDateTimeParts(date, normalizeTimeZoneName(timeZone) || "UTC");
+  const pad = (num) => String(num).padStart(2, "0");
+  return `${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(parts.hour)}:${pad(parts.minute)}`;
+}
+
+function previewLabel(formatLocale, timeZone) {
+  const locale = normalizeRegionalFormatLocale(formatLocale) || fallbackRegionalFormatLocale();
+  const zone = normalizeTimeZoneName(timeZone) || "UTC";
+  const rendered = formatDateTimeWithProfile(
+    regionalFormatSampleDate,
+    {
+      formatLocale: locale,
+      timeZone: zone,
+      dateStyle: "full",
+      timeStyle: "short",
+    },
+  );
+  return t("Preview: {dateTime} ({timeZone})", { dateTime: rendered, timeZone: zone }, `Preview: ${rendered} (${zone})`);
+}
+
+function displayNameForLocaleTag(localeTag) {
+  const normalized = normalizeRegionalFormatLocale(localeTag);
+  if (!normalized) return String(localeTag || "");
+  const displayLocale = typeof i18n.currentLocale === "function" ? i18n.currentLocale() : "en";
+  const parts = normalized.split("-");
+  const languageCode = parts[0] || normalized;
+  const regionCode = parts.find((part, index) => index > 0 && /^[A-Z]{2}$/.test(part)) || "";
+  let languageLabel = languageCode;
+  let regionLabel = regionCode;
+  try {
+    const languageNames = new Intl.DisplayNames([displayLocale], { type: "language" });
+    languageLabel = languageNames.of(languageCode) || languageLabel;
+  } catch {
+    // ignore Intl.DisplayNames availability
+  }
+  if (regionCode) {
+    try {
+      const regionNames = new Intl.DisplayNames([displayLocale], { type: "region" });
+      regionLabel = regionNames.of(regionCode) || regionLabel;
+    } catch {
+      // ignore Intl.DisplayNames availability
+    }
+  }
+  return regionCode ? `${languageLabel} (${regionLabel})` : languageLabel;
+}
+
+function buildRegionalFormatOptionLabel(localeTag) {
+  const normalized = normalizeRegionalFormatLocale(localeTag);
+  if (!normalized) return String(localeTag || "");
+  const cacheKey = `${currentAppLocaleCode()}::${normalized}`;
+  if (regionalFormatOptionLabelCache.has(cacheKey)) {
+    return regionalFormatOptionLabelCache.get(cacheKey);
+  }
+  const sample = formatDateTimeWithProfile(
+    regionalFormatSampleDate,
+    {
+      formatLocale: normalized,
+      timeZone: "UTC",
+      dateStyle: "short",
+      timeStyle: "short",
+    },
+  );
+  const label = `${displayNameForLocaleTag(normalized)} — ${normalized} — ${sample}`;
+  regionalFormatOptionLabelCache.set(cacheKey, label);
+  return label;
+}
+
+function regionalFormatOptionValues(selectedLocale = "") {
+  const values = new Set(commonRegionalFormatLocales.map((item) => normalizeRegionalFormatLocale(item)).filter(Boolean));
+  const detected = detectSystemFormatLocale();
+  if (detected) values.add(detected);
+  const selected = normalizeRegionalFormatLocale(selectedLocale);
+  if (selected) values.add(selected);
+  values.add(fallbackRegionalFormatLocale());
+  return Array.from(values).sort((a, b) => a.localeCompare(b));
+}
+
+function populateRegionalFormatSelect(selectNode, selectedLocale) {
+  if (!(selectNode instanceof HTMLSelectElement)) return;
+  const current = normalizeRegionalFormatLocale(selectedLocale) || fallbackRegionalFormatLocale();
+  selectNode.replaceChildren();
+  for (const localeTag of regionalFormatOptionValues(current)) {
+    const option = document.createElement("option");
+    option.value = localeTag;
+    option.textContent = buildRegionalFormatOptionLabel(localeTag);
+    selectNode.appendChild(option);
+  }
+  selectNode.value = current;
+}
+
+function supportedTimeZoneValues() {
+  if (typeof Intl?.supportedValuesOf === "function") {
+    try {
+      return Intl.supportedValuesOf("timeZone");
+    } catch {
+      // fall through
+    }
+  }
+  return fallbackTimeZones.slice();
+}
+
+function populateTimeZoneDatalist() {
+  if (!(el.timezoneOptions instanceof HTMLDataListElement)) return;
+  el.timezoneOptions.replaceChildren();
+  const current = currentRegionalTimeZone();
+  const values = new Set(supportedTimeZoneValues());
+  if (current) values.add(current);
+  for (const timeZone of Array.from(values).sort((a, b) => a.localeCompare(b))) {
+    const option = document.createElement("option");
+    option.value = timeZone;
+    el.timezoneOptions.appendChild(option);
+  }
+}
+
+function renderSetupRegionalPreview() {
+  if (!el.setupRegionPreview) return;
+  const formatLocale = normalizeRegionalFormatLocale(el.setupFormatLocale?.value || "") || currentRegionalFormatLocale();
+  const timeZone = normalizeTimeZoneName(el.setupTimezone?.value || "") || currentRegionalTimeZone();
+  el.setupRegionPreview.textContent = previewLabel(formatLocale, timeZone);
+}
+
+function renderSettingsInterfacePreview() {
+  if (!el.settingsInterfacePreview) return;
+  const formatLocale = normalizeRegionalFormatLocale(el.settingsFormatLocaleSelect?.value || "") || currentRegionalFormatLocale();
+  const timeZone = normalizeTimeZoneName(el.settingsTimezoneInput?.value || "") || currentRegionalTimeZone();
+  el.settingsInterfacePreview.textContent = previewLabel(formatLocale, timeZone);
 }
 
 function languageGateCopyFor(locale) {
@@ -1472,7 +2022,12 @@ function normalizeNotificationDelivery(delivery, fallback = "center") {
 function formatNotificationClock(value) {
   const date = value ? new Date(value) : new Date();
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleTimeString(uiLocaleList(), { hour: "numeric", minute: "2-digit" });
+  return formatDateTimeWithProfile(date, {
+    formatLocale: currentRegionalFormatLocale(),
+    timeZone: currentRegionalTimeZone(),
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function createNotificationID() {
@@ -1951,6 +2506,28 @@ async function openNotificationTarget(target) {
     }
     return;
   }
+  if (next.view === "outbound") {
+    if (!state.user) return;
+    if (el.tabOutbound && typeof el.tabOutbound.onclick === "function") {
+      await el.tabOutbound.onclick();
+    } else {
+      setActiveTab(el.tabOutbound);
+      showView("outbound");
+      await loadOutboundWorkspace();
+    }
+    return;
+  }
+  if (next.view === "reply-ops") {
+    if (!state.user) return;
+    if (el.tabReplyOps && typeof el.tabReplyOps.onclick === "function") {
+      await el.tabReplyOps.onclick();
+    } else {
+      setActiveTab(el.tabReplyOps);
+      showView("reply-ops");
+      await loadReplyOpsWorkspace();
+    }
+    return;
+  }
   if (next.view === "mail") {
     if (!state.user) return;
     if (el.tabMail && typeof el.tabMail.onclick === "function") {
@@ -2041,6 +2618,8 @@ function workspaceTitleForView(name) {
   if (key === "auth") return "Account Access";
   if (key === "mail") return "Mailbox";
   if (key === "contacts") return "Contacts";
+  if (key === "outbound") return "Outbound";
+  if (key === "reply-ops") return "Reply Ops";
   if (key === "settings") return "Settings";
   if (key === "admin") return "Admin";
   return "Despatch";
@@ -2059,6 +2638,8 @@ function currentNotificationSource() {
   if (el.viewAdmin && !el.viewAdmin.classList.contains("hidden")) return "admin";
   if (el.viewSettings && !el.viewSettings.classList.contains("hidden")) return "settings";
   if (el.viewMail && !el.viewMail.classList.contains("hidden")) return "mail";
+  if (el.viewOutbound && !el.viewOutbound.classList.contains("hidden")) return "system";
+  if (el.viewReplyOps && !el.viewReplyOps.classList.contains("hidden")) return "system";
   if (el.viewContacts && !el.viewContacts.classList.contains("hidden")) return "system";
   return "auth";
 }
@@ -3309,38 +3890,23 @@ function composeAuthEmailValue() {
 }
 
 function composeDefaultScheduledLocalValue() {
-  const next = new Date();
-  next.setSeconds(0, 0);
-  next.setMinutes(0);
-  next.setHours(next.getHours() + 1);
-  const year = next.getFullYear();
-  const month = String(next.getMonth() + 1).padStart(2, "0");
-  const day = String(next.getDate()).padStart(2, "0");
-  const hours = String(next.getHours()).padStart(2, "0");
-  const minutes = String(next.getMinutes()).padStart(2, "0");
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
+  const now = zonedDateTimeParts(new Date(), currentRegionalTimeZone());
+  const next = wallClockDate(now);
+  next.setUTCSeconds(0, 0);
+  next.setUTCMinutes(0);
+  next.setUTCHours(next.getUTCHours() + 1);
+  return wallClockInputValueFromParts(wallClockPartsFromDate(next));
 }
 
 function composeScheduledLocalValueFromISO(raw) {
-  const value = String(raw || "").trim();
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  return `${year}-${month}-${day}T${hours}:${minutes}`;
+  return zonedWallClockInputValue(raw, currentRegionalTimeZone());
 }
 
 function composeScheduledForISOValue() {
   if (state.compose.sendMode !== "scheduled") return "";
   const localValue = String(el.composeScheduledForInput?.value || state.compose.scheduledFor || "").trim();
   if (!localValue) return "";
-  const date = new Date(localValue);
-  if (Number.isNaN(date.getTime())) return "";
-  return date.toISOString();
+  return zonedWallClockToISO(localValue, currentRegionalTimeZone());
 }
 
 function normalizeComposeSendMode(raw) {
@@ -3398,7 +3964,13 @@ function syncComposeDeliveryControls() {
     }
   }
   if (!scheduled) {
-    setComposeDeliveryNote("Schedule uses your local time zone.");
+    setComposeDeliveryNote(
+      t(
+        "Schedule uses your selected time zone: {timeZone}.",
+        { timeZone: currentRegionalTimeZone() },
+        `Schedule uses your selected time zone: ${currentRegionalTimeZone()}.`,
+      ),
+    );
     return;
   }
   const sender = composeSelectedSenderItem();
@@ -3422,7 +3994,14 @@ function syncComposeDeliveryControls() {
     return;
   }
   if (!isoValue) {
-    setComposeDeliveryNote("Choose when this message should send.", "warn");
+    setComposeDeliveryNote(
+      t(
+        "Choose when this message should send in {timeZone}.",
+        { timeZone: currentRegionalTimeZone() },
+        `Choose when this message should send in ${currentRegionalTimeZone()}.`,
+      ),
+      "warn",
+    );
     return;
   }
   if (new Date(isoValue).getTime() <= Date.now()) {
@@ -7855,7 +8434,7 @@ function setSetupCooldown(waitSec) {
 }
 
 function setActiveTab(tab) {
-  [el.tabSetup, el.tabAuth, el.tabMail, el.tabContacts, el.tabSettings, el.tabAdmin]
+  [el.tabSetup, el.tabAuth, el.tabMail, el.tabContacts, el.tabOutbound, el.tabReplyOps, el.tabSettings, el.tabAdmin]
     .filter(Boolean)
     .forEach((btn) => {
       const active = btn === tab;
@@ -7870,12 +8449,16 @@ function showView(name) {
   el.viewSettings.classList.add("hidden");
   el.viewMail.classList.add("hidden");
   el.viewContacts.classList.add("hidden");
+  el.viewOutbound.classList.add("hidden");
+  el.viewReplyOps.classList.add("hidden");
   el.viewAdmin.classList.add("hidden");
   if (name === "setup") el.viewSetup.classList.remove("hidden");
   if (name === "auth") el.viewAuth.classList.remove("hidden");
   if (name === "settings") el.viewSettings.classList.remove("hidden");
   if (name === "mail") el.viewMail.classList.remove("hidden");
   if (name === "contacts") el.viewContacts.classList.remove("hidden");
+  if (name === "outbound") el.viewOutbound.classList.remove("hidden");
+  if (name === "reply-ops") el.viewReplyOps.classList.remove("hidden");
   if (name === "admin") el.viewAdmin.classList.remove("hidden");
 
   if (!el.appShell) return;
@@ -9129,6 +9712,2269 @@ async function exportContactsFile(format) {
   setContactsNote(`Contacts exported as ${format.toUpperCase()}.`, "ok");
 }
 
+function setOutboundNote(message = "", tone = "info") {
+  if (!el.outboundNote) return;
+  const msg = String(message || "").trim()
+    || t(
+      "run_bulk_outreach_from_real_external_mailboxes_keep_replies_in_context_and_protect_sender_reputation_as_you_go",
+      {},
+      "Run bulk outreach from real external mailboxes, keep replies in context, and protect sender reputation as you go."
+    );
+  el.outboundNote.textContent = msg;
+  if (tone === "error") el.outboundNote.style.color = "var(--sig-err)";
+  else if (tone === "ok") el.outboundNote.style.color = "var(--sig-ok)";
+  else if (tone === "warn") el.outboundNote.style.color = "var(--sig-warn)";
+  else el.outboundNote.style.color = "var(--fg-muted)";
+}
+
+function setReplyOpsNote(message = "", tone = "info") {
+  if (!el.replyOpsNote) return;
+  const msg = String(message || "").trim()
+    || t(
+      "work_live_replies_from_outbound_threads_without_losing_sender_context_or_domain_safety",
+      {},
+      "Work live replies from outbound threads without losing sender context or domain safety."
+    );
+  el.replyOpsNote.textContent = msg;
+  if (tone === "error") el.replyOpsNote.style.color = "var(--sig-err)";
+  else if (tone === "ok") el.replyOpsNote.style.color = "var(--sig-ok)";
+  else if (tone === "warn") el.replyOpsNote.style.color = "var(--sig-warn)";
+  else el.replyOpsNote.style.color = "var(--fg-muted)";
+}
+
+function safeParseOutboundJSONObject(raw, fallback = {}) {
+  if (!raw || raw === "{}") return { ...fallback };
+  if (typeof raw === "object") {
+    return { ...fallback, ...deepClone(raw) };
+  }
+  try {
+    const parsed = JSON.parse(String(raw || "{}"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return { ...fallback, ...parsed };
+    }
+  } catch {
+    // Ignore malformed auxiliary policy values in UI rendering.
+  }
+  return { ...fallback };
+}
+
+function outboundDefaultReplyPolicy() {
+  return {
+    stop_on_reply: true,
+    pause_on_question: true,
+    pause_on_objection: true,
+    pause_on_manual_review: true,
+    pause_on_out_of_office: true,
+    auto_resume_out_of_office: true,
+    stop_same_domain_on_reply: false,
+    stop_same_domain_on_positive: false,
+    stop_same_domain_on_negative: false,
+    suppress_same_domain_on_hostile: true,
+  };
+}
+
+function outboundDefaultSuppressionPolicy() {
+  return {
+    same_domain_positive_stop: false,
+    same_domain_negative_stop: false,
+    same_domain_unsubscribe_suppress: true,
+    same_domain_hostile_suppress: true,
+    workspace_suppress_unsubscribe: true,
+    workspace_suppress_bounce: true,
+  };
+}
+
+function outboundDefaultCompliancePolicy() {
+  return {
+    unsubscribe_required: true,
+    unsubscribe_scope: "recipient",
+    tracking_mode: "none",
+    promotional: false,
+    footer_mode: "compliance",
+  };
+}
+
+function outboundDefaultSchedulePolicy() {
+  return {
+    respect_provider_caps: true,
+  };
+}
+
+function outboundDefaultGovernancePolicy() {
+  return {
+    recipient_collision_mode: "warn",
+    domain_collision_mode: "warn",
+    max_active_per_domain: 0,
+    positive_domain_action: "none",
+    negative_domain_action: "none",
+    unsubscribe_domain_action: "suppress_workspace",
+    hostile_domain_action: "suppress_workspace",
+  };
+}
+
+function outboundDefaultCampaignFormState() {
+  const defaultPlaybook = outboundKnownPlaybooks()[0] || null;
+  return {
+    name: "",
+    status: "draft",
+    goal_kind: String(defaultPlaybook?.goal_kind || "general_outreach").trim() || "general_outreach",
+    playbook_key: String(defaultPlaybook?.key || "").trim(),
+    campaign_mode: String(defaultPlaybook?.campaign_mode || "new_threads").trim() || "new_threads",
+    audience_source_kind: String(defaultPlaybook?.audience_source_kind || "manual").trim() || "manual",
+    audience_source_ref: "",
+    sender_policy_kind: String(defaultPlaybook?.sender_policy_kind || "preferred_sender").trim() || "preferred_sender",
+    sender_policy_ref: "",
+    reply_policy: safeParseOutboundJSONObject(defaultPlaybook?.reply_policy, outboundDefaultReplyPolicy()),
+    suppression_policy: safeParseOutboundJSONObject(defaultPlaybook?.suppression_policy, outboundDefaultSuppressionPolicy()),
+    schedule_policy: safeParseOutboundJSONObject(defaultPlaybook?.schedule_policy, outboundDefaultSchedulePolicy()),
+    compliance_policy: safeParseOutboundJSONObject(defaultPlaybook?.compliance_policy, outboundDefaultCompliancePolicy()),
+    governance_policy: safeParseOutboundJSONObject(defaultPlaybook?.governance_policy, outboundDefaultGovernancePolicy()),
+  };
+}
+
+function outboundDefaultStepFormState() {
+  return {
+    kind: "email",
+    position: Math.max(1, Array.isArray(state.outbound.steps) ? state.outbound.steps.length + 1 : 1),
+    thread_mode: "same_thread",
+    wait_interval_minutes: 1440,
+    subject_template: "",
+    body_template: "",
+    task_policy: {
+      title: "",
+      instructions: "",
+      action_label: "Handled, continue sequence",
+    },
+    branch_policy: {},
+    send_window: {},
+  };
+}
+
+function selectedOutboundCampaign() {
+  const id = String(state.outbound.selectedCampaignID || "").trim();
+  return (Array.isArray(state.outbound.campaigns) ? state.outbound.campaigns : []).find((item) => String(item?.id || "") === id) || null;
+}
+
+function selectedOutboundStep() {
+  const id = String(state.outbound.selectedStepID || "").trim();
+  return (Array.isArray(state.outbound.steps) ? state.outbound.steps : []).find((item) => String(item?.id || "") === id) || null;
+}
+
+function selectedReplyOpsItem() {
+  const id = String(state.replyOps.selectedID || "").trim();
+  if (!id) return null;
+  if (state.replyOps.detail && String(state.replyOps.detail.id || "") === id) {
+    return state.replyOps.detail;
+  }
+  return (Array.isArray(state.replyOps.allItems) ? state.replyOps.allItems : []).find((item) => String(item?.id || "") === id) || null;
+}
+
+function outboundKnownGroups() {
+  return Array.isArray(state.contacts.groups) ? state.contacts.groups : [];
+}
+
+function outboundKnownSavedSearches() {
+  return Array.isArray(state.mail.savedSearches) ? state.mail.savedSearches : [];
+}
+
+function outboundKnownFunnels() {
+  const merged = [
+    ...(Array.isArray(state.settings.mail.funnels) ? state.settings.mail.funnels : []),
+    ...(Array.isArray(state.mail.funnels) ? state.mail.funnels : []),
+  ];
+  const seen = new Set();
+  return merged.filter((item) => {
+    const id = String(item?.id || "").trim();
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+function outboundKnownPlaybooks() {
+  return Array.isArray(state.outbound.playbooks) ? state.outbound.playbooks : [];
+}
+
+function outboundPlaybookByKey(playbookKey) {
+  const key = String(playbookKey || "").trim();
+  return outboundKnownPlaybooks().find((item) => String(item?.key || "").trim() === key) || null;
+}
+
+function applyOutboundPlaybookFormDefaults(playbookKey) {
+  const playbook = outboundPlaybookByKey(playbookKey);
+  if (!playbook) return;
+  const replyPolicy = safeParseOutboundJSONObject(playbook.reply_policy, outboundDefaultReplyPolicy());
+  const suppressionPolicy = safeParseOutboundJSONObject(playbook.suppression_policy, outboundDefaultSuppressionPolicy());
+  const compliancePolicy = safeParseOutboundJSONObject(playbook.compliance_policy, outboundDefaultCompliancePolicy());
+  const governancePolicy = safeParseOutboundJSONObject(playbook.governance_policy, outboundDefaultGovernancePolicy());
+  if (el.outboundCampaignMode) el.outboundCampaignMode.value = String(playbook.campaign_mode || "new_threads").trim() || "new_threads";
+  if (el.outboundCampaignAudienceKind) el.outboundCampaignAudienceKind.value = String(playbook.audience_source_kind || "manual").trim() || "manual";
+  if (el.outboundAudienceKind) el.outboundAudienceKind.value = String(playbook.audience_source_kind || "manual").trim() || "manual";
+  if (el.outboundCampaignSenderKind) el.outboundCampaignSenderKind.value = String(playbook.sender_policy_kind || "preferred_sender").trim() || "preferred_sender";
+  if (el.outboundReplyStop) el.outboundReplyStop.checked = replyPolicy.stop_on_reply !== false;
+  if (el.outboundReplyQuestion) el.outboundReplyQuestion.checked = replyPolicy.pause_on_question !== false;
+  if (el.outboundReplyDomain) el.outboundReplyDomain.checked = !!replyPolicy.stop_same_domain_on_reply;
+  if (el.outboundSuppressionDomain) el.outboundSuppressionDomain.checked = suppressionPolicy.same_domain_unsubscribe_suppress !== false;
+  if (el.outboundComplianceUnsubscribe) el.outboundComplianceUnsubscribe.checked = compliancePolicy.unsubscribe_required !== false;
+  if (el.outboundCompliancePromotional) el.outboundCompliancePromotional.checked = !!compliancePolicy.promotional;
+  if (el.outboundGovernanceRecipientCollision) el.outboundGovernanceRecipientCollision.value = String(governancePolicy.recipient_collision_mode || "warn").trim() || "warn";
+  if (el.outboundGovernanceDomainCollision) el.outboundGovernanceDomainCollision.value = String(governancePolicy.domain_collision_mode || "warn").trim() || "warn";
+  if (el.outboundGovernanceDomainCap) el.outboundGovernanceDomainCap.value = String(Math.max(0, Number(governancePolicy.max_active_per_domain || 0)));
+  if (el.outboundGovernancePositiveAction) el.outboundGovernancePositiveAction.value = String(governancePolicy.positive_domain_action || "none").trim() || "none";
+  if (el.outboundGovernanceNegativeAction) el.outboundGovernanceNegativeAction.value = String(governancePolicy.negative_domain_action || "none").trim() || "none";
+  if (el.outboundGovernanceUnsubAction) el.outboundGovernanceUnsubAction.value = String(governancePolicy.unsubscribe_domain_action || "suppress_workspace").trim() || "suppress_workspace";
+  syncOutboundFormHints();
+}
+
+function outboundKnownAccounts() {
+  return Array.isArray(state.settings.mail.accounts) ? state.settings.mail.accounts : [];
+}
+
+function outboundKnownSenders() {
+  return Array.isArray(state.settings.mail.senders) ? state.settings.mail.senders : [];
+}
+
+function outboundAccountRecordByID(accountID) {
+  const id = String(accountID || "").trim();
+  return outboundKnownAccounts().find((item) => String(item?.id || "").trim() === id) || null;
+}
+
+function outboundAccountLabelByID(accountID) {
+  const record = outboundAccountRecordByID(accountID);
+  if (!record) return String(accountID || "").trim();
+  return String(record.display_name || record.displayName || record.login || record.id || "").trim() || String(accountID || "").trim();
+}
+
+function outboundSenderRecordByID(senderID) {
+  const id = String(senderID || "").trim();
+  return outboundKnownSenders().find((item) => String(item?.id || "").trim() === id) || null;
+}
+
+function outboundSenderLabelByID(senderID) {
+  const record = outboundSenderRecordByID(senderID);
+  if (!record) return String(senderID || "").trim();
+  return String(record.name || record.from_email || record.fromEmail || record.id || "").trim() || String(senderID || "").trim();
+}
+
+function outboundGroupLabelByID(groupID) {
+  const id = String(groupID || "").trim();
+  const record = outboundKnownGroups().find((item) => String(item?.id || "").trim() === id) || null;
+  return String(record?.name || id).trim();
+}
+
+function outboundSavedSearchLabelByID(searchID) {
+  const id = String(searchID || "").trim();
+  const record = outboundKnownSavedSearches().find((item) => String(item?.id || "").trim() === id) || null;
+  return String(record?.name || id).trim();
+}
+
+function outboundCampaignAudienceRefPlaceholder(kind) {
+  const value = String(kind || "").trim().toLowerCase();
+  if (value === "contact_group") return "Contact group ID";
+  if (value === "saved_search") return "Saved search ID";
+  if (value === "csv_import") return "Optional CSV source label";
+  return "Optional source reference";
+}
+
+function outboundSenderRefPlaceholder(kind) {
+  const value = String(kind || "").trim().toLowerCase();
+  if (value === "thread_owner") return "Existing-thread campaigns use the seeded mailbox automatically";
+  if (value === "single_sender") return "Sender ID or account ID";
+  if (value === "campaign_pool") return "Comma-separated sender IDs or account IDs";
+  if (value === "reply_funnel") return "Reply funnel ID";
+  return "Preferred sender uses contact hints automatically";
+}
+
+function syncOutboundFormHints() {
+  if (el.outboundCampaignAudienceRef) {
+    el.outboundCampaignAudienceRef.placeholder = outboundCampaignAudienceRefPlaceholder(el.outboundCampaignAudienceKind?.value || "manual");
+  }
+  if (el.outboundAudienceRef) {
+    el.outboundAudienceRef.placeholder = outboundCampaignAudienceRefPlaceholder(el.outboundAudienceKind?.value || "manual");
+  }
+  if (el.outboundCampaignSenderRef) {
+    el.outboundCampaignSenderRef.placeholder = outboundSenderRefPlaceholder(el.outboundCampaignSenderKind?.value || "preferred_sender");
+  }
+  if (el.outboundCampaignSenderRef) {
+    el.outboundCampaignSenderRef.disabled = String(el.outboundCampaignSenderKind?.value || "").trim().toLowerCase() === "thread_owner";
+  }
+}
+
+function renderOutboundPlaybookOptions(selectedKey = "") {
+  if (!el.outboundCampaignPlaybook) return;
+  const selected = String(selectedKey || "").trim();
+  el.outboundCampaignPlaybook.replaceChildren();
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = t("custom_campaign", {}, "Custom campaign");
+  el.outboundCampaignPlaybook.appendChild(blank);
+  for (const item of outboundKnownPlaybooks()) {
+    const option = document.createElement("option");
+    option.value = String(item?.key || "").trim();
+    option.textContent = String(item?.name || item?.key || "").trim() || t("playbook", {}, "Playbook");
+    if (option.value === selected) option.selected = true;
+    el.outboundCampaignPlaybook.appendChild(option);
+  }
+}
+
+function outboundBranchOptionValues() {
+  const options = [
+    { value: "", label: t("default_handling", {}, "Default handling") },
+    { value: "manual_review", label: t("manual_review", {}, "Manual review") },
+    { value: "pause", label: t("pause_sequence", {}, "Pause sequence") },
+    { value: "stop", label: t("stop_sequence", {}, "Stop sequence") },
+    { value: "continue", label: t("continue_to_next_step", {}, "Continue to next step") },
+  ];
+  const manualSteps = (Array.isArray(state.outbound.steps) ? state.outbound.steps : [])
+    .filter((item) => String(item?.kind || "").trim().toLowerCase() === "manual_task");
+  for (const step of manualSteps) {
+    options.push({
+      value: `manual_task:${Number(step?.position || 0)}`,
+      label: t("manual_task_step_position", { position: Number(step?.position || 0) }, "Manual task step {position}"),
+    });
+  }
+  if (!options.some((item) => item.value === "manual_task:2")) {
+    options.push({ value: "manual_task:2", label: t("manual_task_step_position", { position: 2 }, "Manual task step 2") });
+  }
+  return options;
+}
+
+function populateOutboundBranchSelect(select, value = "") {
+  if (!select) return;
+  const selected = String(value || "").trim().toLowerCase();
+  select.replaceChildren();
+  for (const option of outboundBranchOptionValues()) {
+    const node = document.createElement("option");
+    node.value = option.value;
+    node.textContent = option.label;
+    if (option.value === selected) node.selected = true;
+    select.appendChild(node);
+  }
+}
+
+function syncOutboundStepEditor() {
+  const kind = String(el.outboundStepKind?.value || "email").trim().toLowerCase() || "email";
+  if (el.outboundStepEmailSubjectWrap) el.outboundStepEmailSubjectWrap.classList.toggle("hidden", kind !== "email");
+  if (el.outboundStepEmailBodyWrap) el.outboundStepEmailBodyWrap.classList.toggle("hidden", kind !== "email");
+  if (el.outboundStepTaskTitleWrap) el.outboundStepTaskTitleWrap.classList.toggle("hidden", kind !== "manual_task");
+  if (el.outboundStepTaskInstructionsWrap) el.outboundStepTaskInstructionsWrap.classList.toggle("hidden", kind !== "manual_task");
+  if (el.outboundStepTaskActionLabelWrap) el.outboundStepTaskActionLabelWrap.classList.toggle("hidden", kind !== "manual_task");
+}
+
+function fillOutboundCampaignForm(campaign = null) {
+  const base = outboundDefaultCampaignFormState();
+  const item = campaign ? {
+    ...base,
+    ...campaign,
+    reply_policy: safeParseOutboundJSONObject(campaign.reply_policy_json, base.reply_policy),
+    suppression_policy: safeParseOutboundJSONObject(campaign.suppression_policy_json, base.suppression_policy),
+    schedule_policy: safeParseOutboundJSONObject(campaign.schedule_policy_json, base.schedule_policy),
+    compliance_policy: safeParseOutboundJSONObject(campaign.compliance_policy_json, base.compliance_policy),
+    governance_policy: safeParseOutboundJSONObject(campaign.governance_policy_json, base.governance_policy),
+  } : base;
+  if (el.outboundCampaignName) el.outboundCampaignName.value = String(item.name || "");
+  renderOutboundPlaybookOptions(String(item.playbook_key || ""));
+  if (el.outboundCampaignMode) el.outboundCampaignMode.value = String(item.campaign_mode || "new_threads").trim() || "new_threads";
+  if (el.outboundCampaignAudienceKind) el.outboundCampaignAudienceKind.value = String(item.audience_source_kind || "manual").trim() || "manual";
+  if (el.outboundCampaignAudienceRef) el.outboundCampaignAudienceRef.value = String(item.audience_source_ref || "");
+  if (el.outboundCampaignSenderKind) el.outboundCampaignSenderKind.value = String(item.sender_policy_kind || "preferred_sender").trim() || "preferred_sender";
+  if (el.outboundCampaignSenderRef) el.outboundCampaignSenderRef.value = String(item.sender_policy_ref || "");
+  if (el.outboundReplyStop) el.outboundReplyStop.checked = item.reply_policy.stop_on_reply !== false;
+  if (el.outboundReplyQuestion) el.outboundReplyQuestion.checked = item.reply_policy.pause_on_question !== false;
+  if (el.outboundReplyDomain) el.outboundReplyDomain.checked = !!item.reply_policy.stop_same_domain_on_reply;
+  if (el.outboundComplianceUnsubscribe) el.outboundComplianceUnsubscribe.checked = item.compliance_policy.unsubscribe_required !== false;
+  if (el.outboundCompliancePromotional) el.outboundCompliancePromotional.checked = !!item.compliance_policy.promotional;
+  if (el.outboundSuppressionDomain) {
+    el.outboundSuppressionDomain.checked = item.suppression_policy.same_domain_unsubscribe_suppress !== false;
+  }
+  if (el.outboundGovernanceRecipientCollision) el.outboundGovernanceRecipientCollision.value = String(item.governance_policy.recipient_collision_mode || "warn").trim() || "warn";
+  if (el.outboundGovernanceDomainCollision) el.outboundGovernanceDomainCollision.value = String(item.governance_policy.domain_collision_mode || "warn").trim() || "warn";
+  if (el.outboundGovernanceDomainCap) el.outboundGovernanceDomainCap.value = String(Math.max(0, Number(item.governance_policy.max_active_per_domain || 0)));
+  if (el.outboundGovernancePositiveAction) el.outboundGovernancePositiveAction.value = String(item.governance_policy.positive_domain_action || "none").trim() || "none";
+  if (el.outboundGovernanceNegativeAction) el.outboundGovernanceNegativeAction.value = String(item.governance_policy.negative_domain_action || "none").trim() || "none";
+  if (el.outboundGovernanceUnsubAction) el.outboundGovernanceUnsubAction.value = String(item.governance_policy.unsubscribe_domain_action || "suppress_workspace").trim() || "suppress_workspace";
+  syncOutboundFormHints();
+}
+
+function fillOutboundAudienceForm(campaign = null) {
+  const item = campaign || selectedOutboundCampaign() || outboundDefaultCampaignFormState();
+  if (el.outboundAudienceKind) el.outboundAudienceKind.value = String(item.audience_source_kind || "manual").trim() || "manual";
+  if (el.outboundAudienceRef) el.outboundAudienceRef.value = String(item.audience_source_ref || "");
+  syncOutboundFormHints();
+}
+
+function fillOutboundStepForm(step = null) {
+  const base = outboundDefaultStepFormState();
+  const item = step ? {
+    ...base,
+    ...step,
+    send_window: safeParseOutboundJSONObject(step.send_window_json, base.send_window),
+    task_policy: safeParseOutboundJSONObject(step.task_policy_json, base.task_policy),
+    branch_policy: safeParseOutboundJSONObject(step.branch_policy_json, base.branch_policy),
+  } : base;
+  if (el.outboundStepKind) el.outboundStepKind.value = String(item.kind || "email").trim() || "email";
+  if (el.outboundStepPosition) el.outboundStepPosition.value = String(Math.max(1, Number(item.position || base.position)));
+  if (el.outboundStepThreadMode) el.outboundStepThreadMode.value = String(item.thread_mode || "same_thread").trim() || "same_thread";
+  if (el.outboundStepWait) el.outboundStepWait.value = String(Math.max(0, Number(item.wait_interval_minutes || base.wait_interval_minutes)));
+  if (el.outboundStepSubject) el.outboundStepSubject.value = String(item.subject_template || "");
+  if (el.outboundStepBody) el.outboundStepBody.value = String(item.body_template || "");
+  if (el.outboundStepTaskTitle) el.outboundStepTaskTitle.value = String(item.task_policy?.title || "");
+  if (el.outboundStepTaskInstructions) el.outboundStepTaskInstructions.value = String(item.task_policy?.instructions || "");
+  if (el.outboundStepTaskActionLabel) el.outboundStepTaskActionLabel.value = String(item.task_policy?.action_label || base.task_policy.action_label || "");
+  populateOutboundBranchSelect(el.outboundStepBranchQuestion, item.branch_policy?.question || "");
+  populateOutboundBranchSelect(el.outboundStepBranchObjection, item.branch_policy?.objection || "");
+  populateOutboundBranchSelect(el.outboundStepBranchReferral, item.branch_policy?.wrong_person || item.branch_policy?.referral || "");
+  populateOutboundBranchSelect(el.outboundStepBranchOOO, item.branch_policy?.out_of_office || "");
+  populateOutboundBranchSelect(el.outboundStepBranchReview, item.branch_policy?.manual_review_required || item.branch_policy?.auto_reply_other || "");
+  syncOutboundStepEditor();
+}
+
+function humanizeOutboundStatus(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "running") return t("running", {}, "Running");
+  if (value === "scheduled") return t("scheduled", {}, "Scheduled");
+  if (value === "completed") return t("completed", {}, "Completed");
+  if (value === "paused") return t("paused", {}, "Paused");
+  if (value === "stopped") return t("stopped", {}, "Stopped");
+  if (value === "bounced") return t("bounced", {}, "Bounced");
+  if (value === "unsubscribed") return t("unsubscribed", {}, "Unsubscribed");
+  if (value === "sending") return t("sending", {}, "Sending");
+  if (value === "active") return t("active_status", {}, "Active");
+  if (value === "waiting_reply") return t("waiting_reply", {}, "Waiting Reply");
+  if (value === "manual_only") return t("needs_human", {}, "Needs Human");
+  if (value === "not_interested") return t("not_interested", {}, "Not Interested");
+  if (value === "reply_detected") return t("reply_detected", {}, "Reply Detected");
+  if (value === "reply_classified") return t("reply_classified", {}, "Reply Classified");
+  if (value === "step_sent") return t("step_sent", {}, "Step Sent");
+  if (value === "enrolled") return t("enrolled", {}, "Enrolled");
+  return value
+    ? value.split("_").map((part) => part ? part[0].toUpperCase() + part.slice(1) : "").join(" ")
+    : t("draft", {}, "Draft");
+}
+
+function humanizeReplyOutcome(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!value) return t("unclassified", {}, "Unclassified");
+  if (value === "positive_interest") return t("interested", {}, "Interested");
+  if (value === "meeting_intent") return t("meeting_intent", {}, "Meeting Intent");
+  if (value === "out_of_office") return t("out_of_office", {}, "Out Of Office");
+  if (value === "auto_reply_other") return t("auto_reply", {}, "Auto Reply");
+  if (value === "manual_review_required") return t("needs_review", {}, "Needs Review");
+  if (value === "unsubscribe_request") return t("unsubscribe", {}, "Unsubscribe");
+  if (value === "question") return t("question", {}, "Question");
+  if (value === "objection") return t("objection", {}, "Objection");
+  if (value === "wrong_person") return t("wrong_person", {}, "Wrong Person");
+  if (value === "not_interested") return t("not_interested", {}, "Not Interested");
+  if (value === "bounce") return t("bounce", {}, "Bounce");
+  if (value === "hostile") return t("hostile", {}, "Hostile");
+  return value.split("_").map((part) => part ? part[0].toUpperCase() + part.slice(1) : "").join(" ");
+}
+
+function humanizeReplyOpsBucket(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "needs_review") return t("needs_review", {}, "Needs Review");
+  if (value === "interested") return t("interested", {}, "Interested");
+  if (value === "questions") return t("questions", {}, "Questions");
+  if (value === "objections") return t("objections", {}, "Objections");
+  if (value === "wrong_person") return t("wrong_person", {}, "Wrong Person");
+  if (value === "out_of_office") return t("out_of_office", {}, "Out Of Office");
+  if (value === "bounces") return t("bounces", {}, "Bounces");
+  if (value === "unsubscribed") return t("unsubscribed", {}, "Unsubscribed");
+  if (value === "hostile") return t("hostile", {}, "Hostile");
+  return value
+    ? value.split("_").map((part) => part ? part[0].toUpperCase() + part.slice(1) : "").join(" ")
+    : t("all_replies", {}, "All Replies");
+}
+
+function outboundToneClass(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (["running", "scheduled", "completed", "interested"].includes(value)) return "outbound-chip outbound-chip--ok";
+  if (["paused", "manual_only", "question", "objection", "out_of_office", "needs_review"].includes(value)) return "outbound-chip outbound-chip--warn";
+  if (["stopped", "bounced", "unsubscribed", "hostile", "not_interested", "wrong_person", "bounce"].includes(value)) return "outbound-chip outbound-chip--err";
+  return "outbound-chip";
+}
+
+function outboundMetricsSummary(campaign) {
+  const parts = [];
+  parts.push(t("outbound_metric_enrolled", { count: Number(campaign?.enrollment_count || 0) }, "{count} enrolled"));
+  parts.push(t("outbound_metric_sent", { count: Number(campaign?.sent_count || 0) }, "{count} sent"));
+  if (Number(campaign?.replied_count || 0) > 0) parts.push(t("outbound_metric_replied", { count: Number(campaign?.replied_count || 0) }, "{count} replied"));
+  if (Number(campaign?.waiting_human_count || 0) > 0) parts.push(t("outbound_metric_needs_human", { count: Number(campaign?.waiting_human_count || 0) }, "{count} needs human"));
+  return parts.join(" • ");
+}
+
+function outboundCampaignSenderSummary(campaign) {
+  const kind = String(campaign?.sender_policy_kind || "preferred_sender").trim().toLowerCase();
+  const ref = String(campaign?.sender_policy_ref || "").trim();
+  if (kind === "thread_owner") {
+    return t("thread_owner_mailbox_from_seeded_conversation", {}, "Thread owner mailbox from the seeded conversation");
+  }
+  if (kind === "single_sender") {
+    const label = outboundSenderLabelByID(ref) || outboundAccountLabelByID(ref) || ref;
+    return ref
+      ? t("single_sender_sender", { sender: label }, "Single sender: {sender}")
+      : t("single_sender", {}, "Single sender");
+  }
+  if (kind === "campaign_pool") {
+    const labels = ref.split(",")
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .map((item) => outboundSenderLabelByID(item) || outboundAccountLabelByID(item) || item);
+    return labels.length > 0
+      ? t("sender_pool_senders", { senders: labels.join(", ") }, "Sender pool: {senders}")
+      : t("sender_pool", {}, "Sender pool");
+  }
+  if (kind === "reply_funnel") {
+    const funnel = outboundFunnelRecordByID(ref);
+    const funnelLabel = String(funnel?.name || ref).trim();
+    const collectorLabel = outboundAccountLabelByID(funnel?.collector_account_id || funnel?.collectorAccountID || "");
+    return collectorLabel
+      ? t("reply_funnel_funnel_collector", { funnel: funnelLabel, collector: collectorLabel }, "Reply funnel: {funnel} • Collector {collector}")
+      : ref
+        ? t("reply_funnel_funnel", { funnel: funnelLabel }, "Reply funnel: {funnel}")
+        : t("reply_funnel", {}, "Reply funnel");
+  }
+  return t("preferred_sender_from_contacts", {}, "Preferred sender from contacts");
+}
+
+function outboundCampaignModeLabel(raw) {
+  return String(raw || "").trim().toLowerCase() === "existing_threads"
+    ? t("continue_existing_threads", {}, "Continue existing threads")
+    : t("start_new_threads", {}, "Start new threads");
+}
+
+function outboundActiveSection() {
+  const value = String(state.outbound.activeSection || "").trim().toLowerCase();
+  return ["strategy", "audience", "health"].includes(value) ? value : "strategy";
+}
+
+function setActiveOutboundSection(section) {
+  const next = ["strategy", "audience", "health"].includes(String(section || "").trim()) ? String(section).trim() : "strategy";
+  state.outbound.activeSection = next;
+  if (el.outboundSectionStrategy) el.outboundSectionStrategy.classList.toggle("is-active", next === "strategy");
+  if (el.outboundSectionAudience) el.outboundSectionAudience.classList.toggle("is-active", next === "audience");
+  if (el.outboundSectionHealth) el.outboundSectionHealth.classList.toggle("is-active", next === "health");
+  for (const panel of document.querySelectorAll("[data-outbound-section]")) {
+    panel.classList.toggle("is-hidden", String(panel.getAttribute("data-outbound-section") || "").trim() !== next);
+  }
+}
+
+function outboundCampaignIntentSummary(campaign) {
+  const mode = String(campaign?.campaign_mode || "").trim().toLowerCase();
+  const senderKind = String(campaign?.sender_policy_kind || "").trim().toLowerCase();
+  if (mode === "existing_threads") {
+    return t("outbound_summary_existing_threads", {}, "This campaign continues seeded mailbox threads, so operators stay in the original conversation context.");
+  }
+  if (senderKind === "reply_funnel") {
+    return t("outbound_summary_reply_funnel", {}, "Replies can arrive through a collector mailbox, while follow-up still returns to the original sender context.");
+  }
+  if (senderKind === "single_sender") {
+    return t("outbound_summary_single_sender", {}, "This campaign keeps one sender mailbox in control of every conversation.");
+  }
+  return t("outbound_summary_default", {}, "Use the selected playbook and sender rules to keep outreach clear, paced, and easy to operate.");
+}
+
+function renderOutboundSummary() {
+  if (!el.outboundSummary) return;
+  const savedCampaign = selectedOutboundCampaign();
+  el.outboundSummary.replaceChildren();
+  if (!savedCampaign) {
+    const empty = document.createElement("p");
+    empty.className = "outbound-summary-empty";
+    empty.textContent = t("choose_a_campaign_to_see_a_quiet_summary_before_you_edit_the_details", {}, "Choose a campaign to see a quiet summary before you edit the details.");
+    el.outboundSummary.appendChild(empty);
+    return;
+  }
+  const senderPolicyKind = String(el.outboundCampaignSenderKind?.value || savedCampaign.sender_policy_kind || "preferred_sender").trim() || "preferred_sender";
+  const campaign = {
+    ...savedCampaign,
+    name: String(el.outboundCampaignName?.value || savedCampaign.name || "").trim() || savedCampaign.name,
+    playbook_key: String(el.outboundCampaignPlaybook?.value || savedCampaign.playbook_key || "").trim(),
+    campaign_mode: String(el.outboundCampaignMode?.value || savedCampaign.campaign_mode || "new_threads").trim() || "new_threads",
+    sender_policy_kind: senderPolicyKind,
+    sender_policy_ref: senderPolicyKind === "thread_owner"
+      ? ""
+      : String(el.outboundCampaignSenderRef?.value || savedCampaign.sender_policy_ref || "").trim(),
+  };
+  const head = document.createElement("div");
+  head.className = "outbound-summary-head";
+  const copy = document.createElement("div");
+  copy.className = "outbound-summary-copy";
+  const kicker = document.createElement("p");
+  kicker.className = "outbound-summary-kicker";
+  kicker.textContent = t("overview", {}, "Overview");
+  const title = document.createElement("h3");
+  title.className = "outbound-summary-title";
+  title.textContent = String(campaign?.name || t("campaign", {}, "Campaign")).trim() || t("campaign", {}, "Campaign");
+  const meta = document.createElement("div");
+  meta.className = "outbound-summary-meta";
+  meta.textContent = outboundMetricsSummary(campaign);
+  copy.append(kicker, title, meta);
+  const chips = document.createElement("div");
+  chips.className = "reply-ops-summary-chips";
+  const statusChip = document.createElement("span");
+  statusChip.className = outboundToneClass(campaign?.status);
+  statusChip.textContent = humanizeOutboundStatus(campaign?.status || "draft");
+  chips.appendChild(statusChip);
+  const playbookName = String(outboundPlaybookByKey(campaign?.playbook_key)?.name || "").trim();
+  if (playbookName) {
+    const chip = document.createElement("span");
+    chip.className = "outbound-chip";
+    chip.textContent = playbookName;
+    chips.appendChild(chip);
+  }
+  head.append(copy, chips);
+  const grid = document.createElement("div");
+  grid.className = "outbound-summary-grid";
+  const items = [
+    [t("delivery_mode", {}, "Delivery mode"), outboundCampaignModeLabel(campaign?.campaign_mode)],
+    [t("sender_plan", {}, "Sender plan"), outboundCampaignSenderSummary(campaign)],
+    [t("current_focus", {}, "Current focus"), outboundActiveSection() === "strategy"
+      ? t("outbound_focus_strategy", {}, "Editing setup and sequence")
+      : outboundActiveSection() === "audience"
+        ? t("outbound_focus_audience", {}, "Reviewing audience and live recipients")
+        : t("outbound_focus_health", {}, "Checking routing health and recent events")],
+  ];
+  for (const [label, value] of items) {
+    const card = document.createElement("div");
+    card.className = "outbound-summary-item";
+    const labelNode = document.createElement("div");
+    labelNode.className = "outbound-summary-label";
+    labelNode.textContent = label;
+    const valueNode = document.createElement("div");
+    valueNode.className = "outbound-summary-value";
+    valueNode.textContent = value;
+    card.append(labelNode, valueNode);
+    grid.appendChild(card);
+  }
+  const note = document.createElement("div");
+  note.className = "outbound-summary-note";
+  note.textContent = outboundCampaignIntentSummary(campaign);
+  el.outboundSummary.append(head, grid, note);
+}
+
+function outboundExternalProviderSummary() {
+  const accounts = outboundKnownAccounts();
+  const external = accounts.filter((item) => ["gmail", "libero", "generic"].includes(String(item?.provider_type || item?.providerType || "").trim().toLowerCase()));
+  const funnels = outboundKnownFunnels();
+  if (external.length === 0) return t("no_external_mailbox_accounts_are_configured_yet", {}, "No external mailbox accounts are configured yet.");
+  return t(
+    "external_mailbox_summary",
+    { accounts: external.length, funnels: funnels.length },
+    "{accounts} mailbox accounts ready • {funnels} reply funnels."
+  );
+}
+
+function outboundProviderLabel(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "gmail") return "Gmail";
+  if (value === "libero") return "Libero";
+  if (value === "generic") return "IMAP/SMTP";
+  return String(raw || "").trim() || "Mail";
+}
+
+function humanizeOutboundGovernanceAction(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "pause_workspace") return t("pause_across_workspace", {}, "Pause across workspace");
+  if (value === "stop_workspace") return t("stop_across_workspace", {}, "Stop across workspace");
+  if (value === "stop_campaign") return t("stop_this_campaign", {}, "Stop this campaign");
+  if (value === "suppress_campaign") return t("suppress_for_this_campaign", {}, "Suppress for this campaign");
+  if (value === "suppress_workspace") return t("suppress_across_workspace", {}, "Suppress across workspace");
+  return t("no_action", {}, "No action");
+}
+
+function renderOutboundSenderControl() {
+  if (!el.outboundSenderControl) return;
+  const campaign = selectedOutboundCampaign();
+  const diagnostics = Array.isArray(state.outbound.senderDiagnostics) ? state.outbound.senderDiagnostics : [];
+  el.outboundSenderControl.replaceChildren();
+  if (!campaign) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = t("choose_a_campaign_to_review_external_mailbox_control_and_reply_topology", {}, "Choose a campaign to review external mailbox control and reply topology.");
+    el.outboundSenderControl.appendChild(empty);
+    return;
+  }
+  const senderKind = String(campaign?.sender_policy_kind || "preferred_sender").trim().toLowerCase();
+  const senderRef = String(campaign?.sender_policy_ref || "").trim();
+  let matched = diagnostics;
+  if (senderKind === "single_sender") {
+    const senderRecord = outboundSenderRecordByID(senderRef);
+    const senderAccountID = String(senderRecord?.account_id || senderRecord?.accountId || senderRef).trim();
+    matched = diagnostics.filter((item) => String(item?.account_id || item?.accountId || "").trim() === senderAccountID);
+  } else if (senderKind === "campaign_pool") {
+    const ids = senderRef.split(",").map((item) => String(item || "").trim()).filter(Boolean);
+    const accountIDs = ids.map((id) => {
+      const senderRecord = outboundSenderRecordByID(id);
+      return String(senderRecord?.account_id || senderRecord?.accountId || id).trim();
+    });
+    matched = diagnostics.filter((item) => accountIDs.includes(String(item?.account_id || item?.accountId || "").trim()));
+  } else if (senderKind === "reply_funnel") {
+    const funnel = outboundFunnelRecordByID(senderRef);
+    const collectorID = String(funnel?.collector_account_id || funnel?.collectorAccountID || "").trim();
+    const sourceIDs = [];
+    for (const diagnostic of diagnostics) {
+      const topology = String(diagnostic?.reply_topology || diagnostic?.replyTopology || "").trim().toLowerCase();
+      if (topology && topology !== "direct" && String(diagnostic?.collector_account_id || diagnostic?.collectorAccountID || "").trim() === collectorID) {
+        sourceIDs.push(String(diagnostic?.account_id || diagnostic?.accountId || "").trim());
+      }
+    }
+    matched = diagnostics.filter((item) => sourceIDs.includes(String(item?.account_id || item?.accountId || "").trim()));
+  }
+  if (matched.length === 0) {
+    const card = document.createElement("div");
+    card.className = "diagnostic-card";
+    const head = document.createElement("div");
+    head.className = "diagnostic-card-head";
+    const title = document.createElement("div");
+    title.className = "diagnostic-card-title";
+    title.textContent = outboundCampaignSenderSummary(campaign);
+    const chip = document.createElement("span");
+    chip.className = "outbound-chip";
+    chip.textContent = outboundCampaignModeLabel(campaign?.campaign_mode);
+    head.append(title, chip);
+    const meta = document.createElement("div");
+    meta.className = "diagnostic-card-meta";
+    meta.textContent = t("save_or_attach_real_mailboxes_reply_funnels_or_thread_seeds_to_see_provider_aware_controls_here", {}, "Save or attach real mailboxes, reply funnels, or thread seeds to see provider-aware controls here.");
+    card.append(head, meta);
+    el.outboundSenderControl.appendChild(card);
+    return;
+  }
+  for (const item of matched) {
+    const card = document.createElement("div");
+    card.className = "diagnostic-card";
+    const head = document.createElement("div");
+    head.className = "diagnostic-card-head";
+    const title = document.createElement("div");
+    title.className = "diagnostic-card-title";
+    title.textContent = String(item?.account_label || item?.account_login || item?.account_id || t("sender", {}, "Sender")).trim() || t("sender", {}, "Sender");
+    const chip = document.createElement("span");
+    chip.className = "outbound-chip";
+    chip.textContent = outboundProviderLabel(item?.provider_type || item?.providerType || "mail");
+    head.append(title, chip);
+    const stack = document.createElement("div");
+    stack.className = "diagnostic-card-stack";
+    const replyPath = String(item?.reply_topology || item?.replyTopology || "direct").trim().toLowerCase();
+    const collectorLabel = String(item?.collector_account_label || item?.collectorAccountLabel || "").trim();
+    const route = document.createElement("div");
+    route.className = "diagnostic-card-meta";
+    route.textContent = replyPath === "collector"
+      ? t("collector_mailbox_label", { mailbox: collectorLabel || t("collector", {}, "collector") }, "Collector mailbox: {mailbox}")
+      : replyPath === "smart"
+        ? t("smart_reply_path", {}, "Smart collector reply path")
+        : t("direct_replies_to_this_mailbox", {}, "Direct replies to this mailbox");
+    stack.appendChild(route);
+    const mode = document.createElement("div");
+    mode.className = "diagnostic-card-meta";
+    mode.textContent = outboundCampaignModeLabel(campaign?.campaign_mode);
+    stack.appendChild(mode);
+    const pacing = document.createElement("div");
+    pacing.className = "diagnostic-card-meta";
+    pacing.textContent = t(
+      "provider_aware_pacing_daily_hourly_gap",
+      {
+        daily: Number(item?.recommended_daily_cap || item?.recommendedDailyCap || 0),
+        hourly: Number(item?.recommended_hourly_cap || item?.recommendedHourlyCap || 0),
+        gap: Number(item?.recommended_gap_seconds || item?.recommendedGapSeconds || 0),
+      },
+      "Provider-aware pacing: {daily}/day • {hourly}/hour • {gap}s gap"
+    );
+    stack.appendChild(pacing);
+    const live = document.createElement("div");
+    live.className = "diagnostic-card-meta";
+    live.textContent = t(
+      "live_waiting_and_bindings",
+      { waiting: Number(item?.waiting_reply || item?.waitingReply || 0), bindings: Number(item?.active_bindings || item?.activeBindings || 0) },
+      "{waiting} waiting • {bindings} live bindings"
+    );
+    stack.appendChild(live);
+    card.append(head, stack);
+    el.outboundSenderControl.appendChild(card);
+  }
+}
+
+function buildOutboundCampaignPayload() {
+  const selected = selectedOutboundCampaign();
+  const base = outboundDefaultCampaignFormState();
+  const replyPolicy = safeParseOutboundJSONObject(selected?.reply_policy_json, base.reply_policy);
+  const suppressionPolicy = safeParseOutboundJSONObject(selected?.suppression_policy_json, base.suppression_policy);
+  const compliancePolicy = safeParseOutboundJSONObject(selected?.compliance_policy_json, base.compliance_policy);
+  const schedulePolicy = safeParseOutboundJSONObject(selected?.schedule_policy_json, base.schedule_policy);
+  const governancePolicy = safeParseOutboundJSONObject(selected?.governance_policy_json, base.governance_policy);
+  replyPolicy.stop_on_reply = !!el.outboundReplyStop?.checked;
+  replyPolicy.pause_on_question = !!el.outboundReplyQuestion?.checked;
+  replyPolicy.stop_same_domain_on_reply = !!el.outboundReplyDomain?.checked;
+  suppressionPolicy.same_domain_unsubscribe_suppress = !!el.outboundSuppressionDomain?.checked;
+  compliancePolicy.unsubscribe_required = !!el.outboundComplianceUnsubscribe?.checked;
+  compliancePolicy.promotional = !!el.outboundCompliancePromotional?.checked;
+  schedulePolicy.respect_provider_caps = true;
+  governancePolicy.recipient_collision_mode = String(el.outboundGovernanceRecipientCollision?.value || "warn").trim() || "warn";
+  governancePolicy.domain_collision_mode = String(el.outboundGovernanceDomainCollision?.value || "warn").trim() || "warn";
+  governancePolicy.max_active_per_domain = Math.max(0, Number(el.outboundGovernanceDomainCap?.value || "0") || 0);
+  governancePolicy.positive_domain_action = String(el.outboundGovernancePositiveAction?.value || "none").trim() || "none";
+  governancePolicy.negative_domain_action = String(el.outboundGovernanceNegativeAction?.value || "none").trim() || "none";
+  governancePolicy.unsubscribe_domain_action = String(el.outboundGovernanceUnsubAction?.value || "suppress_workspace").trim() || "suppress_workspace";
+  const selectedPlaybook = outboundPlaybookByKey(el.outboundCampaignPlaybook?.value || "");
+  const senderPolicyKind = String(el.outboundCampaignSenderKind?.value || "preferred_sender").trim() || "preferred_sender";
+  return {
+    name: String(el.outboundCampaignName?.value || "").trim(),
+    status: String(selected?.status || "draft").trim() || "draft",
+    goal_kind: String(selectedPlaybook?.goal_kind || selected?.goal_kind || base.goal_kind).trim() || base.goal_kind,
+    playbook_key: String(el.outboundCampaignPlaybook?.value || selected?.playbook_key || "").trim(),
+    campaign_mode: String(el.outboundCampaignMode?.value || "new_threads").trim() || "new_threads",
+    audience_source_kind: String(el.outboundCampaignAudienceKind?.value || "manual").trim() || "manual",
+    audience_source_ref: String(el.outboundCampaignAudienceRef?.value || "").trim(),
+    sender_policy_kind: senderPolicyKind,
+    sender_policy_ref: senderPolicyKind === "thread_owner" ? "" : String(el.outboundCampaignSenderRef?.value || "").trim(),
+    reply_policy: replyPolicy,
+    suppression_policy: suppressionPolicy,
+    schedule_policy: schedulePolicy,
+    compliance_policy: compliancePolicy,
+    governance_policy: governancePolicy,
+  };
+}
+
+function buildOutboundStepPayload() {
+  const selected = selectedOutboundStep();
+  const sendWindow = safeParseOutboundJSONObject(selected?.send_window_json, {});
+  const kind = String(el.outboundStepKind?.value || "email").trim() || "email";
+  const branchPolicy = {};
+  const questionAction = String(el.outboundStepBranchQuestion?.value || "").trim();
+  const objectionAction = String(el.outboundStepBranchObjection?.value || "").trim();
+  const referralAction = String(el.outboundStepBranchReferral?.value || "").trim();
+  const oooAction = String(el.outboundStepBranchOOO?.value || "").trim();
+  const reviewAction = String(el.outboundStepBranchReview?.value || "").trim();
+  if (questionAction) branchPolicy.question = questionAction;
+  if (objectionAction) branchPolicy.objection = objectionAction;
+  if (referralAction) {
+    branchPolicy.wrong_person = referralAction;
+    branchPolicy.referral = referralAction;
+  }
+  if (oooAction) branchPolicy.out_of_office = oooAction;
+  if (reviewAction) {
+    branchPolicy.manual_review_required = reviewAction;
+    branchPolicy.auto_reply_other = reviewAction;
+  }
+  return {
+    position: Math.max(1, Number(el.outboundStepPosition?.value || "1") || 1),
+    kind,
+    thread_mode: String(el.outboundStepThreadMode?.value || "same_thread").trim() || "same_thread",
+    wait_interval_minutes: Math.max(0, Number(el.outboundStepWait?.value || "0") || 0),
+    subject_template: String(el.outboundStepSubject?.value || "").trim(),
+    body_template: String(el.outboundStepBody?.value || ""),
+    task_policy: {
+      title: String(el.outboundStepTaskTitle?.value || "").trim(),
+      instructions: String(el.outboundStepTaskInstructions?.value || "").trim(),
+      action_label: String(el.outboundStepTaskActionLabel?.value || "").trim() || "Handled, continue sequence",
+    },
+    branch_policy: branchPolicy,
+    send_window: sendWindow,
+    stop_if_replied: true,
+    stop_if_unsubscribed: true,
+  };
+}
+
+function collectOutboundAudienceRequest() {
+  const kind = String(el.outboundAudienceKind?.value || "manual").trim() || "manual";
+  const ref = String(el.outboundAudienceRef?.value || "").trim();
+  const text = String(el.outboundAudienceText?.value || "");
+  const manualRecipients = text
+    .split(/\n+/)
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return {
+    audience_source_kind: kind,
+    audience_source_ref: ref,
+    manual_recipients: kind === "manual" ? manualRecipients : [],
+    csv_text: kind === "csv_import" ? text : "",
+  };
+}
+
+function humanizeOutboundPreflightSeverity(raw) {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "error") return t("error", {}, "Error");
+  if (value === "warning" || value === "warn") return t("warning", {}, "Warning");
+  return t("info", {}, "Info");
+}
+
+function humanizeOutboundPreflightMessage(item) {
+  const code = String(item?.code || "").trim().toLowerCase();
+  if (code === "missing_steps") return t("campaign_must_contain_at_least_one_step", {}, "Campaign must contain at least one step.");
+  if (code === "missing_recipients") return t("campaign_must_contain_at_least_one_recipient", {}, "Campaign must contain at least one recipient.");
+  if (code === "duplicate_recipient") return t("recipient_appears_more_than_once_in_this_campaign", {}, "Recipient appears more than once in this campaign.");
+  if (code === "recipient_active_elsewhere") return t("recipient_is_already_active_in_another_campaign", {}, "Recipient is already active in another campaign.");
+  if (code === "domain_active_elsewhere") return t("another_campaign_is_already_working_this_domain", {}, "Another campaign is already working this domain.");
+  if (code === "domain_active_cap") return t("domain_exceeds_the_configured_active_recipient_cap", {}, "Domain exceeds the configured active recipient cap.");
+  if (code === "missing_existing_thread_context") return t("existing_thread_campaign_has_no_seeded_mailbox_threads_yet", {}, "Existing-thread campaign has no seeded mailbox threads yet.");
+  if (code === "thread_owner_mismatch") return t("campaign_will_reopen_an_existing_thread_from_a_different_mailbox_than_the_thread_owner", {}, "Campaign will reopen an existing thread from a different mailbox than the thread owner.");
+  if (code === "provider_daily_soft_cap") return t("sender_mailbox_is_already_at_the_provider_aware_daily_soft_cap", {}, "Sender mailbox is already at the provider-aware daily soft cap.");
+  if (code === "provider_hourly_soft_cap") return t("sender_mailbox_is_already_at_the_provider_aware_hourly_soft_cap", {}, "Sender mailbox is already at the provider-aware hourly soft cap.");
+  if (code === "campaign_daily_cap_above_provider_soft_cap") return t("campaign_daily_cap_is_above_the_provider_aware_soft_cap_for_this_mailbox", {}, "Campaign daily cap is above the provider-aware soft cap for this mailbox.");
+  if (code === "campaign_hourly_cap_above_provider_soft_cap") return t("campaign_hourly_cap_is_above_the_provider_aware_soft_cap_for_this_mailbox", {}, "Campaign hourly cap is above the provider-aware soft cap for this mailbox.");
+  if (code === "manual_task_missing_title") return t("manual_task_step_must_have_a_task_title", {}, "Manual task step must have a task title.");
+  if (code === "existing_threads_new_thread_step") return t("step_starts_a_new_thread_even_though_this_campaign_is_configured_to_continue_existing_threads", {}, "Step starts a new thread even though this campaign is configured to continue existing threads.");
+  if (code === "sender_daily_cap") return t("sender_daily_cap_would_be_exceeded", {}, "Sender daily cap would be exceeded.");
+  if (code === "domain_daily_cap") return t("campaign_domain_cap_would_be_exceeded", {}, "Campaign domain cap would be exceeded.");
+  if (code === "promotional_without_unsubscribe") return t("promotional_campaign_does_not_require_unsubscribe_handling", {}, "Promotional campaign does not require unsubscribe handling.");
+  if (code === "missing_template_variables") {
+    const message = String(item?.message || "").trim();
+    const prefix = "Missing template values:";
+    if (message.startsWith(prefix)) {
+      return t("missing_template_values_values", { values: message.slice(prefix.length).trim() }, "Missing template values: {values}");
+    }
+  }
+  return String(item?.message || "").trim() || t("no_details", {}, "No details.");
+}
+
+function outboundPreflightDocument(issues) {
+  const rows = Array.isArray(issues) ? issues : [];
+  if (rows.length === 0) {
+    return t("no_issues_detected", {}, "No issues detected.");
+  }
+  return rows.map((item, index) => {
+    const severity = humanizeOutboundPreflightSeverity(item?.severity);
+    const scope = [String(item?.recipient || "").trim(), String(item?.domain || "").trim()].filter(Boolean).join(" • ");
+    const message = humanizeOutboundPreflightMessage(item);
+    return `${index + 1}. [${severity}] ${scope ? `${scope} — ` : ""}${message}`;
+  }).join("\n");
+}
+
+function syncOutboundCampaignActionButtons() {
+  const campaign = selectedOutboundCampaign();
+  const exists = !!campaign;
+  const status = String(campaign?.status || "draft").trim().toLowerCase();
+  if (el.btnOutboundSave) el.btnOutboundSave.disabled = false;
+  if (el.btnOutboundApplyPlaybook) el.btnOutboundApplyPlaybook.disabled = !String(el.outboundCampaignPlaybook?.value || "").trim();
+  if (el.btnOutboundPreflight) el.btnOutboundPreflight.disabled = !exists && !String(el.outboundCampaignName?.value || "").trim();
+  if (el.btnOutboundLaunch) el.btnOutboundLaunch.disabled = !String(el.outboundCampaignName?.value || "").trim();
+  if (el.btnOutboundPause) el.btnOutboundPause.disabled = !exists || status !== "running";
+  if (el.btnOutboundResume) el.btnOutboundResume.disabled = !exists || status !== "paused";
+  if (el.btnOutboundArchive) el.btnOutboundArchive.disabled = !exists || status === "archived";
+}
+
+function renderOutboundCampaignList() {
+  if (!el.outboundCampaignList) return;
+  const items = Array.isArray(state.outbound.campaigns) ? state.outbound.campaigns : [];
+  el.outboundCampaignList.replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = t("no_outbound_campaigns_yet", {}, "No outbound campaigns yet.");
+    el.outboundCampaignList.appendChild(empty);
+    return;
+  }
+  for (const item of items) {
+    const id = String(item?.id || "").trim();
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "outbound-card";
+    if (id === String(state.outbound.selectedCampaignID || "").trim()) {
+      card.classList.add("is-active");
+    }
+    const head = document.createElement("div");
+    head.className = "outbound-card-head";
+    const title = document.createElement("div");
+    title.className = "outbound-card-title";
+    title.textContent = String(item?.name || t("campaign", {}, "Campaign")).trim() || t("campaign", {}, "Campaign");
+    const chip = document.createElement("span");
+    chip.className = outboundToneClass(item?.status);
+    chip.textContent = humanizeOutboundStatus(item?.status || "draft");
+    head.append(title, chip);
+    const meta = document.createElement("div");
+    meta.className = "outbound-card-meta";
+    meta.textContent = outboundMetricsSummary(item);
+    const sub = document.createElement("div");
+    sub.className = "outbound-card-meta";
+    sub.textContent = [
+      outboundCampaignSenderSummary(item),
+      outboundCampaignModeLabel(item?.campaign_mode),
+      String(outboundPlaybookByKey(item?.playbook_key)?.name || "").trim(),
+    ].filter(Boolean).join(" • ");
+    card.append(head, meta, sub);
+    card.addEventListener("click", () => {
+      state.outbound.selectedCampaignID = id;
+      state.outbound.selectedStepID = "";
+      state.outbound.selectedEnrollmentID = "";
+      void loadOutboundCampaignArtifacts(id).catch((err) => {
+        setOutboundNote(formatAPIError(err, "Failed to load campaign."), "error");
+      });
+    });
+    el.outboundCampaignList.appendChild(card);
+  }
+}
+
+function renderOutboundStepList() {
+  if (!el.outboundStepList) return;
+  const items = Array.isArray(state.outbound.steps) ? state.outbound.steps : [];
+  el.outboundStepList.replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = t("no_sequence_steps_yet", {}, "No sequence steps yet.");
+    el.outboundStepList.appendChild(empty);
+    return;
+  }
+  for (const item of items) {
+    const id = String(item?.id || "").trim();
+    const card = document.createElement("div");
+    card.className = "outbound-card";
+    if (id === String(state.outbound.selectedStepID || "").trim()) {
+      card.classList.add("is-active");
+    }
+    const head = document.createElement("div");
+    head.className = "outbound-card-head";
+    const title = document.createElement("div");
+    title.className = "outbound-card-title";
+    const kind = String(item?.kind || "email").trim().toLowerCase();
+    const taskPolicy = safeParseOutboundJSONObject(item?.task_policy_json, {});
+    const stepLabel = kind === "manual_task"
+      ? String(taskPolicy?.title || t("manual_task", {}, "Manual task")).trim() || t("manual_task", {}, "Manual task")
+      : String(item?.subject_template || t("no_subject_template", {}, "(no subject template)")).trim() || t("no_subject_template", {}, "(no subject template)");
+    title.textContent = `#${Number(item?.position || 0)} · ${stepLabel}`;
+    const chip = document.createElement("span");
+    chip.className = "outbound-chip";
+    chip.textContent = kind === "manual_task"
+      ? t("manual_task", {}, "Manual task")
+      : humanizeOutboundStatus(String(item?.thread_mode || "same_thread").replace("_", " "));
+    head.append(title, chip);
+    const meta = document.createElement("div");
+    meta.className = "outbound-card-meta";
+    meta.textContent = t("wait_minutes_count", { count: Number(item?.wait_interval_minutes || 0) }, "Wait {count} minutes");
+    const secondary = document.createElement("div");
+    secondary.className = "outbound-card-meta";
+    secondary.textContent = kind === "manual_task"
+      ? String(taskPolicy?.instructions || "").trim().slice(0, 120) || t("manual_task_waits_for_a_human_before_the_sequence_continues", {}, "Manual task waits for a human before the sequence continues.")
+      : (String(item?.body_template || "").trim().slice(0, 120) || t("no_body_template_yet", {}, "No body template yet."));
+    const branchPolicy = safeParseOutboundJSONObject(item?.branch_policy_json, {});
+    const tertiary = document.createElement("div");
+    tertiary.className = "outbound-card-meta";
+    tertiary.textContent = Object.keys(branchPolicy || {}).length > 0
+      ? t("reply_branches_configured", {}, "Reply branches configured")
+      : t("uses_default_reply_handling", {}, "Uses default reply handling");
+    const actions = document.createElement("div");
+    actions.className = "outbound-card-actions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    edit.textContent = t("edit", {}, "Edit");
+    edit.addEventListener("click", () => {
+      state.outbound.selectedStepID = id;
+      fillOutboundStepForm(item);
+      renderOutboundStepList();
+    });
+    actions.appendChild(edit);
+    const up = document.createElement("button");
+    up.type = "button";
+    up.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    up.textContent = t("up", {}, "Up");
+    up.disabled = Number(item?.position || 0) <= 1;
+    up.addEventListener("click", () => {
+      void reorderOutboundStep(item.id, -1).catch((err) => setOutboundNote(formatAPIError(err, "Failed to move step."), "error"));
+    });
+    actions.appendChild(up);
+    const down = document.createElement("button");
+    down.type = "button";
+    down.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    down.textContent = t("down", {}, "Down");
+    down.disabled = Number(item?.position || 0) >= items.length;
+    down.addEventListener("click", () => {
+      void reorderOutboundStep(item.id, 1).catch((err) => setOutboundNote(formatAPIError(err, "Failed to move step."), "error"));
+    });
+    actions.appendChild(down);
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    remove.textContent = t("delete", {}, "Delete");
+    remove.addEventListener("click", () => {
+      void deleteOutboundStep(item.id).catch((err) => setOutboundNote(formatAPIError(err, "Failed to delete step."), "error"));
+    });
+    actions.appendChild(remove);
+    card.append(head, meta, secondary, tertiary, actions);
+    el.outboundStepList.appendChild(card);
+  }
+}
+
+function renderOutboundAudiencePreviewList() {
+  if (!el.outboundAudiencePreviewList) return;
+  const items = Array.isArray(state.outbound.audiencePreview) ? state.outbound.audiencePreview : [];
+  el.outboundAudiencePreviewList.replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = t("preview_recipients_here_before_importing_them_into_a_campaign", {}, "Preview recipients here before importing them into a campaign.");
+    el.outboundAudiencePreviewList.appendChild(empty);
+    return;
+  }
+  for (const item of items) {
+    const card = document.createElement("div");
+    card.className = "outbound-card";
+    const head = document.createElement("div");
+    head.className = "outbound-card-head";
+    const title = document.createElement("div");
+    title.className = "outbound-card-title";
+    title.textContent = String(item?.contact_name || item?.recipient_email || t("recipient", {}, "Recipient")).trim() || t("recipient", {}, "Recipient");
+    const chip = document.createElement("span");
+    chip.className = outboundToneClass(item?.suppressed ? "stopped" : (item?.active_elsewhere ? "paused" : "running"));
+    chip.textContent = item?.suppressed
+      ? t("suppressed", {}, "Suppressed")
+      : item?.existing_enrollment_id
+        ? t("already_imported", {}, "Already Imported")
+        : (item?.active_elsewhere ? t("active_elsewhere", {}, "Active Elsewhere") : t("ready", {}, "Ready"));
+    head.append(title, chip);
+    const meta = document.createElement("div");
+    meta.className = "outbound-card-meta";
+    meta.textContent = String(item?.recipient_email || "").trim();
+    const secondary = document.createElement("div");
+    secondary.className = "outbound-card-meta";
+    if (item?.existing_thread) {
+      secondary.textContent = String(item?.seed_thread_subject || "").trim()
+        ? t("thread_value", { value: String(item.seed_thread_subject || "").trim() }, "Thread: {value}")
+        : t("existing_thread_seeded", {}, "Existing thread seeded");
+    } else if (String(item?.preferred_sender_id || "").trim()) {
+      secondary.textContent = t(
+        "sender_sender",
+        { sender: outboundSenderLabelByID(item.preferred_sender_id) || String(item.preferred_sender_id || "").trim() },
+        "Sender {sender}"
+      );
+    } else {
+      secondary.textContent = String(item?.recipient_domain || "").trim();
+    }
+    const tertiary = document.createElement("div");
+    tertiary.className = "outbound-card-meta";
+    tertiary.textContent = String(item?.suppression_reason || "").trim()
+      || (item?.existing_thread && String(item?.seed_account_id || "").trim()
+        ? outboundAccountLabelByID(item.seed_account_id)
+        : "");
+    card.append(head, meta, secondary);
+    if (String(tertiary.textContent || "").trim()) card.appendChild(tertiary);
+    el.outboundAudiencePreviewList.appendChild(card);
+  }
+}
+
+function renderOutboundEnrollmentList() {
+  if (!el.outboundEnrollmentList) return;
+  const items = Array.isArray(state.outbound.enrollments) ? state.outbound.enrollments : [];
+  el.outboundEnrollmentList.replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = t("import_recipients_into_this_campaign_to_begin_scheduling_outreach", {}, "Import recipients into this campaign to begin scheduling outreach.");
+    el.outboundEnrollmentList.appendChild(empty);
+    return;
+  }
+  for (const item of items) {
+    const card = document.createElement("div");
+    card.className = "outbound-card";
+    const head = document.createElement("div");
+    head.className = "outbound-card-head";
+    const title = document.createElement("div");
+    title.className = "outbound-card-title";
+    title.textContent = String(item?.contact_name || item?.recipient_email || t("recipient", {}, "Recipient")).trim() || t("recipient", {}, "Recipient");
+    const chip = document.createElement("span");
+    chip.className = outboundToneClass(item?.status);
+    chip.textContent = humanizeOutboundStatus(item?.status || "pending");
+    head.append(title, chip);
+    const meta = document.createElement("div");
+    meta.className = "outbound-card-meta";
+    const seedContext = safeParseOutboundJSONObject(item?.seed_context_json, {});
+    meta.textContent = String(item?.recipient_email || "").trim();
+    const secondary = document.createElement("div");
+    secondary.className = "outbound-card-meta";
+    secondary.textContent = outboundAccountLabelByID(item?.sender_account_id || "") || String(item?.sender_account_label || item?.sender_account_login || "").trim();
+    const tertiary = document.createElement("div");
+    tertiary.className = "outbound-card-meta";
+    tertiary.textContent = seedContext?.thread_subject
+      ? t("seeded_thread_subject_value", { value: String(seedContext.thread_subject || "").trim() }, "Thread: {value}")
+      : (item?.reply_outcome ? t("reply_outcome_label", { outcome: humanizeReplyOutcome(item.reply_outcome) }, "Reply {outcome}") : "");
+    const quaternary = document.createElement("div");
+    quaternary.className = "outbound-card-meta";
+    quaternary.textContent = item?.next_action_at
+      ? t("next_action_datetime", { datetime: formatDateTimeOrNA(item.next_action_at) }, "Next action {datetime}")
+      : (item?.last_sent_at ? t("last_send_datetime", { datetime: formatDateTimeOrNA(item.last_sent_at) }, "Last send {datetime}") : "");
+    const actions = document.createElement("div");
+    actions.className = "outbound-card-actions";
+    const pause = document.createElement("button");
+    pause.type = "button";
+    pause.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    pause.textContent = t("pause", {}, "Pause");
+    pause.disabled = ["paused", "stopped", "completed", "bounced", "unsubscribed"].includes(String(item?.status || "").trim().toLowerCase());
+    pause.addEventListener("click", () => {
+      void outboundEnrollmentAction(item.id, "pause").catch((err) => setOutboundNote(formatAPIError(err, "Failed to pause recipient."), "error"));
+    });
+    actions.appendChild(pause);
+    const resume = document.createElement("button");
+    resume.type = "button";
+    resume.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    resume.textContent = t("resume", {}, "Resume");
+    resume.disabled = !["paused", "manual_only"].includes(String(item?.status || "").trim().toLowerCase());
+    resume.addEventListener("click", () => {
+      void outboundEnrollmentAction(item.id, "resume").catch((err) => setOutboundNote(formatAPIError(err, "Failed to resume recipient."), "error"));
+    });
+    actions.appendChild(resume);
+    const stop = document.createElement("button");
+    stop.type = "button";
+    stop.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    stop.textContent = t("stop", {}, "Stop");
+    stop.disabled = ["stopped", "completed", "bounced", "unsubscribed"].includes(String(item?.status || "").trim().toLowerCase());
+    stop.addEventListener("click", () => {
+      void outboundEnrollmentAction(item.id, "stop").catch((err) => setOutboundNote(formatAPIError(err, "Failed to stop recipient."), "error"));
+    });
+    actions.appendChild(stop);
+    const assign = document.createElement("button");
+    assign.type = "button";
+    assign.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    assign.textContent = t("take_over", {}, "Take Over");
+    assign.disabled = String(item?.status || "").trim().toLowerCase() === "manual_only";
+    assign.addEventListener("click", () => {
+      void outboundEnrollmentTakeover(item.id).catch((err) => setOutboundNote(formatAPIError(err, "Failed to assign recipient."), "error"));
+    });
+    actions.appendChild(assign);
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "cmd-btn cmd-btn--dense cmd-btn--ghost";
+    open.textContent = t("open_thread", {}, "Open Thread");
+    open.disabled = !(String(item?.thread_subject || "").trim() || String(item?.last_reply_message_id || "").trim() || String(item?.last_sent_message_id || "").trim());
+    open.addEventListener("click", () => {
+      void openOutboundEnrollmentThread(item).catch((err) => setOutboundNote(formatAPIError(err, "Failed to open thread."), "error"));
+    });
+    actions.appendChild(open);
+    card.append(head, meta, secondary);
+    if (String(tertiary.textContent || "").trim()) card.appendChild(tertiary);
+    if (String(quaternary.textContent || "").trim()) card.appendChild(quaternary);
+    card.appendChild(actions);
+    el.outboundEnrollmentList.appendChild(card);
+  }
+}
+
+function renderOutboundDiagnostics() {
+  if (el.outboundSenderDiagnostics) {
+    const items = Array.isArray(state.outbound.senderDiagnostics) ? state.outbound.senderDiagnostics : [];
+    el.outboundSenderDiagnostics.replaceChildren();
+    if (items.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "settings-list-empty";
+      empty.textContent = t("no_sender_diagnostics_yet", {}, "No sender diagnostics yet.");
+      el.outboundSenderDiagnostics.appendChild(empty);
+    } else {
+      for (const item of items) {
+        const card = document.createElement("div");
+        card.className = "diagnostic-card";
+        const head = document.createElement("div");
+        head.className = "diagnostic-card-head";
+        const title = document.createElement("div");
+        title.className = "diagnostic-card-title";
+        title.textContent = String(item?.account_label || item?.account_login || item?.account_id || t("sender", {}, "Sender")).trim() || t("sender", {}, "Sender");
+        const chip = document.createElement("span");
+        chip.className = outboundToneClass(String(item?.status || "").trim().toLowerCase() === "active" ? "running" : "paused");
+        chip.textContent = outboundProviderLabel(item?.provider_type || "mail");
+        head.append(title, chip);
+        const stack = document.createElement("div");
+        stack.className = "diagnostic-card-stack";
+        const replyTopology = String(item?.reply_topology || item?.replyTopology || "").trim().toLowerCase();
+        const volume = document.createElement("div");
+        volume.className = "diagnostic-card-meta";
+        volume.textContent = [
+          t("sent_per_24h", { count: Number(item?.sends_24h || 0) }, "{count} sent / 24h"),
+          t("replies_per_24h", { count: Number(item?.replies_24h || 0) }, "{count} replies / 24h"),
+          t("bounces_per_24h", { count: Number(item?.bounces_24h || 0) }, "{count} bounces / 24h"),
+        ].filter(Boolean).join(" • ");
+        stack.appendChild(volume);
+        const pacing = document.createElement("div");
+        pacing.className = "diagnostic-card-meta";
+        pacing.textContent = [
+          t("waiting_count", { count: Number(item?.waiting_reply || 0) }, "{count} waiting"),
+          t("provider_cap_summary", { daily: Number(item?.recommended_daily_cap || item?.recommendedDailyCap || 0), hourly: Number(item?.recommended_hourly_cap || item?.recommendedHourlyCap || 0) }, "{daily}/day • {hourly}/hour"),
+        ].filter(Boolean).join(" • ");
+        stack.appendChild(pacing);
+        if (replyTopology === "collector" || replyTopology === "smart") {
+          const route = document.createElement("div");
+          route.className = "diagnostic-card-meta";
+          route.textContent = replyTopology === "collector"
+            ? t("collector_mailbox_label", { mailbox: String(item?.collector_account_label || item?.collectorAccountLabel || "").trim() || t("collector", {}, "collector") }, "Collector mailbox: {mailbox}")
+            : t("smart_reply_path", {}, "Smart collector reply path");
+          stack.appendChild(route);
+        }
+        card.append(head, stack);
+        el.outboundSenderDiagnostics.appendChild(card);
+      }
+    }
+  }
+  if (el.outboundDomainDiagnostics) {
+    const items = Array.isArray(state.outbound.domainDiagnostics) ? state.outbound.domainDiagnostics : [];
+    el.outboundDomainDiagnostics.replaceChildren();
+    if (items.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "settings-list-empty";
+      empty.textContent = t("no_domain_diagnostics_yet", {}, "No domain diagnostics yet.");
+      el.outboundDomainDiagnostics.appendChild(empty);
+    } else {
+      for (const item of items) {
+        const card = document.createElement("div");
+        card.className = "diagnostic-card";
+        const head = document.createElement("div");
+        head.className = "diagnostic-card-head";
+        const title = document.createElement("div");
+        title.className = "diagnostic-card-title";
+        title.textContent = String(item?.domain || "domain").trim() || "domain";
+        const chip = document.createElement("span");
+        chip.className = outboundToneClass(item?.suppressed ? "stopped" : "running");
+        chip.textContent = item?.suppressed ? t("suppressed", {}, "Suppressed") : t("active_status", {}, "Active");
+        head.append(title, chip);
+        const stack = document.createElement("div");
+        stack.className = "diagnostic-card-stack";
+        const volume = document.createElement("div");
+        volume.className = "diagnostic-card-meta";
+        volume.textContent = [
+          t("active_count", { count: Number(item?.active_enrollments || 0) }, "{count} active"),
+          t("paused_count", { count: Number(item?.paused_enrollments || 0) }, "{count} paused"),
+          t("replied_count_summary", { count: Number(item?.replied_count || 0) }, "{count} replied"),
+        ].filter(Boolean).join(" • ");
+        stack.appendChild(volume);
+        if (item?.last_reply_at) {
+          const lastReply = document.createElement("div");
+          lastReply.className = "diagnostic-card-meta";
+          lastReply.textContent = t("last_reply_datetime", { datetime: formatDateTimeOrNA(item.last_reply_at) }, "Last reply {datetime}");
+          stack.appendChild(lastReply);
+        }
+        if (String(item?.suppression_reason || "").trim()) {
+          const reason = document.createElement("div");
+          reason.className = "diagnostic-card-meta";
+          reason.textContent = String(item?.suppression_reason || "").trim();
+          stack.appendChild(reason);
+        }
+        card.append(head, stack);
+        el.outboundDomainDiagnostics.appendChild(card);
+      }
+    }
+  }
+}
+
+function summarizeOutboundEventPayload(raw) {
+  if (!raw) return "";
+  try {
+    const parsed = JSON.parse(String(raw || "{}"));
+    if (!parsed || typeof parsed !== "object") return "";
+    const parts = [];
+    if (parsed.reason) parts.push(String(parsed.reason).trim());
+    if (parsed.error) parts.push(String(parsed.error).trim());
+    if (parsed.reply_outcome) parts.push(`Outcome ${humanizeReplyOutcome(parsed.reply_outcome)}`);
+    if (parsed.recipient_email) parts.push(String(parsed.recipient_email).trim());
+    if (parsed.scope_value) parts.push(String(parsed.scope_value).trim());
+    if (Array.isArray(parsed.missing) && parsed.missing.length > 0) parts.push(`Missing ${parsed.missing.join(", ")}`);
+    if (parts.length > 0) return parts.join(" • ");
+  } catch {
+    // Ignore malformed event payloads in UI summaries.
+  }
+  return "";
+}
+
+function renderOutboundEvents() {
+  if (!el.outboundEventList) return;
+  const items = Array.isArray(state.outbound.events) ? state.outbound.events : [];
+  el.outboundEventList.replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = t("campaign_events_will_appear_here_once_recipients_are_enrolled_or_replies_start_arriving", {}, "Campaign events will appear here once recipients are enrolled or replies start arriving.");
+    el.outboundEventList.appendChild(empty);
+    return;
+  }
+  for (const item of items) {
+    const card = document.createElement("div");
+    card.className = "outbound-card";
+    const head = document.createElement("div");
+    head.className = "outbound-card-head";
+    const title = document.createElement("div");
+    title.className = "outbound-card-title";
+    title.textContent = humanizeOutboundStatus(String(item?.event_kind || "event").replace(/_/g, " "));
+    const when = document.createElement("span");
+    when.className = "outbound-chip";
+    when.textContent = formatDateTimeOrNA(item?.created_at);
+    head.append(title, when);
+    const meta = document.createElement("div");
+    meta.className = "outbound-card-meta";
+    meta.textContent = [
+      String(item?.actor_kind || "").trim(),
+      String(item?.actor_ref || "").trim(),
+      summarizeOutboundEventPayload(item?.event_payload_json),
+    ].filter(Boolean).join(" • ");
+    card.append(head, meta);
+    el.outboundEventList.appendChild(card);
+  }
+}
+
+function replyOpsBucketOrder() {
+  return ["needs_review", "interested", "questions", "objections", "wrong_person", "out_of_office", "bounces", "unsubscribed", "hostile"];
+}
+
+function renderReplyOpsBuckets() {
+  if (!el.replyOpsBuckets) return;
+  const items = Array.isArray(state.replyOps.allItems) ? state.replyOps.allItems : [];
+  const counts = new Map();
+  for (const item of items) {
+    const bucket = String(item?.bucket || "needs_review").trim() || "needs_review";
+    counts.set(bucket, (counts.get(bucket) || 0) + 1);
+  }
+  el.replyOpsBuckets.replaceChildren();
+  for (const bucket of replyOpsBucketOrder()) {
+    const count = Number(counts.get(bucket) || 0);
+    if (count === 0 && bucket !== String(state.replyOps.bucket || "")) continue;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "cmd-btn cmd-btn--dense cmd-btn--ghost reply-ops-bucket-btn";
+    if (bucket === String(state.replyOps.bucket || "")) {
+      button.classList.add("cmd-btn--primary");
+    }
+    button.textContent = `${humanizeReplyOpsBucket(bucket)} (${count})`;
+    button.addEventListener("click", () => {
+      state.replyOps.bucket = bucket;
+      renderReplyOpsBuckets();
+      renderReplyOpsList();
+      if (!state.replyOps.items.some((item) => String(item?.id || "") === String(state.replyOps.selectedID || ""))) {
+        state.replyOps.selectedID = String(state.replyOps.items[0]?.id || "");
+        void loadReplyOpsDetail(state.replyOps.selectedID).catch((err) => setReplyOpsNote(formatAPIError(err, "Failed to load reply detail."), "error"));
+      } else {
+        renderReplyOpsDetail();
+      }
+    });
+    el.replyOpsBuckets.appendChild(button);
+  }
+}
+
+function filteredReplyOpsItems() {
+  const items = Array.isArray(state.replyOps.allItems) ? state.replyOps.allItems : [];
+  const bucket = String(state.replyOps.bucket || "").trim();
+  if (!bucket) return items;
+  return items.filter((item) => String(item?.bucket || "").trim() === bucket);
+}
+
+function replyOpsMailboxRouteSummary(item) {
+  const senderMailbox = outboundAccountLabelByID(item?.sender_account_id || "") || String(item?.sender_account_label || item?.sender_account_id || "").trim() || t("unknown_sender", {}, "Unknown sender");
+  const replyMailbox = outboundAccountLabelByID(item?.reply_account_id || item?.replyAccountID || "") || t("not_set", {}, "Not set");
+  if (replyMailbox && senderMailbox && replyMailbox !== senderMailbox) {
+    return t("reply_arrived_in_mailbox_respond_from_sender_mailbox", { reply: replyMailbox, sender: senderMailbox }, "Reply arrived in {reply}. Respond from {sender}.");
+  }
+  return t("reply_stays_in_sender_mailbox", { sender: senderMailbox }, "Reply stays in {sender}.");
+}
+
+function replyOpsPrimaryActionCopy(item) {
+  const status = String(item?.status || "").trim().toLowerCase();
+  const outcome = String(item?.reply_outcome || "").trim().toLowerCase();
+  if (status === "unsubscribed" || outcome === "unsubscribe_request") {
+    return t("reply_ops_action_unsubscribed", {}, "This recipient is suppressed. No further follow-up should be sent.");
+  }
+  if (status === "completed" || outcome === "positive_interest" || outcome === "meeting_intent") {
+    return t("reply_ops_action_positive", {}, "This conversation is qualified. Continue manually from the live sender mailbox.");
+  }
+  if (status === "paused" || outcome === "out_of_office" || outcome === "auto_reply_other") {
+    return t("reply_ops_action_paused", {}, "The sequence is paused for now. Resume only when the timing is right.");
+  }
+  if (status === "stopped" || outcome === "not_interested" || outcome === "hostile" || outcome === "bounce") {
+    return t("reply_ops_action_stopped", {}, "Further outreach should stop unless an operator explicitly decides otherwise.");
+  }
+  return t("reply_ops_action_manual_review", {}, "Review the thread by hand before the sequence continues.");
+}
+
+function replyOpsNextStepSummary(item) {
+  const status = String(item?.status || "").trim().toLowerCase();
+  const outcome = String(item?.reply_outcome || "").trim().toLowerCase();
+  if (status === "unsubscribed" || outcome === "unsubscribe_request") {
+    return t("unsubscribed", {}, "Unsubscribed");
+  }
+  if (status === "completed" || outcome === "positive_interest" || outcome === "meeting_intent") {
+    return t("needs_human", {}, "Needs Human");
+  }
+  if (status === "paused" || outcome === "out_of_office" || outcome === "auto_reply_other") {
+    return t("paused", {}, "Paused");
+  }
+  if (status === "stopped" || outcome === "not_interested" || outcome === "hostile" || outcome === "bounce") {
+    return t("stopped", {}, "Stopped");
+  }
+  return t("needs_human", {}, "Needs Human");
+}
+
+function renderReplyOpsList() {
+  if (!el.replyOpsList) return;
+  state.replyOps.items = filteredReplyOpsItems();
+  const items = state.replyOps.items;
+  el.replyOpsList.replaceChildren();
+  if (items.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = t("no_replies_are_waiting_in_this_queue", {}, "No replies are waiting in this queue.");
+    el.replyOpsList.appendChild(empty);
+    renderReplyOpsDetail();
+    return;
+  }
+  for (const item of items) {
+    const id = String(item?.id || "").trim();
+    const card = document.createElement("button");
+    card.type = "button";
+    card.className = "reply-ops-card";
+    if (id === String(state.replyOps.selectedID || "").trim()) {
+      card.classList.add("is-active");
+    }
+    const head = document.createElement("div");
+    head.className = "reply-ops-card-head";
+    const title = document.createElement("div");
+    title.className = "reply-ops-card-title";
+    title.textContent = String(item?.recipient_email || t("reply_item", {}, "Reply")).trim() || t("reply_item", {}, "Reply");
+    const chip = document.createElement("span");
+    chip.className = outboundToneClass(item?.reply_outcome || item?.bucket);
+    chip.textContent = humanizeReplyOutcome(item?.reply_outcome || item?.bucket);
+    head.append(title, chip);
+    const meta = document.createElement("div");
+    meta.className = "reply-ops-card-meta";
+    meta.textContent = [
+      String(item?.campaign_name || "").trim(),
+      item?.thread_subject ? String(item.thread_subject || "").trim() : "",
+      item?.last_reply_at ? formatDateTimeOrNA(item.last_reply_at) : "",
+    ].filter(Boolean).join(" • ");
+    const preview = document.createElement("div");
+    preview.className = "reply-ops-card-meta";
+    preview.textContent = String(item?.preview || "").trim() || t("open_to_review_this_reply", {}, "Open to review this reply.");
+    card.append(head, meta, preview);
+    card.addEventListener("click", () => {
+      state.replyOps.selectedID = id;
+      renderReplyOpsList();
+      void loadReplyOpsDetail(id).catch((err) => setReplyOpsNote(formatAPIError(err, "Failed to load reply detail."), "error"));
+    });
+    el.replyOpsList.appendChild(card);
+  }
+  renderReplyOpsDetail();
+}
+
+function renderReplyOpsDetail() {
+  if (!el.replyOpsDetail) return;
+  const item = state.replyOps.detail && String(state.replyOps.detail.id || "") === String(state.replyOps.selectedID || "")
+    ? state.replyOps.detail
+    : selectedReplyOpsItem();
+  el.replyOpsDetail.replaceChildren();
+  if (!item) {
+    const empty = document.createElement("p");
+    empty.className = "settings-list-empty";
+    empty.textContent = t("select_a_reply_to_review_thread_context_sender_choice_and_the_recommended_action", {}, "Select a reply to review thread context, sender choice, and the recommended action.");
+    el.replyOpsDetail.appendChild(empty);
+    syncReplyOpsActionButtons();
+    return;
+  }
+  const senderMailbox = outboundAccountLabelByID(item?.sender_account_id || "") || String(item?.sender_account_label || item?.sender_account_id || "").trim() || t("unknown_sender", {}, "Unknown sender");
+  const replyMailbox = outboundAccountLabelByID(item?.reply_account_id || item?.replyAccountID || "") || t("not_set", {}, "Not set");
+  const summary = document.createElement("div");
+  summary.className = "reply-ops-summary";
+  const head = document.createElement("div");
+  head.className = "reply-ops-summary-head";
+  const copy = document.createElement("div");
+  copy.className = "reply-ops-summary-copy";
+  const title = document.createElement("h4");
+  title.className = "reply-ops-summary-title";
+  title.textContent = String(item?.recipient_email || t("reply_item", {}, "Reply")).trim() || t("reply_item", {}, "Reply");
+  const subtitle = document.createElement("div");
+  subtitle.className = "reply-ops-summary-subtitle";
+  subtitle.textContent = [
+    String(item?.campaign_name || "").trim(),
+    String(item?.thread_subject || "").trim(),
+    item?.last_reply_at ? formatDateTimeOrNA(item.last_reply_at) : "",
+  ].filter(Boolean).join(" • ");
+  copy.append(title, subtitle);
+  const chips = document.createElement("div");
+  chips.className = "reply-ops-summary-chips";
+  const bucketChip = document.createElement("span");
+  bucketChip.className = outboundToneClass(item?.bucket || "needs_review");
+  bucketChip.textContent = humanizeReplyOpsBucket(item?.bucket || "needs_review");
+  chips.appendChild(bucketChip);
+  const stateChip = document.createElement("span");
+  stateChip.className = "outbound-chip";
+  stateChip.textContent = t("recommended_state_short", { state: humanizeOutboundStatus(item?.status || "manual_only") }, "Next: {state}");
+  chips.appendChild(stateChip);
+  head.append(copy, chips);
+  summary.appendChild(head);
+  const callout = document.createElement("div");
+  callout.className = "reply-ops-callout";
+  callout.textContent = replyOpsPrimaryActionCopy(item);
+  summary.appendChild(callout);
+  const grid = document.createElement("div");
+  grid.className = "reply-ops-grid";
+  const route = document.createElement("div");
+  route.className = "reply-ops-detail-card";
+  route.innerHTML = `<div class="reply-ops-detail-card-title">${escapeHtml(t("where_to_respond", {}, "Where to respond"))}</div><div class="reply-ops-detail-card-value">${escapeHtml(replyOpsMailboxRouteSummary(item))}</div>`;
+  const next = document.createElement("div");
+  next.className = "reply-ops-detail-card";
+  next.innerHTML = `<div class="reply-ops-detail-card-title">${escapeHtml(t("what_happens_next", {}, "Recommended next move"))}</div><div class="reply-ops-detail-card-value">${escapeHtml(replyOpsNextStepSummary(item))}</div>`;
+  grid.append(route, next);
+  summary.appendChild(grid);
+  el.replyOpsDetail.appendChild(summary);
+  const advanced = document.createElement("details");
+  advanced.className = "reply-ops-advanced";
+  const advancedSummary = document.createElement("summary");
+  advancedSummary.textContent = t("more_details", {}, "More details");
+  advanced.appendChild(advancedSummary);
+  const advancedGrid = document.createElement("div");
+  advancedGrid.className = "reply-ops-advanced-grid";
+  const lines = [
+    [t("sender_account", {}, "Sender account"), senderMailbox],
+    [t("reply_mailbox", {}, "Reply mailbox"), replyMailbox],
+    [t("domain_label", {}, "Domain"), String(item?.recipient_domain || "").trim() || t("unknown_domain", {}, "Unknown domain")],
+    [t("outcome", {}, "Outcome"), humanizeReplyOutcome(item?.reply_outcome || "manual_review_required")],
+    [t("confidence", {}, "Confidence"), item?.reply_confidence ? `${Math.round(Number(item.reply_confidence || 0) * 100)}%` : t("n_a", {}, "n/a")],
+    [t("sender_profile", {}, "Sender profile"), String(item?.sender_profile_name || item?.sender_profile_id || "").trim() || t("not_set", {}, "Not set")],
+    [t("thread_subject", {}, "Thread subject"), String(item?.thread_subject || "").trim() || t("not_set", {}, "Not set")],
+  ];
+  for (const [label, value] of lines) {
+    const row = document.createElement("div");
+    row.className = "reply-ops-detail-line";
+    row.innerHTML = `<strong>${escapeHtml(label)}:</strong> ${escapeHtml(String(value || ""))}`;
+    advancedGrid.appendChild(row);
+  }
+  advanced.appendChild(advancedGrid);
+  el.replyOpsDetail.appendChild(advanced);
+  const preview = document.createElement("pre");
+  preview.className = "ui-modal-document";
+  preview.style.minHeight = "0";
+  preview.style.maxHeight = "280px";
+  preview.textContent = String(item?.preview || "").trim() || t("no_indexed_preview_available_for_this_reply_yet", {}, "No indexed preview available for this reply yet.");
+  el.replyOpsDetail.appendChild(preview);
+  syncReplyOpsActionButtons();
+}
+
+function syncReplyOpsActionButtons() {
+  const item = selectedReplyOpsItem();
+  const hasItem = !!item;
+  const canResume = hasItem && ["paused", "manual_only"].includes(String(item?.status || "").trim().toLowerCase());
+  if (el.btnReplyOpsOpenThread) el.btnReplyOpsOpenThread.disabled = !hasItem || !(String(item?.thread_id || "").trim() || String(item?.message_id || "").trim());
+  if (el.btnReplyOpsTakeover) el.btnReplyOpsTakeover.disabled = !hasItem || String(item?.status || "").trim().toLowerCase() === "manual_only";
+  if (el.btnReplyOpsStop) el.btnReplyOpsStop.disabled = !hasItem;
+  if (el.replyOpsActionSuppressRecipient) el.replyOpsActionSuppressRecipient.disabled = !hasItem;
+  if (el.replyOpsActionSuppressDomain) el.replyOpsActionSuppressDomain.disabled = !hasItem || !String(item?.recipient_domain || "").trim();
+  if (el.replyOpsActionPause) el.replyOpsActionPause.disabled = !hasItem;
+  if (el.replyOpsActionResume) el.replyOpsActionResume.disabled = !canResume;
+}
+
+async function loadOutboundDependencies() {
+  const [groupsPayload, searchesPayload, accountsPayload, sendersPayload, funnelsPayload, playbooksPayload] = await Promise.all([
+    api("/api/v2/contact-groups", { logErrors: false }),
+    api("/api/v2/saved-searches", { logErrors: false }),
+    api("/api/v2/accounts", { logErrors: false }),
+    api("/api/v2/mail/senders", { logErrors: false }),
+    api("/api/v2/funnels", { logErrors: false }),
+    api("/api/v2/outbound/playbooks", { logErrors: false }),
+  ]);
+  state.contacts.groups = Array.isArray(groupsPayload?.items) ? groupsPayload.items : [];
+  state.mail.savedSearches = Array.isArray(searchesPayload?.items) ? searchesPayload.items : [];
+  state.settings.mail.accounts = Array.isArray(accountsPayload?.items) ? accountsPayload.items : [];
+  state.settings.mail.senders = Array.isArray(sendersPayload?.items) ? sendersPayload.items : [];
+  state.settings.mail.funnels = Array.isArray(funnelsPayload?.items) ? funnelsPayload.items : [];
+  state.mail.funnels = state.settings.mail.funnels;
+  state.outbound.playbooks = Array.isArray(playbooksPayload?.items) ? playbooksPayload.items : [];
+}
+
+async function loadOutboundCampaignArtifacts(campaignID) {
+  const id = String(campaignID || state.outbound.selectedCampaignID || "").trim();
+  if (!id) {
+    state.outbound.steps = [];
+    state.outbound.enrollments = [];
+    state.outbound.events = [];
+    state.outbound.selectedStepID = "";
+    state.outbound.selectedEnrollmentID = "";
+    fillOutboundCampaignForm(null);
+    fillOutboundAudienceForm(null);
+    fillOutboundStepForm(null);
+    renderOutboundSummary();
+    renderOutboundCampaignList();
+    renderOutboundStepList();
+    renderOutboundAudiencePreviewList();
+    renderOutboundEnrollmentList();
+    renderOutboundSenderControl();
+    renderOutboundDiagnostics();
+    renderOutboundEvents();
+    setActiveOutboundSection(state.outbound.activeSection);
+    syncOutboundCampaignActionButtons();
+    return;
+  }
+  const [stepsPayload, enrollmentsPayload, eventsPayload] = await Promise.all([
+    api(`/api/v2/outbound/campaigns/${encodeURIComponent(id)}/steps`, { logErrors: false }),
+    api(`/api/v2/outbound/campaigns/${encodeURIComponent(id)}/enrollments`, { logErrors: false }),
+    api(`/api/v2/outbound/campaigns/${encodeURIComponent(id)}/events?limit=200`, { logErrors: false }),
+  ]);
+  state.outbound.selectedCampaignID = id;
+  state.outbound.steps = Array.isArray(stepsPayload?.items) ? stepsPayload.items : [];
+  state.outbound.enrollments = Array.isArray(enrollmentsPayload?.items) ? enrollmentsPayload.items : [];
+  state.outbound.events = Array.isArray(eventsPayload?.items) ? eventsPayload.items : [];
+  if (!state.outbound.steps.some((item) => String(item?.id || "") === String(state.outbound.selectedStepID || ""))) {
+    state.outbound.selectedStepID = "";
+  }
+  const campaign = selectedOutboundCampaign();
+  fillOutboundCampaignForm(campaign);
+  fillOutboundAudienceForm(campaign);
+  fillOutboundStepForm(selectedOutboundStep());
+  renderOutboundSummary();
+  renderOutboundCampaignList();
+  renderOutboundStepList();
+  renderOutboundAudiencePreviewList();
+  renderOutboundEnrollmentList();
+  renderOutboundSenderControl();
+  renderOutboundDiagnostics();
+  renderOutboundEvents();
+  setActiveOutboundSection(state.outbound.activeSection);
+  syncOutboundCampaignActionButtons();
+}
+
+async function loadOutboundWorkspace(opts = {}) {
+  if (!state.user) return;
+  state.outbound.loading = true;
+  try {
+    await loadOutboundDependencies();
+    const [campaignsPayload, senderDiagnosticsPayload, domainDiagnosticsPayload] = await Promise.all([
+      api("/api/v2/outbound/campaigns", { logErrors: false }),
+      api("/api/v2/outbound/diagnostics/senders", { logErrors: false }),
+      api("/api/v2/outbound/diagnostics/domains", { logErrors: false }),
+    ]);
+    state.outbound.campaigns = Array.isArray(campaignsPayload?.items) ? campaignsPayload.items : [];
+    state.outbound.senderDiagnostics = Array.isArray(senderDiagnosticsPayload?.items) ? senderDiagnosticsPayload.items : [];
+    state.outbound.domainDiagnostics = Array.isArray(domainDiagnosticsPayload?.items) ? domainDiagnosticsPayload.items : [];
+    state.outbound.campaignsLoaded = true;
+    const requestedID = String(opts.selectCampaignID || state.outbound.selectedCampaignID || "").trim();
+    if (requestedID && state.outbound.campaigns.some((item) => String(item?.id || "") === requestedID)) {
+      state.outbound.selectedCampaignID = requestedID;
+    } else if (!requestedID && !state.outbound.selectedCampaignID && state.outbound.campaigns.length > 0) {
+      state.outbound.selectedCampaignID = String(state.outbound.campaigns[0]?.id || "");
+    } else if (requestedID && !state.outbound.campaigns.some((item) => String(item?.id || "") === requestedID)) {
+      state.outbound.selectedCampaignID = String(state.outbound.campaigns[0]?.id || "");
+    }
+    await loadOutboundCampaignArtifacts(state.outbound.selectedCampaignID);
+    setOutboundNote(
+      t("outbound_ready_summary", { summary: outboundExternalProviderSummary() }, "Outbound ready. {summary}"),
+      "info"
+    );
+  } finally {
+    state.outbound.loading = false;
+  }
+}
+
+async function ensureOutboundCampaignPersisted() {
+  const existing = selectedOutboundCampaign();
+  if (existing) return existing;
+  const payload = buildOutboundCampaignPayload();
+  const created = await api("/api/v2/outbound/campaigns", {
+    method: "POST",
+    json: payload,
+    logErrors: false,
+  });
+  const audienceText = String(el.outboundAudienceText?.value || "");
+  state.outbound.selectedCampaignID = String(created?.id || "").trim();
+  await loadOutboundWorkspace({ selectCampaignID: state.outbound.selectedCampaignID });
+  if (el.outboundAudienceText) {
+    el.outboundAudienceText.value = audienceText;
+  }
+  return selectedOutboundCampaign() || created;
+}
+
+async function saveOutboundCampaign() {
+  const payload = buildOutboundCampaignPayload();
+  if (!payload.name) {
+    throw new Error("Campaign name is required.");
+  }
+  const isNew = !selectedOutboundCampaign();
+  const current = selectedOutboundCampaign();
+  if (current) {
+    await api(`/api/v2/outbound/campaigns/${encodeURIComponent(String(current.id || "").trim())}`, {
+      method: "PATCH",
+      json: payload,
+      logErrors: false,
+    });
+  } else {
+    const created = await api("/api/v2/outbound/campaigns", {
+      method: "POST",
+      json: payload,
+      logErrors: false,
+    });
+    state.outbound.selectedCampaignID = String(created?.id || "").trim();
+  }
+  await loadOutboundWorkspace({ selectCampaignID: state.outbound.selectedCampaignID });
+  if (String(payload.playbook_key || "").trim() && Array.isArray(state.outbound.steps) && state.outbound.steps.length === 0) {
+    await applyOutboundPlaybook({ replaceSteps: false, quiet: !isNew });
+    if (isNew) {
+      setOutboundNote(t("campaign_created_from_playbook", {}, "Campaign created from playbook."), "ok");
+      return;
+    }
+  }
+  setOutboundNote(t("campaign_saved", {}, "Campaign saved."), "ok");
+}
+
+async function applyOutboundPlaybook({ replaceSteps = false, quiet = false } = {}) {
+  const campaign = await ensureOutboundCampaignPersisted();
+  const playbookKey = String(el.outboundCampaignPlaybook?.value || "").trim();
+  if (!playbookKey) {
+    throw new Error("Choose a playbook first.");
+  }
+  if (!replaceSteps && Array.isArray(state.outbound.steps) && state.outbound.steps.length > 0) {
+    const confirmed = await showConfirmModal({
+      title: t("replace_existing_steps", {}, "Replace existing steps?"),
+      body: t("the_selected_playbook_can_replace_this_campaigns_current_steps", {}, "The selected playbook can replace this campaign's current steps."),
+      confirmText: t("replace", {}, "Replace"),
+      cancelText: t("cancel", {}, "Cancel"),
+      trigger: el.btnOutboundApplyPlaybook,
+    });
+    if (!confirmed) return;
+    replaceSteps = true;
+  }
+  await api(`/api/v2/outbound/campaigns/${encodeURIComponent(String(campaign?.id || "").trim())}/apply-playbook`, {
+    method: "POST",
+    json: {
+      playbook_key: playbookKey,
+      replace_steps: !!replaceSteps,
+    },
+    logErrors: false,
+  });
+  await loadOutboundWorkspace({ selectCampaignID: String(campaign?.id || "").trim() });
+  if (!quiet) {
+    setOutboundNote(t("playbook_applied", {}, "Playbook applied."), "ok");
+  }
+}
+
+async function runOutboundPreflight() {
+  const campaign = await ensureOutboundCampaignPersisted();
+  const payload = await api(`/api/v2/outbound/campaigns/${encodeURIComponent(String(campaign?.id || "").trim())}/preflight`, {
+    method: "POST",
+    json: {},
+    logErrors: false,
+  });
+  const issues = Array.isArray(payload?.issues) ? payload.issues : [];
+  state.outbound.preflightIssues = issues;
+  await showDocumentModal({
+    title: t("outbound_preflight", {}, "Outbound Preflight"),
+    body: issues.length
+      ? t("review_conflicts_sender_risks_and_missing_data_before_launch", {}, "Review conflicts, sender risks, and missing data before launch.")
+      : t("no_blocking_or_warning_issues_were_found", {}, "No blocking or warning issues were found."),
+    documentText: outboundPreflightDocument(issues),
+    confirmText: t("close", {}, "Close"),
+  });
+  setOutboundNote(
+    issues.length
+      ? t("preflight_found_issues_count", { count: issues.length }, "Preflight found {count} issues.")
+      : t("preflight_passed_cleanly", {}, "Preflight passed cleanly."),
+    issues.length ? "warn" : "ok"
+  );
+}
+
+async function launchOutboundCampaign() {
+  const campaign = await ensureOutboundCampaignPersisted();
+  try {
+    const payload = await api(`/api/v2/outbound/campaigns/${encodeURIComponent(String(campaign?.id || "").trim())}/launch`, {
+      method: "POST",
+      json: {},
+      logErrors: false,
+    });
+    const issues = Array.isArray(payload?.issues) ? payload.issues : [];
+    state.outbound.preflightIssues = issues;
+    await loadOutboundWorkspace({ selectCampaignID: String(campaign?.id || "").trim() });
+    if (issues.length > 0) {
+      await showDocumentModal({
+        title: t("launch_review", {}, "Launch Review"),
+        body: payload?.launched
+          ? t("campaign_launched_with_non_blocking_warnings", {}, "Campaign launched with non-blocking warnings.")
+          : t("campaign_could_not_launch_until_blocking_issues_are_resolved", {}, "Campaign could not launch until blocking issues are resolved."),
+        documentText: outboundPreflightDocument(issues),
+        confirmText: t("close", {}, "Close"),
+      });
+    }
+    if (payload?.launched) {
+      setOutboundNote(t("campaign_launched", {}, "Campaign launched."), "ok");
+      return;
+    }
+    setOutboundNote(t("launch_blocked_by_preflight_issues", {}, "Launch blocked by preflight issues."), "error");
+  } catch (err) {
+    if (err?.status === 409) {
+      const payload = typeof err.message === "string" ? err.message : "Launch blocked by preflight issues.";
+      setOutboundNote(payload, "error");
+      return;
+    }
+    throw err;
+  }
+}
+
+async function setOutboundCampaignStatus(action) {
+  const campaign = selectedOutboundCampaign();
+  if (!campaign) {
+    throw new Error("Choose a campaign first.");
+  }
+  let path = "";
+  let success = "";
+  if (action === "pause") {
+    path = `/api/v2/outbound/campaigns/${encodeURIComponent(campaign.id)}/pause`;
+    success = t("campaign_paused", {}, "Campaign paused.");
+  } else if (action === "resume") {
+    path = `/api/v2/outbound/campaigns/${encodeURIComponent(campaign.id)}/resume`;
+    success = t("campaign_resumed", {}, "Campaign resumed.");
+  } else if (action === "archive") {
+    const confirmed = await showConfirmModal({
+      title: t("archive_campaign", {}, "Archive campaign?"),
+      body: t(
+        "archive_campaign_name_and_keep_its_event_history_read_only",
+        { name: String(campaign.name || t("this_campaign", {}, "this campaign")).trim() || t("this_campaign", {}, "this campaign") },
+        "Archive {name} and keep its event history read-only?"
+      ),
+      confirmText: t("archive", {}, "Archive"),
+      cancelText: t("cancel", {}, "Cancel"),
+      trigger: el.btnOutboundArchive,
+    });
+    if (!confirmed) return;
+    path = `/api/v2/outbound/campaigns/${encodeURIComponent(campaign.id)}/archive`;
+    success = t("campaign_archived", {}, "Campaign archived.");
+  } else {
+    throw new Error("Unsupported campaign action.");
+  }
+  await api(path, { method: "POST", json: {}, logErrors: false });
+  await loadOutboundWorkspace({ selectCampaignID: campaign.id });
+  setOutboundNote(success, "ok");
+}
+
+async function saveOutboundStep() {
+  const campaign = await ensureOutboundCampaignPersisted();
+  const payload = buildOutboundStepPayload();
+  if (payload.kind === "manual_task") {
+    if (!String(payload.task_policy?.title || "").trim()) {
+      throw new Error("Manual task steps need a task title.");
+    }
+  } else if (!payload.subject_template && !payload.body_template) {
+    throw new Error("Each step needs a subject or body template.");
+  }
+  const current = selectedOutboundStep();
+  if (current) {
+    await api(`/api/v2/outbound/steps/${encodeURIComponent(String(current.id || "").trim())}`, {
+      method: "PATCH",
+      json: payload,
+      logErrors: false,
+    });
+  } else {
+    await api(`/api/v2/outbound/campaigns/${encodeURIComponent(String(campaign?.id || "").trim())}/steps`, {
+      method: "POST",
+      json: payload,
+      logErrors: false,
+    });
+  }
+  await loadOutboundCampaignArtifacts(String(campaign?.id || "").trim());
+  setOutboundNote(current ? t("step_updated", {}, "Step updated.") : t("step_created", {}, "Step created."), "ok");
+}
+
+async function reorderOutboundStep(stepID, delta) {
+  const campaign = selectedOutboundCampaign();
+  if (!campaign) {
+    throw new Error("Choose a campaign first.");
+  }
+  const ids = (Array.isArray(state.outbound.steps) ? state.outbound.steps : []).map((item) => String(item?.id || "").trim()).filter(Boolean);
+  const index = ids.findIndex((id) => id === String(stepID || "").trim());
+  const targetIndex = index + Number(delta || 0);
+  if (index < 0 || targetIndex < 0 || targetIndex >= ids.length) return;
+  const [item] = ids.splice(index, 1);
+  ids.splice(targetIndex, 0, item);
+  await api(`/api/v2/outbound/campaigns/${encodeURIComponent(String(campaign.id || "").trim())}/steps/reorder`, {
+    method: "POST",
+    json: { step_ids: ids },
+    logErrors: false,
+  });
+  await loadOutboundCampaignArtifacts(String(campaign.id || "").trim());
+}
+
+async function deleteOutboundStep(stepID) {
+  const step = (Array.isArray(state.outbound.steps) ? state.outbound.steps : []).find((item) => String(item?.id || "") === String(stepID || "")) || null;
+  const confirmed = await showConfirmModal({
+    title: t("delete_step", {}, "Delete step?"),
+    body: t("delete_step_position_from_this_sequence", { position: Number(step?.position || 0) || "" }, "Delete step {position} from this sequence?"),
+    confirmText: t("delete", {}, "Delete"),
+    cancelText: t("cancel", {}, "Cancel"),
+    trigger: el.btnOutboundStepSave,
+  });
+  if (!confirmed) return;
+  await api(`/api/v2/outbound/steps/${encodeURIComponent(String(stepID || "").trim())}`, {
+    method: "DELETE",
+    json: {},
+    logErrors: false,
+  });
+  state.outbound.selectedStepID = "";
+  await loadOutboundCampaignArtifacts(String(state.outbound.selectedCampaignID || "").trim());
+  fillOutboundStepForm(null);
+  setOutboundNote(t("step_deleted", {}, "Step deleted."), "ok");
+}
+
+async function previewOutboundAudience() {
+  const campaign = await ensureOutboundCampaignPersisted();
+  const payload = collectOutboundAudienceRequest();
+  const result = await api(`/api/v2/outbound/campaigns/${encodeURIComponent(String(campaign?.id || "").trim())}/audience/preview`, {
+    method: "POST",
+    json: payload,
+    logErrors: false,
+  });
+  state.outbound.audiencePreview = Array.isArray(result?.items) ? result.items : [];
+  renderOutboundAudiencePreviewList();
+  setOutboundNote(
+    t("audience_candidates_previewed", { count: state.outbound.audiencePreview.length }, "{count} audience candidates previewed."),
+    "ok"
+  );
+}
+
+async function importOutboundAudience() {
+  const campaign = await ensureOutboundCampaignPersisted();
+  const payload = collectOutboundAudienceRequest();
+  const result = await api(`/api/v2/outbound/campaigns/${encodeURIComponent(String(campaign?.id || "").trim())}/enrollments/import`, {
+    method: "POST",
+    json: payload,
+    logErrors: false,
+  });
+  await loadOutboundCampaignArtifacts(String(campaign?.id || "").trim());
+  setOutboundNote(
+    t(
+      "audience_imported_created_updated",
+      { created: Number(result?.created || 0), updated: Number(result?.updated || 0) },
+      "Audience imported: {created} created, {updated} updated."
+    ),
+    "ok"
+  );
+}
+
+async function outboundEnrollmentAction(enrollmentID, action) {
+  const id = String(enrollmentID || "").trim();
+  if (!id) throw new Error("Choose a recipient first.");
+  let path = "";
+  let success = "";
+  if (action === "pause") {
+    path = `/api/v2/outbound/enrollments/${encodeURIComponent(id)}/pause`;
+    success = t("recipient_paused", {}, "Recipient paused.");
+  } else if (action === "resume") {
+    path = `/api/v2/outbound/enrollments/${encodeURIComponent(id)}/resume`;
+    success = t("recipient_resumed", {}, "Recipient resumed.");
+  } else if (action === "stop") {
+    path = `/api/v2/outbound/enrollments/${encodeURIComponent(id)}/stop`;
+    success = t("recipient_stopped", {}, "Recipient stopped.");
+  } else {
+    throw new Error("Unsupported recipient action.");
+  }
+  await api(path, { method: "POST", json: {}, logErrors: false });
+  await loadOutboundCampaignArtifacts(String(state.outbound.selectedCampaignID || "").trim());
+  await loadReplyOpsWorkspace({ preserveSelection: true }).catch(() => {});
+  setOutboundNote(success, "ok");
+}
+
+async function outboundEnrollmentTakeover(enrollmentID) {
+  const id = String(enrollmentID || "").trim();
+  if (!id) throw new Error("Choose a recipient first.");
+  await api(`/api/v2/outbound/enrollments/${encodeURIComponent(id)}/assign`, {
+    method: "POST",
+    json: {},
+    logErrors: false,
+  });
+  await loadOutboundCampaignArtifacts(String(state.outbound.selectedCampaignID || "").trim());
+  await loadReplyOpsWorkspace({ preserveSelection: true }).catch(() => {});
+  setOutboundNote(t("recipient_assigned_for_manual_handling", {}, "Recipient assigned for manual handling."), "ok");
+}
+
+function outboundFunnelRecordByID(funnelID) {
+  const id = String(funnelID || "").trim();
+  return outboundKnownFunnels().find((item) => String(item?.id || "").trim() === id) || null;
+}
+
+function outboundReplyAccountIDForEnrollment(enrollment) {
+  const replyAccountID = String(enrollment?.reply_account_id || "").trim();
+  if (replyAccountID) return replyAccountID;
+  const funnelID = String(enrollment?.reply_funnel_id || "").trim();
+  if (!funnelID) return String(enrollment?.sender_account_id || "").trim();
+  const funnel = outboundFunnelRecordByID(funnelID);
+  const replyMode = String(funnel?.reply_mode || funnel?.replyMode || "collector").trim().toLowerCase() || "collector";
+  if (replyMode === "source") {
+    return String(enrollment?.sender_account_id || "").trim();
+  }
+  return String(funnel?.collector_account_id || funnel?.collectorAccountID || enrollment?.sender_account_id || "").trim();
+}
+
+async function openOutboundThreadByLocation(accountID, threadID, messageID) {
+  const resolvedAccountID = String(accountID || "").trim();
+  const resolvedThreadID = String(threadID || "").trim();
+  const resolvedMessageID = String(messageID || "").trim();
+  if (!resolvedAccountID || (!resolvedThreadID && !resolvedMessageID)) {
+    throw new Error("Thread context is not available yet.");
+  }
+  if (el.tabMail && typeof el.tabMail.onclick === "function") {
+    await el.tabMail.onclick();
+  } else {
+    setActiveTab(el.tabMail);
+    showView("mail");
+    await loadMailboxes();
+    await loadMessages();
+  }
+  setMailScope("account", resolvedAccountID);
+  setMailSourceMailbox("INBOX");
+  clearMailMessageSelection({ render: false });
+  clearReaderSelection();
+  await loadMailboxes({ quiet: true, logErrors: false });
+  await loadMessages({ quiet: true });
+  let item = (Array.isArray(state.messages) ? state.messages : []).find((entry) => {
+    if (resolvedMessageID && String(entry?.id || "") === resolvedMessageID) return true;
+    if (resolvedThreadID && String(entry?.thread_id || "") === resolvedThreadID) return true;
+    return false;
+  }) || null;
+  if (!item && resolvedMessageID) {
+    try {
+      const payload = await api(`/api/v2/messages/${encodeURIComponent(resolvedMessageID)}?account_id=${encodeURIComponent(resolvedAccountID)}`, { logErrors: false });
+      const detail = normalizeIndexedMessageDetail(payload, resolvedAccountID);
+      item = synthesizeThreadSummary(null, detail, detail.mailbox || "INBOX");
+    } catch {
+      // Fall through to thread lookup below.
+    }
+  }
+  if (!item && resolvedThreadID) {
+    try {
+      const payload = await api(`/api/v2/threads/${encodeURIComponent(resolvedThreadID)}?account_id=${encodeURIComponent(resolvedAccountID)}`, { logErrors: false });
+      const threadItems = (Array.isArray(payload?.items) ? payload.items : []).map((entry) => normalizeIndexedMessageSummary(entry));
+      item = threadItems.find((entry) => resolvedMessageID && String(entry?.id || "") === resolvedMessageID)
+        || threadItems[0]
+        || null;
+    } catch {
+      // Keep the original not-found error below.
+    }
+  }
+  if (!item?.id) {
+    throw new Error("Thread was not found in the current indexed mailbox view.");
+  }
+  await openMessage(item.id, item);
+}
+
+async function openOutboundEnrollmentThread(enrollment) {
+  const item = enrollment || null;
+  if (!item) throw new Error("Choose a recipient first.");
+  const replyMessageID = String(item?.last_reply_message_id || "").trim();
+  const sentMessageID = String(item?.last_sent_message_id || "").trim();
+  const replyAccountID = outboundReplyAccountIDForEnrollment(item);
+  const senderAccountID = String(item?.sender_account_id || "").trim();
+  await openOutboundThreadByLocation(
+    replyMessageID ? replyAccountID : senderAccountID,
+    String(item?.thread_id || "").trim(),
+    replyMessageID || sentMessageID,
+  );
+}
+
+function replyOpsInitialBucket(items) {
+  const rows = Array.isArray(items) ? items : [];
+  const preferred = replyOpsBucketOrder().find((bucket) => rows.some((item) => String(item?.bucket || "").trim() === bucket));
+  return preferred || "";
+}
+
+async function loadReplyOpsDetail(id) {
+  const targetID = String(id || state.replyOps.selectedID || "").trim();
+  if (!targetID) {
+    state.replyOps.detail = null;
+    renderReplyOpsDetail();
+    return;
+  }
+  const item = await api(`/api/v2/reply-ops/items/${encodeURIComponent(targetID)}`, { logErrors: false });
+  state.replyOps.detail = item;
+  state.replyOps.selectedID = targetID;
+  renderReplyOpsList();
+  renderReplyOpsDetail();
+}
+
+async function loadReplyOpsWorkspace(opts = {}) {
+  if (!state.user) return;
+  state.replyOps.loading = true;
+  try {
+    await loadOutboundDependencies();
+    const payload = await api("/api/v2/reply-ops/queue", { logErrors: false });
+    state.replyOps.allItems = Array.isArray(payload?.items) ? payload.items : [];
+    const requestedBucket = String(opts.bucket || state.replyOps.bucket || "").trim();
+    if (requestedBucket && state.replyOps.allItems.some((item) => String(item?.bucket || "").trim() === requestedBucket)) {
+      state.replyOps.bucket = requestedBucket;
+    } else if (!requestedBucket) {
+      state.replyOps.bucket = replyOpsInitialBucket(state.replyOps.allItems);
+    } else {
+      state.replyOps.bucket = replyOpsInitialBucket(state.replyOps.allItems);
+    }
+    renderReplyOpsBuckets();
+    renderReplyOpsList();
+    const preserveSelection = opts.preserveSelection === true;
+    if (!preserveSelection || !state.replyOps.items.some((item) => String(item?.id || "") === String(state.replyOps.selectedID || ""))) {
+      state.replyOps.selectedID = String(state.replyOps.items[0]?.id || "");
+    }
+    if (state.replyOps.selectedID) {
+      await loadReplyOpsDetail(state.replyOps.selectedID);
+    } else {
+      state.replyOps.detail = null;
+      renderReplyOpsDetail();
+    }
+    setReplyOpsNote(
+      t("reply_ops_ready_replies_currently_in_queue", { count: state.replyOps.allItems.length }, "Reply Ops ready. {count} replies currently in queue."),
+      "info"
+    );
+  } finally {
+    state.replyOps.loading = false;
+  }
+}
+
+async function replyOpsClassify(outcome) {
+  const item = selectedReplyOpsItem();
+  if (!item) throw new Error("Choose a reply first.");
+  await api(`/api/v2/reply-ops/items/${encodeURIComponent(String(item.id || "").trim())}/classify`, {
+    method: "POST",
+    json: { outcome, confidence: 1 },
+    logErrors: false,
+  });
+  await loadReplyOpsWorkspace({ preserveSelection: true, bucket: state.replyOps.bucket });
+  if (String(item?.campaign_id || "").trim() === String(state.outbound.selectedCampaignID || "").trim()) {
+    await loadOutboundCampaignArtifacts(String(state.outbound.selectedCampaignID || "").trim());
+  }
+  setReplyOpsNote(
+    t("reply_classified_as_outcome", { outcome: humanizeReplyOutcome(outcome) }, "Reply classified as {outcome}."),
+    "ok"
+  );
+}
+
+async function replyOpsApplyAction(action, scopeValue = "", until = "") {
+  const item = selectedReplyOpsItem();
+  if (!item) throw new Error("Choose a reply first.");
+  await api(`/api/v2/reply-ops/items/${encodeURIComponent(String(item.id || "").trim())}/apply-action`, {
+    method: "POST",
+    json: {
+      action,
+      scope_value: String(scopeValue || "").trim(),
+      until: String(until || "").trim(),
+    },
+    logErrors: false,
+  });
+  await loadReplyOpsWorkspace({ preserveSelection: true, bucket: state.replyOps.bucket });
+  if (String(item?.campaign_id || "").trim() === String(state.outbound.selectedCampaignID || "").trim()) {
+    await loadOutboundCampaignArtifacts(String(state.outbound.selectedCampaignID || "").trim());
+  }
+}
+
+function parsePromptLocalDateTimeToISO(raw) {
+  const value = String(raw || "").trim();
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(t("enter_a_valid_local_date_and_time", {}, "Enter a valid local date and time."));
+  }
+  return parsed.toISOString();
+}
+
+async function replyOpsPauseUntil() {
+  const input = await showPromptModal({
+    title: t("pause_until", {}, "Pause Until"),
+    body: t("enter_a_local_date_and_time_like_2026_05_01t09_00", {}, "Enter a local date and time like 2026-05-01T09:00."),
+    label: t("local_time", {}, "Local time"),
+    confirmText: t("pause", {}, "Pause"),
+    cancelText: t("cancel", {}, "Cancel"),
+    trigger: el.replyOpsActionPause,
+  });
+  if (input === null) return;
+  const until = parsePromptLocalDateTimeToISO(input);
+  await replyOpsApplyAction("pause", "", until);
+  setReplyOpsNote(t("reply_paused_until_the_chosen_date", {}, "Reply paused until the chosen date."), "ok");
+}
+
+async function openSelectedReplyOpsThread() {
+  const item = selectedReplyOpsItem();
+  if (!item) throw new Error("Choose a reply first.");
+  await openOutboundThreadByLocation(item.reply_account_id || item.replyAccountID, item.thread_id || item.threadID, item.message_id || item.messageID);
+}
+
 function setActiveSettingsSection(name) {
   const next = ["interface", "signin", "mail", "devices", "sessions"].includes(String(name || "")) ? String(name) : "signin";
   state.ui.activeSettingsSection = next;
@@ -9158,15 +12004,31 @@ async function loadInterfaceSettings() {
   state.settings.interface.requestToken = requestToken;
   state.settings.interface.loading = true;
   const currentLocale = currentAppLocaleCode();
+  const currentFormatLocale = currentRegionalFormatLocale();
+  const currentTimezone = currentRegionalTimeZone();
   state.settings.interface.locale = currentLocale;
+  state.settings.interface.formatLocale = currentFormatLocale;
+  state.settings.interface.timezone = currentTimezone;
   state.settings.interface.loaded = false;
   state.settings.interface.persistedLocale = preferredLocaleFromPayload(state.user || {});
+  state.settings.interface.persistedFormatLocale = preferredFormatLocaleFromPayload(state.user || {});
+  state.settings.interface.persistedTimezone = preferredTimeZoneFromPayload(state.user || {});
   populateLanguageSelect(el.settingsLanguageSelect, currentLocale);
+  populateRegionalFormatSelect(el.settingsFormatLocaleSelect, currentFormatLocale);
+  populateTimeZoneDatalist();
+  if (el.settingsTimezoneInput) {
+    el.settingsTimezoneInput.value = currentTimezone;
+  }
+  renderSettingsInterfacePreview();
   if (el.settingsLanguageSelect) el.settingsLanguageSelect.disabled = true;
+  if (el.settingsFormatLocaleSelect) el.settingsFormatLocaleSelect.disabled = true;
+  if (el.settingsTimezoneInput) el.settingsTimezoneInput.disabled = true;
   if (el.btnSettingsLanguageSave) el.btnSettingsLanguageSave.disabled = true;
   if (!state.user) {
     state.settings.interface.loading = false;
     if (el.settingsLanguageSelect) el.settingsLanguageSelect.disabled = false;
+    if (el.settingsFormatLocaleSelect) el.settingsFormatLocaleSelect.disabled = false;
+    if (el.settingsTimezoneInput) el.settingsTimezoneInput.disabled = false;
     if (el.btnSettingsLanguageSave) el.btnSettingsLanguageSave.disabled = false;
     return;
   }
@@ -9176,10 +12038,21 @@ async function loadInterfaceSettings() {
       return;
     }
     const persistedLocale = preferredLocaleFromPayload(prefs);
+    const persistedFormatLocale = preferredFormatLocaleFromPayload(prefs);
+    const persistedTimezone = preferredTimeZoneFromPayload(prefs);
     state.settings.interface.persistedLocale = persistedLocale;
+    state.settings.interface.persistedFormatLocale = persistedFormatLocale;
+    state.settings.interface.persistedTimezone = persistedTimezone;
     state.settings.interface.locale = persistedLocale || currentLocale;
+    state.settings.interface.formatLocale = persistedFormatLocale || currentFormatLocale;
+    state.settings.interface.timezone = persistedTimezone || currentTimezone;
     state.settings.interface.loaded = true;
     populateLanguageSelect(el.settingsLanguageSelect, state.settings.interface.locale);
+    populateRegionalFormatSelect(el.settingsFormatLocaleSelect, state.settings.interface.formatLocale);
+    if (el.settingsTimezoneInput) {
+      el.settingsTimezoneInput.value = state.settings.interface.timezone;
+    }
+    renderSettingsInterfacePreview();
   } catch (err) {
     if (requestToken !== state.settings.interface.requestToken) {
       return;
@@ -9190,33 +12063,49 @@ async function loadInterfaceSettings() {
     if (requestToken === state.settings.interface.requestToken) {
       state.settings.interface.loading = false;
       if (el.settingsLanguageSelect) el.settingsLanguageSelect.disabled = false;
+      if (el.settingsFormatLocaleSelect) el.settingsFormatLocaleSelect.disabled = false;
+      if (el.settingsTimezoneInput) el.settingsTimezoneInput.disabled = false;
       if (el.btnSettingsLanguageSave) el.btnSettingsLanguageSave.disabled = false;
     }
   }
 }
 
 async function saveInterfaceLanguagePreference() {
-  if (!state.user || !el.settingsLanguageSelect) return;
+  if (!state.user || !el.settingsLanguageSelect || !el.settingsFormatLocaleSelect || !el.settingsTimezoneInput) return;
   const selectedLocale = normalizeSupportedLocaleCode(el.settingsLanguageSelect.value || currentAppLocaleCode());
+  const selectedFormatLocale = normalizeRegionalFormatLocale(el.settingsFormatLocaleSelect.value || "");
+  const selectedTimezone = normalizeTimeZoneName(el.settingsTimezoneInput.value || "");
+  if (!selectedFormatLocale) {
+    throw new Error(t("Choose a valid regional format.", {}, "Choose a valid regional format."));
+  }
+  if (!selectedTimezone) {
+    throw new Error(t("Choose a valid time zone.", {}, "Choose a valid time zone."));
+  }
   await api("/api/v2/preferences", {
     method: "PATCH",
-    json: { locale: selectedLocale },
+    json: {
+      locale: selectedLocale,
+      format_locale: selectedFormatLocale,
+      timezone: selectedTimezone,
+    },
     logErrors: false,
   });
   state.settings.interface.persistedLocale = selectedLocale;
+  state.settings.interface.persistedFormatLocale = selectedFormatLocale;
+  state.settings.interface.persistedTimezone = selectedTimezone;
   state.settings.interface.locale = selectedLocale;
+  state.settings.interface.formatLocale = selectedFormatLocale;
+  state.settings.interface.timezone = selectedTimezone;
   state.settings.interface.loaded = true;
   if (state.user) {
     state.user.locale = selectedLocale;
+    state.user.format_locale = selectedFormatLocale;
+    state.user.timezone = selectedTimezone;
   }
-  if (currentAppLocaleCode() !== selectedLocale) {
-    setStatus(t("language_saved_reloading_interface", {}, "Language saved. Reloading interface..."), "ok");
-    window.setTimeout(() => {
-      window.location.reload();
-    }, 140);
-    return;
-  }
-  setStatus(t("language_saved", {}, "Language saved."), "ok");
+  setStatus(t("Interface settings saved. Reloading interface...", {}, "Interface settings saved. Reloading interface..."), "ok");
+  window.setTimeout(() => {
+    window.location.reload();
+  }, 140);
 }
 
 function setActiveAdminSection(name) {
@@ -9252,6 +12141,8 @@ function applyNavVisibility() {
     el.tabAuth.style.display = "none";
     el.tabMail.style.display = "none";
     el.tabContacts.style.display = "none";
+    el.tabOutbound.style.display = "none";
+    el.tabReplyOps.style.display = "none";
     el.tabSettings.style.display = "none";
     el.tabAdmin.style.display = "none";
     if (el.btnNotificationCenter) el.btnNotificationCenter.style.display = "none";
@@ -9267,6 +12158,8 @@ function applyNavVisibility() {
     el.tabAuth.style.display = "inline-block";
     el.tabMail.style.display = "none";
     el.tabContacts.style.display = "none";
+    el.tabOutbound.style.display = "none";
+    el.tabReplyOps.style.display = "none";
     el.tabSettings.style.display = "none";
     el.tabAdmin.style.display = "none";
     if (el.btnNotificationCenter) el.btnNotificationCenter.style.display = "none";
@@ -9276,6 +12169,8 @@ function applyNavVisibility() {
   el.tabAuth.style.display = "none";
   el.tabMail.style.display = "inline-block";
   el.tabContacts.style.display = "inline-block";
+  el.tabOutbound.style.display = "inline-block";
+  el.tabReplyOps.style.display = "inline-block";
   el.tabSettings.style.display = "inline-block";
   el.tabAdmin.style.display = state.user.role === "admin" ? "inline-block" : "none";
   if (el.btnNotificationCenter) el.btnNotificationCenter.style.display = "inline-flex";
@@ -11958,7 +14853,12 @@ function formatDateTimeOrNA(raw) {
   if (!value) return t("n/a");
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString(uiLocaleList());
+  return formatDateTimeWithProfile(parsed, {
+    formatLocale: currentRegionalFormatLocale(),
+    timeZone: currentRegionalTimeZone(),
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 function renderJumpResults(container, items, onPick) {
@@ -12021,6 +14921,18 @@ function settingsSearchEntries() {
       label: t("Language"),
       subtitle: t("Interface"),
       keywords: ["language", "locale", "account language", "язык", "язык интерфейса"],
+      target: { domain: "interface" },
+    },
+    {
+      label: t("Regional Format"),
+      subtitle: t("Interface"),
+      keywords: ["regional format", "date format", "number format", "locale format", "региональный формат", "формат даты", "формат времени"],
+      target: { domain: "interface" },
+    },
+    {
+      label: t("Time Zone"),
+      subtitle: t("Interface"),
+      keywords: ["time zone", "timezone", "clock", "часовой пояс", "время"],
       target: { domain: "interface" },
     },
     {
@@ -12690,6 +15602,8 @@ async function loadSetupStatus() {
   state.setup.passwordMinLength = Number(data.password_min_length || 12);
   state.setup.passwordMaxLength = Number(data.password_max_length || 128);
   state.setup.passwordClassMin = Number(data.password_class_min || 3);
+  state.defaults.formatLocale = normalizeRegionalFormatLocale(data.default_format_locale || "") || "";
+  state.defaults.timezone = normalizeTimeZoneName(data.default_timezone || "") || "";
   renderAuthIdentifierUI();
   return data;
 }
@@ -12698,7 +15612,8 @@ async function completeSetup() {
   const domain = normalizeDomain(el.setupDomain.value);
   const identifier = String(el.setupAdminEmail.value || "").trim().toLowerCase();
   const recoveryEmail = String(el.setupAdminRecoveryEmail?.value || "").trim().toLowerCase();
-  const region = String(el.setupRegion.value || "us-east").trim();
+  const defaultFormatLocale = normalizeRegionalFormatLocale(el.setupFormatLocale?.value || "");
+  const defaultTimezone = normalizeTimeZoneName(el.setupTimezone?.value || "");
   const password = el.setupPassword.value;
   const mailboxLogin = String(el.setupAdminMailboxLogin?.value || "").trim();
   const passkeyPrimaryEnabled = !!el.setupPasskeyPrimaryEnabled?.checked;
@@ -12713,7 +15628,8 @@ async function completeSetup() {
       admin_recovery_email: setupModeSupportsRecoveryEmail() ? recoveryEmail : "",
       admin_mailbox_login: mailboxLogin,
       admin_password: password,
-      region,
+      default_format_locale: defaultFormatLocale,
+      default_timezone: defaultTimezone,
       instance_mode: state.setup.instanceMode,
       passkey_primary_sign_in_enabled: passkeyPrimaryEnabled,
       automatic_updates_enabled: automaticUpdatesEnabled,
@@ -12754,6 +15670,8 @@ const OOBEController = {
   init() {
     const mode = normalizeSetupInstanceMode(state.setup.instanceMode);
     const domain = state.setup.baseDomain || "example.com";
+    const defaultFormatLocale = normalizeRegionalFormatLocale(state.defaults.formatLocale) || detectSystemFormatLocale() || fallbackRegionalFormatLocale();
+    const defaultTimezone = normalizeTimeZoneName(state.defaults.timezone) || detectSystemTimeZone() || "UTC";
     el.setupDomain.value = domain;
     el.setupAdminEmail.value = state.setup.defaultAdminEmail || setupModeDefaultAdminValue(mode, domain);
     if (el.setupAdminRecoveryEmail) el.setupAdminRecoveryEmail.value = "";
@@ -12761,7 +15679,14 @@ const OOBEController = {
     el.setupPasswordConfirm.value = "";
     if (el.setupAdminMailboxLogin) el.setupAdminMailboxLogin.value = "";
     if (el.setupPasskeyPrimaryEnabled) el.setupPasskeyPrimaryEnabled.checked = state.setup.passkeyPrimaryEnabled !== false;
-    el.setupRegion.value = el.setupRegion.value || "us-east";
+    populateTimeZoneDatalist();
+    populateRegionalFormatSelect(el.setupFormatLocale, defaultFormatLocale);
+    if (el.setupFormatLocale) {
+      el.setupFormatLocale.value = defaultFormatLocale;
+    }
+    if (el.setupTimezone) {
+      el.setupTimezone.value = defaultTimezone;
+    }
     if (el.setupCompleteNote) {
       el.setupCompleteNote.textContent = t("Auto opening mail in 3 seconds.");
     }
@@ -12780,6 +15705,7 @@ const OOBEController = {
     }
     this.setThemeChoice(ThemeController.getTheme() || state.theme || "machine-dark", { applyTheme: false });
     this.setAutomaticUpdatesChoice(state.setup.automaticUpdatesEnabled !== false);
+    renderSetupRegionalPreview();
     setSetupInlineStatus("");
     this.setInstanceMode(mode, { forceDefault: true });
     this.updatePasswordHint();
@@ -12931,7 +15857,15 @@ const OOBEController = {
     const mode = normalizeSetupInstanceMode(state.setup.instanceMode);
     const usesLocalMail = setupModeUsesLocalMail(mode);
     const supportsRecoveryEmail = setupModeSupportsRecoveryEmail(mode);
-    el.setupSummaryRegion.textContent = el.setupRegion.options[el.setupRegion.selectedIndex]?.text || "-";
+    if (el.setupSummaryFormatLocale) {
+      const formatLocale = normalizeRegionalFormatLocale(el.setupFormatLocale?.value || "");
+      el.setupSummaryFormatLocale.textContent = formatLocale
+        ? buildRegionalFormatOptionLabel(formatLocale)
+        : "-";
+    }
+    if (el.setupSummaryTimezone) {
+      el.setupSummaryTimezone.textContent = normalizeTimeZoneName(el.setupTimezone?.value || "") || "-";
+    }
     if (el.setupSummaryMode) {
       el.setupSummaryMode.textContent = setupModeSummaryLabel(mode);
     }
@@ -12960,6 +15894,17 @@ const OOBEController = {
   },
 
   validateStep(stepId) {
+    if (stepId === 2) {
+      const formatLocale = normalizeRegionalFormatLocale(el.setupFormatLocale?.value || "");
+      const timeZone = normalizeTimeZoneName(el.setupTimezone?.value || "");
+      if (!formatLocale) {
+        throw new Error(t("Choose a valid regional format.", {}, "Choose a valid regional format."));
+      }
+      if (!timeZone) {
+        throw new Error(t("Choose a valid time zone.", {}, "Choose a valid time zone."));
+      }
+    }
+
     if (stepId === 5) {
       const mode = normalizeSetupInstanceMode(state.setup.instanceMode);
       const usesLocalMail = setupModeUsesLocalMail(mode);
@@ -13286,36 +16231,60 @@ function maybeReloadForPreferredLocale(payload = {}) {
   return true;
 }
 
-async function ensureUserLocalePreference() {
-  if (localePreferenceSyncPromise) {
-    return localePreferenceSyncPromise;
+async function ensureUserInterfacePreference() {
+  if (interfacePreferenceSyncPromise) {
+    return interfacePreferenceSyncPromise;
   }
   if (!state.user || requiresMFAStageAuthentication(state.user)) {
     return null;
   }
-  if (preferredLocaleFromPayload(state.user)) {
+  const locale = currentAppLocaleCode();
+  const formatLocale = detectSystemFormatLocale() || currentRegionalFormatLocale();
+  const timeZone = detectSystemTimeZone() || currentRegionalTimeZone();
+  const patch = {};
+  if (!preferredLocaleFromPayload(state.user)) {
+    patch.locale = locale;
+  }
+  if (!preferredFormatLocaleFromPayload(state.user) && formatLocale) {
+    patch.format_locale = formatLocale;
+  }
+  if (!preferredTimeZoneFromPayload(state.user) && timeZone) {
+    patch.timezone = timeZone;
+  }
+  if (Object.keys(patch).length === 0) {
     return null;
   }
-  const locale = currentAppLocaleCode();
-  localePreferenceSyncPromise = (async () => {
+  interfacePreferenceSyncPromise = (async () => {
     try {
       await api("/api/v2/preferences", {
         method: "PATCH",
-        json: { locale },
+        json: patch,
         logErrors: false,
       });
       if (state.user) {
-        state.user.locale = locale;
+        if (patch.locale) state.user.locale = patch.locale;
+        if (patch.format_locale) state.user.format_locale = patch.format_locale;
+        if (patch.timezone) state.user.timezone = patch.timezone;
       }
-      state.settings.interface.persistedLocale = locale;
-      state.settings.interface.locale = locale;
+      if (patch.locale) {
+        state.settings.interface.persistedLocale = patch.locale;
+        state.settings.interface.locale = patch.locale;
+      }
+      if (patch.format_locale) {
+        state.settings.interface.persistedFormatLocale = patch.format_locale;
+        state.settings.interface.formatLocale = patch.format_locale;
+      }
+      if (patch.timezone) {
+        state.settings.interface.persistedTimezone = patch.timezone;
+        state.settings.interface.timezone = patch.timezone;
+      }
     } catch {
       // Best effort only.
     } finally {
-      localePreferenceSyncPromise = null;
+      interfacePreferenceSyncPromise = null;
     }
   })();
-  return localePreferenceSyncPromise;
+  return interfacePreferenceSyncPromise;
 }
 
 async function finalizePrimaryLogin(loginPayload) {
@@ -13360,13 +16329,16 @@ async function refreshSession(opts = {}) {
       logErrors: !opts.skipUnauthorizedHandling,
     });
     state.user = me;
+    state.settings.interface.persistedLocale = preferredLocaleFromPayload(me);
+    state.settings.interface.persistedFormatLocale = preferredFormatLocaleFromPayload(me);
+    state.settings.interface.persistedTimezone = preferredTimeZoneFromPayload(me);
     if (!opts.quiet) {
       setStatus(t("signed_in_as_email", { email: me.email }, `Signed in as ${me.email}.`), "ok");
     }
     applyNavVisibility();
     syncSessionKeepalive();
     syncMFAApprovalPolling();
-    await ensureUserLocalePreference();
+    await ensureUserInterfacePreference();
     if (!opts.skipPostAuthLoads) {
       await promptRecoveryEmailIfNeeded();
       await promptLegacyMFAIfNeeded();
@@ -21629,7 +24601,12 @@ function formatDate(value) {
   if (!value) return "";
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleString(uiLocaleList());
+  return formatDateTimeWithProfile(d, {
+    formatLocale: currentRegionalFormatLocale(),
+    timeZone: currentRegionalTimeZone(),
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
 }
 
 function formatListDate(value) {
@@ -21637,29 +24614,47 @@ function formatListDate(value) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return String(value);
   const now = new Date();
-  const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const nowStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const deltaDays = Math.round((nowStart.getTime() - dayStart.getTime()) / 86400000);
+  const timeZone = currentRegionalTimeZone();
+  const deltaDays = zonedDayIndex(now, timeZone) - zonedDayIndex(d, timeZone);
   if (deltaDays === 0) {
-    return d.toLocaleTimeString(uiLocaleList(), { hour: "2-digit", minute: "2-digit" });
+    return formatDateTimeWithProfile(d, {
+      formatLocale: currentRegionalFormatLocale(),
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+    });
   }
   if (deltaDays === 1) {
     return t("Yesterday");
   }
   if (deltaDays > 1 && deltaDays < 7) {
-    return d.toLocaleDateString(uiLocaleList(), { weekday: "short" });
+    return formatDateTimeWithProfile(d, {
+      formatLocale: currentRegionalFormatLocale(),
+      timeZone,
+      weekday: "short",
+    });
   }
-  if (d.getFullYear() === now.getFullYear()) {
-    return d.toLocaleDateString(uiLocaleList(), { month: "short", day: "numeric" });
+  const currentParts = zonedDateTimeParts(now, timeZone);
+  const dateParts = zonedDateTimeParts(d, timeZone);
+  if (dateParts.year === currentParts.year) {
+    return formatDateTimeWithProfile(d, {
+      formatLocale: currentRegionalFormatLocale(),
+      timeZone,
+      month: "short",
+      day: "numeric",
+    });
   }
-  return d.toLocaleDateString(uiLocaleList(), { month: "short", day: "numeric", year: "numeric" });
+  return formatDateTimeWithProfile(d, {
+    formatLocale: currentRegionalFormatLocale(),
+    timeZone,
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 function localDateTimeInputValue(value) {
-  const date = value instanceof Date ? value : new Date(value || Date.now());
-  if (Number.isNaN(date.getTime())) return "";
-  const pad = (num) => String(num).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return zonedWallClockInputValue(value, currentRegionalTimeZone());
 }
 
 function formatMailTriageChipTime(value, options = {}) {
@@ -21667,9 +24662,20 @@ function formatMailTriageChipTime(value, options = {}) {
   if (!raw) return "";
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return raw;
+  const timeZone = currentRegionalTimeZone();
   if (options.compact !== false) {
-    const day = date.toLocaleDateString(uiLocaleList(), { month: "short", day: "numeric" });
-    const time = date.toLocaleTimeString(uiLocaleList(), { hour: "numeric", minute: "2-digit" });
+    const day = formatDateTimeWithProfile(date, {
+      formatLocale: currentRegionalFormatLocale(),
+      timeZone,
+      month: "short",
+      day: "numeric",
+    });
+    const time = formatDateTimeWithProfile(date, {
+      formatLocale: currentRegionalFormatLocale(),
+      timeZone,
+      hour: "numeric",
+      minute: "2-digit",
+    });
     return `${day} ${time}`;
   }
   return formatDate(date.toISOString());
@@ -21883,42 +24889,47 @@ function updateLocalMailTriageStates(items = []) {
   (Array.isArray(state.thread?.items) ? state.thread.items : []).forEach(applyToItem);
 }
 
-function nextMailTriagePresetDate(preset) {
-  const now = new Date();
-  const date = new Date(now.getTime());
+function nextMailTriagePresetLocalValue(preset) {
+  const timeZone = currentRegionalTimeZone();
+  const now = zonedDateTimeParts(new Date(), timeZone);
+  const base = wallClockDate(now);
+  let target = new Date(base.getTime());
   switch (String(preset || "").trim()) {
     case "later_today": {
-      const later = new Date(now.getTime() + (3 * 60 * 60 * 1000));
-      const evening = new Date(now.getTime());
-      evening.setHours(18, 0, 0, 0);
-      return later > evening ? later : evening;
+      const later = new Date(base.getTime() + (3 * 60 * 60 * 1000));
+      const evening = new Date(Date.UTC(now.year, now.month - 1, now.day, 18, 0, 0, 0));
+      target = later > evening ? later : evening;
+      break;
     }
     case "tomorrow":
-      date.setDate(date.getDate() + 1);
-      date.setHours(9, 0, 0, 0);
-      return date;
+      target = new Date(Date.UTC(now.year, now.month - 1, now.day + 1, 9, 0, 0, 0));
+      break;
     case "weekend": {
-      const day = date.getDay();
+      const day = base.getUTCDay();
       const delta = day === 6 ? 0 : day === 0 ? 6 : (6 - day);
-      date.setDate(date.getDate() + delta);
-      date.setHours(9, 0, 0, 0);
-      return date;
+      target = new Date(Date.UTC(now.year, now.month - 1, now.day + delta, 9, 0, 0, 0));
+      break;
     }
     case "next_week": {
-      const day = date.getDay();
+      const day = base.getUTCDay();
       const delta = day === 0 ? 1 : (8 - day);
-      date.setDate(date.getDate() + delta);
-      date.setHours(9, 0, 0, 0);
-      return date;
+      target = new Date(Date.UTC(now.year, now.month - 1, now.day + delta, 9, 0, 0, 0));
+      break;
     }
     default:
-      date.setHours(date.getHours() + 1, 0, 0, 0);
-      return date;
+      target.setUTCSeconds(0, 0);
+      target.setUTCMinutes(0);
+      target.setUTCHours(target.getUTCHours() + 1);
+      break;
   }
+  return wallClockInputValueFromParts(wallClockPartsFromDate(target));
 }
 
 async function promptMailTriageDateTime(kind, trigger = null, preset = "") {
-  const defaultValue = localDateTimeInputValue(preset ? nextMailTriagePresetDate(preset) : new Date(Date.now() + 60 * 60 * 1000));
+  const timeZone = currentRegionalTimeZone();
+  const defaultValue = preset
+    ? nextMailTriagePresetLocalValue(preset)
+    : localDateTimeInputValue(new Date(Date.now() + 60 * 60 * 1000));
   const input = await showPromptModal({
     title: kind === "snooze"
       ? t("snooze_conversation", {}, "Snooze Conversation")
@@ -21938,11 +24949,11 @@ async function promptMailTriageDateTime(kind, trigger = null, preset = "") {
     trigger,
   });
   if (input === null) return null;
-  const date = new Date(String(input || "").trim());
-  if (Number.isNaN(date.getTime())) {
+  const isoValue = zonedWallClockToISO(String(input || "").trim(), timeZone);
+  if (!isoValue) {
     throw new Error(t("choose_a_valid_date_and_time", {}, "Choose a valid date and time."));
   }
-  return date.toISOString();
+  return isoValue;
 }
 
 function matchMailTriageCatalogEntryByName(items, value) {
@@ -22231,10 +25242,25 @@ function bindSetupUI() {
     });
   }
 
-  el.setupRegion.addEventListener("change", () => {
-    OOBEController.updateSummary();
-    OOBEController.refreshNavState();
-  });
+  if (el.setupFormatLocale) {
+    el.setupFormatLocale.addEventListener("change", () => {
+      renderSetupRegionalPreview();
+      OOBEController.updateSummary();
+      OOBEController.refreshNavState();
+    });
+  }
+  if (el.setupTimezone) {
+    el.setupTimezone.addEventListener("input", () => {
+      renderSetupRegionalPreview();
+      OOBEController.updateSummary();
+      OOBEController.refreshNavState();
+    });
+    el.setupTimezone.addEventListener("change", () => {
+      renderSetupRegionalPreview();
+      OOBEController.updateSummary();
+      OOBEController.refreshNavState();
+    });
+  }
   if (el.setupThemeMachine) {
     el.setupThemeMachine.addEventListener("click", () => OOBEController.setThemeChoice("machine-dark"));
   }
@@ -22291,6 +25317,7 @@ function bindUI() {
   setActiveSettingsSection(state.ui.activeSettingsSection || "signin");
   setActiveAdminSection(state.ui.activeAdminSection || "system");
   setActiveMailPane(state.ui.activeMailPane || "mailboxes", { focus: false });
+  syncOutboundFormHints();
   if (el.authModeLogin) {
     el.authModeLogin.onclick = () => {
       setActiveAuthTask("login");
@@ -22331,6 +25358,10 @@ function bindUI() {
         setActiveAuthTask(state.ui.activeAuthTask || "login");
       } else if (!el.viewAdmin.classList.contains("hidden")) {
         showView("admin");
+      } else if (!el.viewReplyOps.classList.contains("hidden")) {
+        showView("reply-ops");
+      } else if (!el.viewOutbound.classList.contains("hidden")) {
+        showView("outbound");
       } else if (!el.viewContacts.classList.contains("hidden")) {
         showView("contacts");
       } else if (!el.viewSettings.classList.contains("hidden")) {
@@ -22503,8 +25534,21 @@ function bindUI() {
       try {
         await saveInterfaceLanguagePreference();
       } catch (err) {
-        presentAPIError(err, t("failed_to_save_language_preference", {}, "Failed to save language preference"));
+        presentAPIError(err, t("failed_to_save_interface_settings", {}, "Failed to save interface settings."));
       }
+    });
+  }
+  if (el.settingsFormatLocaleSelect) {
+    el.settingsFormatLocaleSelect.addEventListener("change", () => {
+      renderSettingsInterfacePreview();
+    });
+  }
+  if (el.settingsTimezoneInput) {
+    el.settingsTimezoneInput.addEventListener("input", () => {
+      renderSettingsInterfacePreview();
+    });
+    el.settingsTimezoneInput.addEventListener("change", () => {
+      renderSettingsInterfacePreview();
     });
   }
 
@@ -24206,6 +27250,60 @@ function bindUI() {
     };
   }
 
+  if (el.tabOutbound) {
+    el.tabOutbound.onclick = async () => {
+      if (!state.user || state.setup.required) return;
+      if (requiresMFAStageAuthentication(state.user)) {
+        try {
+          await ensureMFAStageAuthenticated(state.user);
+          await refreshSession({
+            throwOnFail: true,
+            skipUnauthorizedHandling: true,
+            skipMFAHandling: true,
+          });
+        } catch (err) {
+          presentAPIError(err, "Multi-factor authentication is required before opening Outbound.");
+          return;
+        }
+      }
+      closeComposeOverlay(false);
+      setActiveTab(el.tabOutbound);
+      showView("outbound");
+      try {
+        await loadOutboundWorkspace();
+      } catch (err) {
+        presentAPIError(err, "Failed to load outbound workspace.");
+      }
+    };
+  }
+
+  if (el.tabReplyOps) {
+    el.tabReplyOps.onclick = async () => {
+      if (!state.user || state.setup.required) return;
+      if (requiresMFAStageAuthentication(state.user)) {
+        try {
+          await ensureMFAStageAuthenticated(state.user);
+          await refreshSession({
+            throwOnFail: true,
+            skipUnauthorizedHandling: true,
+            skipMFAHandling: true,
+          });
+        } catch (err) {
+          presentAPIError(err, "Multi-factor authentication is required before opening Reply Ops.");
+          return;
+        }
+      }
+      closeComposeOverlay(false);
+      setActiveTab(el.tabReplyOps);
+      showView("reply-ops");
+      try {
+        await loadReplyOpsWorkspace();
+      } catch (err) {
+        presentAPIError(err, "Failed to load reply operations.");
+      }
+    };
+  }
+
   if (el.tabSettings) {
     el.tabSettings.onclick = async () => {
       if (!state.user || state.setup.required) return;
@@ -24271,6 +27369,366 @@ function bindUI() {
       presentAPIError(err, "Failed to load admin data");
     }
   };
+
+  if (el.btnOutboundRefresh) {
+    el.btnOutboundRefresh.onclick = async () => {
+      try {
+        await loadOutboundWorkspace({ selectCampaignID: state.outbound.selectedCampaignID });
+      } catch (err) {
+        presentAPIError(err, "Failed to refresh outbound workspace.");
+      }
+    };
+  }
+  if (el.btnOutboundNew) {
+    el.btnOutboundNew.onclick = () => {
+      state.outbound.activeSection = "strategy";
+      state.outbound.selectedCampaignID = "";
+      state.outbound.selectedStepID = "";
+      state.outbound.selectedEnrollmentID = "";
+      state.outbound.steps = [];
+      state.outbound.enrollments = [];
+      state.outbound.audiencePreview = [];
+      state.outbound.events = [];
+      fillOutboundCampaignForm(null);
+      fillOutboundAudienceForm(null);
+      fillOutboundStepForm(null);
+      renderOutboundSummary();
+      renderOutboundCampaignList();
+      renderOutboundStepList();
+      renderOutboundEnrollmentList();
+      renderOutboundAudiencePreviewList();
+      renderOutboundSenderControl();
+      renderOutboundDiagnostics();
+      renderOutboundEvents();
+      setActiveOutboundSection(state.outbound.activeSection);
+      syncOutboundCampaignActionButtons();
+      setOutboundNote(t("create_a_new_campaign", {}, "Create a new campaign."), "info");
+    };
+  }
+  if (el.outboundSectionStrategy) {
+    el.outboundSectionStrategy.addEventListener("click", () => {
+      setActiveOutboundSection("strategy");
+      renderOutboundSummary();
+    });
+  }
+  if (el.outboundSectionAudience) {
+    el.outboundSectionAudience.addEventListener("click", () => {
+      setActiveOutboundSection("audience");
+      renderOutboundSummary();
+    });
+  }
+  if (el.outboundSectionHealth) {
+    el.outboundSectionHealth.addEventListener("click", () => {
+      setActiveOutboundSection("health");
+      renderOutboundSummary();
+    });
+  }
+  if (el.outboundCampaignName) {
+    el.outboundCampaignName.addEventListener("input", () => {
+      syncOutboundCampaignActionButtons();
+      renderOutboundSummary();
+    });
+  }
+  if (el.outboundCampaignPlaybook) {
+    el.outboundCampaignPlaybook.addEventListener("change", () => {
+      applyOutboundPlaybookFormDefaults(el.outboundCampaignPlaybook?.value || "");
+      syncOutboundCampaignActionButtons();
+      renderOutboundSummary();
+      renderOutboundSenderControl();
+    });
+  }
+  if (el.outboundCampaignAudienceKind) {
+    el.outboundCampaignAudienceKind.addEventListener("change", () => {
+      syncOutboundFormHints();
+      renderOutboundSummary();
+    });
+  }
+  if (el.outboundAudienceKind) {
+    el.outboundAudienceKind.addEventListener("change", syncOutboundFormHints);
+  }
+  if (el.outboundCampaignSenderKind) {
+    el.outboundCampaignSenderKind.addEventListener("change", () => {
+      syncOutboundFormHints();
+      renderOutboundSummary();
+      renderOutboundSenderControl();
+    });
+  }
+  if (el.outboundCampaignSenderRef) {
+    el.outboundCampaignSenderRef.addEventListener("input", () => {
+      renderOutboundSummary();
+      renderOutboundSenderControl();
+    });
+  }
+  if (el.outboundCampaignMode) {
+    el.outboundCampaignMode.addEventListener("change", () => {
+      syncOutboundCampaignActionButtons();
+      renderOutboundSummary();
+      renderOutboundSenderControl();
+    });
+  }
+  if (el.btnOutboundApplyPlaybook) {
+    el.btnOutboundApplyPlaybook.onclick = async () => {
+      try {
+        await applyOutboundPlaybook({ replaceSteps: false });
+      } catch (err) {
+        setOutboundNote(formatAPIError(err, "Failed to apply playbook."), "error");
+      }
+    };
+  }
+  if (el.btnOutboundSave) {
+    el.btnOutboundSave.onclick = async () => {
+      try {
+        await saveOutboundCampaign();
+      } catch (err) {
+        setOutboundNote(formatAPIError(err, "Failed to save campaign."), "error");
+      }
+    };
+  }
+  if (el.btnOutboundPreflight) {
+    el.btnOutboundPreflight.onclick = async () => {
+      try {
+        await runOutboundPreflight();
+      } catch (err) {
+        setOutboundNote(formatAPIError(err, "Failed to run preflight."), "error");
+      }
+    };
+  }
+  if (el.btnOutboundLaunch) {
+    el.btnOutboundLaunch.onclick = async () => {
+      try {
+        await launchOutboundCampaign();
+      } catch (err) {
+        setOutboundNote(formatAPIError(err, "Failed to launch campaign."), "error");
+      }
+    };
+  }
+  if (el.btnOutboundPause) {
+    el.btnOutboundPause.onclick = async () => {
+      try {
+        await setOutboundCampaignStatus("pause");
+      } catch (err) {
+        setOutboundNote(formatAPIError(err, "Failed to pause campaign."), "error");
+      }
+    };
+  }
+  if (el.btnOutboundResume) {
+    el.btnOutboundResume.onclick = async () => {
+      try {
+        await setOutboundCampaignStatus("resume");
+      } catch (err) {
+        setOutboundNote(formatAPIError(err, "Failed to resume campaign."), "error");
+      }
+    };
+  }
+  if (el.btnOutboundArchive) {
+    el.btnOutboundArchive.onclick = async () => {
+      try {
+        await setOutboundCampaignStatus("archive");
+      } catch (err) {
+        setOutboundNote(formatAPIError(err, "Failed to archive campaign."), "error");
+      }
+    };
+  }
+  if (el.btnOutboundStepSave) {
+    el.btnOutboundStepSave.onclick = async () => {
+      try {
+        await saveOutboundStep();
+      } catch (err) {
+        setOutboundNote(formatAPIError(err, "Failed to save step."), "error");
+      }
+    };
+  }
+  if (el.btnOutboundStepNew) {
+    el.btnOutboundStepNew.onclick = () => {
+      state.outbound.activeSection = "strategy";
+      state.outbound.selectedStepID = "";
+      fillOutboundStepForm(null);
+      renderOutboundSummary();
+      renderOutboundStepList();
+      setActiveOutboundSection(state.outbound.activeSection);
+      setOutboundNote(t("create_a_new_sequence_step", {}, "Create a new sequence step."), "info");
+    };
+  }
+  if (el.outboundStepKind) {
+    el.outboundStepKind.addEventListener("change", syncOutboundStepEditor);
+  }
+  if (el.btnOutboundAudiencePreview) {
+    el.btnOutboundAudiencePreview.onclick = async () => {
+      try {
+        await previewOutboundAudience();
+      } catch (err) {
+        setOutboundNote(formatAPIError(err, "Failed to preview audience."), "error");
+      }
+    };
+  }
+  if (el.btnOutboundAudienceImport) {
+    el.btnOutboundAudienceImport.onclick = async () => {
+      try {
+        await importOutboundAudience();
+      } catch (err) {
+        setOutboundNote(formatAPIError(err, "Failed to import audience."), "error");
+      }
+    };
+  }
+  if (el.btnReplyOpsRefresh) {
+    el.btnReplyOpsRefresh.onclick = async () => {
+      try {
+        await loadReplyOpsWorkspace({ preserveSelection: true, bucket: state.replyOps.bucket });
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to refresh reply queue."), "error");
+      }
+    };
+  }
+  if (el.btnReplyOpsOpenThread) {
+    el.btnReplyOpsOpenThread.onclick = async () => {
+      try {
+        await openSelectedReplyOpsThread();
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to open thread."), "error");
+      }
+    };
+  }
+  if (el.btnReplyOpsTakeover) {
+    el.btnReplyOpsTakeover.onclick = async () => {
+      try {
+        await replyOpsApplyAction("takeover");
+        setReplyOpsNote(t("reply_assigned_for_manual_takeover", {}, "Reply assigned for manual takeover."), "ok");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to take over reply."), "error");
+      }
+    };
+  }
+  if (el.btnReplyOpsStop) {
+    el.btnReplyOpsStop.onclick = async () => {
+      try {
+        await replyOpsApplyAction("stop");
+        setReplyOpsNote(t("reply_stopped", {}, "Reply stopped."), "ok");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to stop recipient."), "error");
+      }
+    };
+  }
+  if (el.replyOpsClassifyPositive) {
+    el.replyOpsClassifyPositive.onclick = async () => {
+      try {
+        await replyOpsClassify("positive_interest");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to classify reply."), "error");
+      }
+    };
+  }
+  if (el.replyOpsClassifyQuestion) {
+    el.replyOpsClassifyQuestion.onclick = async () => {
+      try {
+        await replyOpsClassify("question");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to classify reply."), "error");
+      }
+    };
+  }
+  if (el.replyOpsClassifyObjection) {
+    el.replyOpsClassifyObjection.onclick = async () => {
+      try {
+        await replyOpsClassify("objection");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to classify reply."), "error");
+      }
+    };
+  }
+  if (el.replyOpsClassifyWrong) {
+    el.replyOpsClassifyWrong.onclick = async () => {
+      try {
+        await replyOpsClassify("wrong_person");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to classify reply."), "error");
+      }
+    };
+  }
+  if (el.replyOpsClassifyNegative) {
+    el.replyOpsClassifyNegative.onclick = async () => {
+      try {
+        await replyOpsClassify("not_interested");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to classify reply."), "error");
+      }
+    };
+  }
+  if (el.replyOpsClassifyUnsub) {
+    el.replyOpsClassifyUnsub.onclick = async () => {
+      try {
+        await replyOpsClassify("unsubscribe_request");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to classify reply."), "error");
+      }
+    };
+  }
+  if (el.replyOpsClassifyOOO) {
+    el.replyOpsClassifyOOO.onclick = async () => {
+      try {
+        await replyOpsClassify("out_of_office");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to classify reply."), "error");
+      }
+    };
+  }
+  if (el.replyOpsClassifyBounce) {
+    el.replyOpsClassifyBounce.onclick = async () => {
+      try {
+        await replyOpsClassify("bounce");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to classify reply."), "error");
+      }
+    };
+  }
+  if (el.replyOpsClassifyHostile) {
+    el.replyOpsClassifyHostile.onclick = async () => {
+      try {
+        await replyOpsClassify("hostile");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to classify reply."), "error");
+      }
+    };
+  }
+  if (el.replyOpsActionSuppressRecipient) {
+    el.replyOpsActionSuppressRecipient.onclick = async () => {
+      try {
+        await replyOpsApplyAction("suppress_recipient");
+        setReplyOpsNote(t("recipient_suppressed", {}, "Recipient suppressed."), "ok");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to suppress recipient."), "error");
+      }
+    };
+  }
+  if (el.replyOpsActionSuppressDomain) {
+    el.replyOpsActionSuppressDomain.onclick = async () => {
+      try {
+        const item = selectedReplyOpsItem();
+        await replyOpsApplyAction("suppress_domain", item?.recipient_domain || "");
+        setReplyOpsNote(t("domain_suppressed", {}, "Domain suppressed."), "ok");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to suppress domain."), "error");
+      }
+    };
+  }
+  if (el.replyOpsActionPause) {
+    el.replyOpsActionPause.onclick = async () => {
+      try {
+        await replyOpsPauseUntil();
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to pause reply."), "error");
+      }
+    };
+  }
+  if (el.replyOpsActionResume) {
+    el.replyOpsActionResume.onclick = async () => {
+      try {
+        await replyOpsApplyAction("resume");
+        setReplyOpsNote(t("reply_resumed", {}, "Reply resumed."), "ok");
+      } catch (err) {
+        setReplyOpsNote(formatAPIError(err, "Failed to resume reply."), "error");
+      }
+    };
+  }
 
   el.btnLogout.onclick = async () => {
     try {
@@ -24981,6 +28439,7 @@ async function runAppBootstrap() {
   localizeDocumentNow();
   loadStoredNotifications();
   bindUI();
+  populateTimeZoneDatalist();
   window.addEventListener("beforeunload", () => {
     if (!state.ui.composeOpen || !el.composeForm) return;
     syncComposeDraftFields();

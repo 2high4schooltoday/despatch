@@ -95,7 +95,7 @@ func (h *Handlers) V2Login(w http.ResponseWriter, r *http.Request) {
 		"mail_secret_required": strings.TrimSpace(sess.MailSecret) == "",
 	}
 	applyAuthStageFields(out, stage)
-	h.applyUserLocaleField(r.Context(), out, user.ID)
+	h.applyUserInterfacePreferenceFields(r.Context(), out, user.ID)
 	util.WriteJSON(w, 200, out)
 }
 
@@ -382,7 +382,7 @@ func (h *Handlers) passkeyLoginFinish(w http.ResponseWriter, r *http.Request) {
 		"mail_secret_required": strings.TrimSpace(sess.MailSecret) == "",
 	}
 	applyAuthStageFields(out, stage)
-	h.applyUserLocaleField(r.Context(), out, user.ID)
+	h.applyUserInterfacePreferenceFields(r.Context(), out, user.ID)
 	util.WriteJSON(w, 200, out)
 }
 
@@ -3320,6 +3320,20 @@ func (h *Handlers) V2UpdatePreferences(w http.ResponseWriter, r *http.Request) {
 	}
 	applyPreferencesPatch(&current, req)
 	current.UserID = u.ID
+	if strings.TrimSpace(current.FormatLocale) != "" {
+		current.FormatLocale = normalizeLocaleTag(current.FormatLocale)
+		if current.FormatLocale == "" {
+			util.WriteError(w, 400, "preferences_update_failed", "format_locale is invalid", middleware.RequestID(r.Context()))
+			return
+		}
+	}
+	if strings.TrimSpace(current.Timezone) != "" {
+		current.Timezone = normalizeTimeZoneName(current.Timezone)
+		if current.Timezone == "" {
+			util.WriteError(w, 400, "preferences_update_failed", "timezone is invalid", middleware.RequestID(r.Context()))
+			return
+		}
+	}
 	if strings.TrimSpace(current.DefaultSenderID) != "" {
 		if _, err := h.svc.GetSenderProfileByID(r.Context(), u, current.DefaultSenderID); err != nil {
 			if errors.Is(err, store.ErrNotFound) {
@@ -4749,6 +4763,9 @@ func parsePaginationV2(r *http.Request) (int, int) {
 func applyPreferencesPatch(current *models.UserPreferences, patch map[string]any) {
 	if v, ok := patch["locale"].(string); ok {
 		current.Locale = strings.TrimSpace(v)
+	}
+	if v, ok := patch["format_locale"].(string); ok {
+		current.FormatLocale = strings.TrimSpace(v)
 	}
 	if v, ok := patch["theme"].(string); ok {
 		current.Theme = strings.TrimSpace(v)

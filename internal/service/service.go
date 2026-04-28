@@ -60,6 +60,8 @@ const (
 	instanceExternalMailCapabilityKey = "instance.cap.external_mail"
 	instanceServerAdminCapabilityKey  = "instance.cap.server_admin"
 	primaryAdminIdentifierSettingKey  = "primary_admin_identifier"
+	defaultFormatLocaleSettingKey     = "ui.default_format_locale"
+	defaultTimezoneSettingKey         = "ui.default_timezone"
 
 	passwordResetSenderSettingAddress = "password_reset_sender.address"
 	passwordResetSenderSettingStatus  = "password_reset_sender.status"
@@ -85,6 +87,8 @@ type SetupStatus struct {
 	BaseDomain                  string   `json:"base_domain"`
 	DefaultAdminEmail           string   `json:"default_admin_email"`
 	DefaultAdminIdentifier      string   `json:"default_admin_identifier"`
+	DefaultFormatLocale         string   `json:"default_format_locale"`
+	DefaultTimezone             string   `json:"default_timezone"`
 	AuthMode                    string   `json:"auth_mode"`
 	InstanceMode                string   `json:"instance_mode"`
 	AvailableInstanceModes      []string `json:"available_instance_modes"`
@@ -106,7 +110,8 @@ type SetupCompleteRequest struct {
 	AdminRecoveryEmail          string
 	AdminMailboxLogin           string
 	AdminPassword               string
-	Region                      string
+	DefaultFormatLocale         string
+	DefaultTimezone             string
 	InstanceMode                string
 	PasskeyPrimarySignInEnabled *bool
 }
@@ -1391,11 +1396,15 @@ func (s *Service) SetupStatus(ctx context.Context) (SetupStatus, error) {
 		passkeyPrimaryEnabled = enabled
 	}
 	defaultIdentifier := defaultAdminIdentifier(mode, baseDomain)
+	defaultFormatLocale := s.StoredDefaultFormatLocale(ctx)
+	defaultTimezone := s.StoredDefaultTimezone(ctx)
 	return SetupStatus{
 		Required:                    adminCount == 0,
 		BaseDomain:                  baseDomain,
 		DefaultAdminEmail:           defaultIdentifier,
 		DefaultAdminIdentifier:      defaultIdentifier,
+		DefaultFormatLocale:         defaultFormatLocale,
+		DefaultTimezone:             defaultTimezone,
 		AuthMode:                    s.cfg.DovecotAuthMode,
 		InstanceMode:                mode,
 		AvailableInstanceModes:      []string{InstanceModeLocalStack, InstanceModeExternalAccounts, InstanceModeHybrid},
@@ -1409,6 +1418,79 @@ func (s *Service) SetupStatus(ctx context.Context) (SetupStatus, error) {
 		PasswordClassMin:            3,
 		PasskeyPrimarySignInEnabled: passkeyPrimaryEnabled,
 	}, nil
+}
+
+func normalizePreferenceLocaleTag(raw string) string {
+	value := strings.TrimSpace(strings.ReplaceAll(raw, "_", "-"))
+	if value == "" {
+		return ""
+	}
+	parts := strings.Split(value, "-")
+	for i := range parts {
+		part := strings.TrimSpace(parts[i])
+		if part == "" {
+			continue
+		}
+		if i == 0 {
+			parts[i] = strings.ToLower(part)
+			continue
+		}
+		if len(part) == 2 {
+			parts[i] = strings.ToUpper(part)
+			continue
+		}
+		parts[i] = strings.ToLower(part)
+	}
+	return strings.Join(parts, "-")
+}
+
+func normalizePreferenceTimezone(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	loc, err := time.LoadLocation(value)
+	if err != nil {
+		return ""
+	}
+	return loc.String()
+}
+
+func (s *Service) StoredDefaultFormatLocale(ctx context.Context) string {
+	if s == nil || s.st == nil {
+		return ""
+	}
+	raw, ok, err := s.st.GetSetting(ctx, defaultFormatLocaleSettingKey)
+	if err != nil || !ok {
+		return ""
+	}
+	return normalizePreferenceLocaleTag(raw)
+}
+
+func (s *Service) StoredDefaultTimezone(ctx context.Context) string {
+	if s == nil || s.st == nil {
+		return ""
+	}
+	raw, ok, err := s.st.GetSetting(ctx, defaultTimezoneSettingKey)
+	if err != nil || !ok {
+		return ""
+	}
+	return normalizePreferenceTimezone(raw)
+}
+
+func (s *Service) DefaultFormatLocale(ctx context.Context) string {
+	return s.StoredDefaultFormatLocale(ctx)
+}
+
+func (s *Service) DefaultTimezone(ctx context.Context) string {
+	if s == nil || s.st == nil {
+		return "UTC"
+	}
+	normalized := s.StoredDefaultTimezone(ctx)
+	if normalized == "" {
+		return "UTC"
+	}
+	return normalized
 }
 
 func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, ip, userAgent string) (string, models.User, error) {
@@ -1459,6 +1541,14 @@ func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, i
 	}
 	if err != nil {
 		return "", models.User{}, err
+	}
+	defaultFormatLocale := normalizePreferenceLocaleTag(req.DefaultFormatLocale)
+	if strings.TrimSpace(req.DefaultFormatLocale) != "" && defaultFormatLocale == "" {
+		return "", models.User{}, errors.New("invalid format locale")
+	}
+	defaultTimezone := normalizePreferenceTimezone(req.DefaultTimezone)
+	if strings.TrimSpace(req.DefaultTimezone) != "" && defaultTimezone == "" {
+		return "", models.User{}, errors.New("invalid timezone")
 	}
 
 	pamAcceptedLogin := ""
@@ -1554,9 +1644,13 @@ func (s *Service) CompleteSetup(ctx context.Context, req SetupCompleteRequest, i
 	if err := s.st.UpsertSetting(ctx, "setup_completed_at", time.Now().UTC().Format(time.RFC3339)); err != nil {
 		return "", models.User{}, err
 	}
-	region := strings.TrimSpace(req.Region)
-	if region != "" {
-		if err := s.st.UpsertSetting(ctx, "region", region); err != nil {
+	if defaultFormatLocale != "" {
+		if err := s.st.UpsertSetting(ctx, defaultFormatLocaleSettingKey, defaultFormatLocale); err != nil {
+			return "", models.User{}, err
+		}
+	}
+	if defaultTimezone != "" {
+		if err := s.st.UpsertSetting(ctx, defaultTimezoneSettingKey, defaultTimezone); err != nil {
 			return "", models.User{}, err
 		}
 	}

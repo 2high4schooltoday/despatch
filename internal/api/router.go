@@ -313,6 +313,21 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 				r.Get("/saved-searches", h.V2ListSavedSearches)
 				r.Get("/funnels", h.V2ListReplyFunnels)
 				r.Get("/funnels/{id}", h.V2GetReplyFunnel)
+				r.Get("/outbound/campaigns", h.V2ListOutboundCampaigns)
+				r.Get("/outbound/playbooks", h.V2ListOutboundPlaybooks)
+				r.Get("/outbound/campaigns/{id}", h.V2GetOutboundCampaign)
+				r.Get("/outbound/campaigns/{id}/steps", h.V2ListOutboundCampaignSteps)
+				r.Get("/outbound/campaigns/{id}/events", h.V2ListOutboundCampaignEvents)
+				r.Get("/outbound/campaigns/{id}/enrollments", h.V2ListOutboundEnrollments)
+				r.Get("/outbound/enrollments/{id}", h.V2GetOutboundEnrollment)
+				r.Get("/reply-ops/queue", h.V2ListReplyOpsQueue)
+				r.Get("/reply-ops/queue/{bucket}", h.V2ListReplyOpsBucket)
+				r.Get("/reply-ops/items/{id}", h.V2GetReplyOpsItem)
+				r.Get("/outbound/recipients", h.V2ListOutboundRecipients)
+				r.Get("/outbound/recipients/{email}", h.V2GetOutboundRecipient)
+				r.Get("/outbound/suppressions", h.V2ListOutboundSuppressions)
+				r.Get("/outbound/diagnostics/senders", h.V2OutboundSenderDiagnostics)
+				r.Get("/outbound/diagnostics/domains", h.V2OutboundDomainDiagnostics)
 				r.Get("/drafts", h.V2ListDrafts)
 				r.Get("/drafts/{id}", h.V2GetDraft)
 				r.Get("/drafts/{id}/attachments/{attachment_id}", h.V2GetDraftAttachment)
@@ -393,6 +408,31 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 					r.Patch("/funnels/{id}", h.V2UpdateReplyFunnel)
 					r.Patch("/funnels/{id}/assisted-forwarding/{account_id}", h.V2UpdateReplyFunnelAssistedForwarding)
 					r.Delete("/funnels/{id}", h.V2DeleteReplyFunnel)
+					r.Post("/outbound/campaigns", h.V2CreateOutboundCampaign)
+					r.Patch("/outbound/campaigns/{id}", h.V2UpdateOutboundCampaign)
+					r.Post("/outbound/campaigns/{id}/apply-playbook", h.V2ApplyOutboundPlaybook)
+					r.Post("/outbound/campaigns/{id}/launch", h.V2LaunchOutboundCampaign)
+					r.Post("/outbound/campaigns/{id}/pause", h.V2PauseOutboundCampaign)
+					r.Post("/outbound/campaigns/{id}/resume", h.V2ResumeOutboundCampaign)
+					r.Post("/outbound/campaigns/{id}/archive", h.V2ArchiveOutboundCampaign)
+					r.Post("/outbound/campaigns/{id}/steps", h.V2CreateOutboundCampaignStep)
+					r.Patch("/outbound/steps/{step_id}", h.V2UpdateOutboundCampaignStep)
+					r.Delete("/outbound/steps/{step_id}", h.V2DeleteOutboundCampaignStep)
+					r.Post("/outbound/campaigns/{id}/steps/reorder", h.V2ReorderOutboundCampaignSteps)
+					r.Post("/outbound/campaigns/{id}/audience/preview", h.V2PreviewOutboundAudience)
+					r.Post("/outbound/campaigns/{id}/enrollments/import", h.V2ImportOutboundEnrollments)
+					r.Patch("/outbound/enrollments/{id}", h.V2UpdateOutboundEnrollment)
+					r.Post("/outbound/enrollments/{id}/pause", h.V2PauseOutboundEnrollment)
+					r.Post("/outbound/enrollments/{id}/resume", h.V2ResumeOutboundEnrollment)
+					r.Post("/outbound/enrollments/{id}/stop", h.V2StopOutboundEnrollment)
+					r.Post("/outbound/enrollments/{id}/assign", h.V2AssignOutboundEnrollment)
+					r.Post("/outbound/campaigns/{id}/preflight", h.V2PreflightOutboundCampaign)
+					r.Post("/reply-ops/items/{id}/classify", h.V2ClassifyReplyOpsItem)
+					r.Post("/reply-ops/items/{id}/takeover", h.V2TakeoverReplyOpsItem)
+					r.Post("/reply-ops/items/{id}/apply-action", h.V2ApplyReplyOpsAction)
+					r.Patch("/outbound/recipients/{email}", h.V2UpdateOutboundRecipient)
+					r.Post("/outbound/suppressions", h.V2CreateOutboundSuppression)
+					r.Delete("/outbound/suppressions/{id}", h.V2DeleteOutboundSuppression)
 
 					r.Post("/drafts", h.V2CreateDraft)
 					r.Patch("/drafts/{id}", h.V2UpdateDraft)
@@ -518,7 +558,8 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 		AdminRecoveryEmail          string `json:"admin_recovery_email"`
 		AdminMailboxLogin           string `json:"admin_mailbox_login"`
 		AdminPassword               string `json:"admin_password"`
-		Region                      string `json:"region"`
+		DefaultFormatLocale         string `json:"default_format_locale"`
+		DefaultTimezone             string `json:"default_timezone"`
 		InstanceMode                string `json:"instance_mode"`
 		PasskeyPrimarySignInEnabled *bool  `json:"passkey_primary_sign_in_enabled"`
 		AutomaticUpdatesEnabled     *bool  `json:"automatic_updates_enabled"`
@@ -533,7 +574,8 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 		AdminRecoveryEmail:          req.AdminRecoveryEmail,
 		AdminMailboxLogin:           req.AdminMailboxLogin,
 		AdminPassword:               req.AdminPassword,
-		Region:                      req.Region,
+		DefaultFormatLocale:         req.DefaultFormatLocale,
+		DefaultTimezone:             req.DefaultTimezone,
 		InstanceMode:                req.InstanceMode,
 		PasskeyPrimarySignInEnabled: req.PasskeyPrimarySignInEnabled,
 	}, r.RemoteAddr, r.UserAgent())
@@ -576,6 +618,12 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, service.ErrInvalidRecoveryEmail):
 			code = "invalid_recovery_email"
 			msg = "enter a valid recovery email"
+		case strings.Contains(strings.ToLower(msg), "format locale"):
+			code = "invalid_format_locale"
+			msg = "enter a valid regional format locale"
+		case strings.Contains(strings.ToLower(msg), "invalid timezone"):
+			code = "invalid_timezone"
+			msg = "enter a valid IANA time zone"
 		case strings.Contains(strings.ToLower(msg), "password"):
 			code = "invalid_password"
 		case errors.As(err, &pamCredErr):
@@ -639,7 +687,7 @@ func (h *Handlers) SetupComplete(w http.ResponseWriter, r *http.Request) {
 	}
 	applyAuthStageFields(out, stage)
 	out["mail_secret_required"] = strings.TrimSpace(sess.MailSecret) == ""
-	h.applyUserLocaleField(r.Context(), out, user.ID)
+	h.applyUserInterfacePreferenceFields(r.Context(), out, user.ID)
 	util.WriteJSON(w, 200, out)
 }
 
@@ -735,22 +783,32 @@ func normalizeLocaleTag(value string) string {
 	return strings.Join(parts, "-")
 }
 
-func (h *Handlers) userPreferredLocale(ctx context.Context, userID string) string {
-	if h == nil || h.svc == nil {
+func normalizeTimeZoneName(value string) string {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
 		return ""
 	}
-	prefs, err := h.svc.Store().GetUserPreferences(ctx, userID)
+	loc, err := time.LoadLocation(raw)
 	if err != nil {
 		return ""
 	}
-	return normalizeLocaleTag(prefs.Locale)
+	return loc.String()
 }
 
-func (h *Handlers) applyUserLocaleField(ctx context.Context, out map[string]any, userID string) {
+func (h *Handlers) applyUserInterfacePreferenceFields(ctx context.Context, out map[string]any, userID string) {
 	if out == nil {
 		return
 	}
-	out["locale"] = h.userPreferredLocale(ctx, userID)
+	if h == nil || h.svc == nil {
+		return
+	}
+	prefs, err := h.svc.Store().GetUserPreferences(ctx, userID)
+	if err != nil {
+		return
+	}
+	out["locale"] = normalizeLocaleTag(prefs.Locale)
+	out["format_locale"] = normalizeLocaleTag(prefs.FormatLocale)
+	out["timezone"] = normalizeTimeZoneName(prefs.Timezone)
 }
 
 func loginRequestIdentifier(req loginRequest) string {
@@ -884,7 +942,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		payload := map[string]any{"user_id": user.ID, "email": user.Email, "identifier": user.Email, "role": user.Role, "csrf_token": csrfToken}
 		applyAuthStageFields(payload, stage)
 		payload["mail_secret_required"] = strings.TrimSpace(sess.MailSecret) == ""
-		h.applyUserLocaleField(r.Context(), payload, user.ID)
+		h.applyUserInterfacePreferenceFields(r.Context(), payload, user.ID)
 		util.WriteJSON(w, 200, payload)
 		return
 	}
@@ -987,7 +1045,7 @@ func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
 		"mail_secret_required": strings.TrimSpace(sess.MailSecret) == "",
 	}
 	applyAuthStageFields(out, stage)
-	h.applyUserLocaleField(r.Context(), out, u.ID)
+	h.applyUserInterfacePreferenceFields(r.Context(), out, u.ID)
 	util.WriteJSON(w, 200, out)
 }
 

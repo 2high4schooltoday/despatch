@@ -91,6 +91,7 @@ func StartMailWorkers(ctx context.Context, cfg config.Config, st *store.Store) *
 	}
 	go w.runSyncLoop(ctx)
 	go w.runScheduledSendLoop(ctx)
+	go w.runOutboundLoop(ctx)
 	return w
 }
 
@@ -613,6 +614,10 @@ func (w *MailWorkers) upsertSyncMessage(ctx context.Context, account models.Mail
 	if err := w.st.ReplaceIndexedAttachments(ctx, account.ID, scopedMessageID, indexedAttachments); err != nil {
 		return false, err
 	}
+	svc := service.New(w.cfg, w.st, w.mailClientFactory(w.accountMailConfig(account)), mail.NoopProvisioner{}, nil)
+	if err := svc.ProcessOutboundIndexedMessage(ctx, account, indexed); err != nil && !errors.Is(err, store.ErrNotFound) {
+		log.Printf("mail_sync account=%s message=%s outbound_reply_process_failed error=%v", account.ID, scopedMessageID, err)
+	}
 	touchedThreadIDs[scopedThreadID] = struct{}{}
 	if referenced, err := w.st.HasIndexedMessagesReferencingThreadParent(ctx, account.ID, indexed.MessageIDHeader, scopedThreadID, scopedMessageID); err == nil && referenced {
 		return true, nil
@@ -730,6 +735,62 @@ func (w *MailWorkers) runScheduledSendLoop(ctx context.Context) {
 		case <-ticker.C:
 			w.processScheduledSends(ctx)
 		}
+	}
+}
+
+func (w *MailWorkers) runOutboundLoop(ctx context.Context) {
+	w.processOutboundDue(ctx)
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			w.processOutboundDue(ctx)
+		}
+	}
+}
+
+func (w *MailWorkers) processOutboundDue(ctx context.Context) {
+	w.resumeOutboundOOO(ctx)
+	items, err := w.st.ListDueOutboundEnrollments(ctx, time.Now().UTC(), 50)
+	if err != nil {
+		log.Printf("outbound_dispatch list_due_failed error=%v", err)
+		return
+	}
+	if len(items) == 0 {
+		return
+	}
+	svc := service.New(w.cfg, w.st, mail.NewIMAPSMTPClient(w.cfg), mail.NoopProvisioner{}, nil)
+	for _, item := range items {
+		if err := svc.DispatchOutboundEnrollment(ctx, item); err != nil {
+			log.Printf("outbound_dispatch enrollment=%s campaign=%s error=%v", item.ID, item.CampaignID, err)
+		}
+	}
+}
+
+func (w *MailWorkers) resumeOutboundOOO(ctx context.Context) {
+	items, err := w.st.ListOutboundOOOResumeDue(ctx, time.Now().UTC(), 50)
+	if err != nil {
+		log.Printf("outbound_resume_ooo list_due_failed error=%v", err)
+		return
+	}
+	for _, item := range items {
+		item.Status = "scheduled"
+		item.PauseReason = ""
+		item.NextActionAt = time.Now().UTC()
+		if _, err := w.st.UpsertOutboundEnrollment(ctx, item); err != nil {
+			log.Printf("outbound_resume_ooo enrollment=%s error=%v", item.ID, err)
+			continue
+		}
+		_, _ = w.st.AppendOutboundEvent(ctx, models.OutboundEvent{
+			CampaignID:   item.CampaignID,
+			EnrollmentID: item.ID,
+			EventKind:    "resume_requested",
+			ActorKind:    "worker",
+			ActorRef:     "ooo",
+		})
 	}
 }
 

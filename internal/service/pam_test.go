@@ -702,7 +702,6 @@ func TestPAMSetupDetectsConnectivityErrors(t *testing.T) {
 		AdminEmail:         "webmaster@example.com",
 		AdminRecoveryEmail: "recovery@example.net",
 		AdminPassword:      "AnyPassword123!",
-		Region:             "us-east",
 	}, "127.0.0.1", "agent")
 	if !errors.Is(err, ErrPAMVerifierDown) {
 		t.Fatalf("expected ErrPAMVerifierDown, got: %v", err)
@@ -718,7 +717,6 @@ func TestPAMSetupFallsBackToLocalPartAndPersistsLogin(t *testing.T) {
 		AdminEmail:         "webmaster@example.com",
 		AdminRecoveryEmail: "recovery@example.net",
 		AdminPassword:      "PamPass123!",
-		Region:             "us-east",
 	}, "127.0.0.1", "agent")
 	if err != nil {
 		t.Fatalf("expected setup success with localpart fallback, got: %v", err)
@@ -746,7 +744,6 @@ func TestPAMSetupAcceptsExplicitMailboxLoginOverride(t *testing.T) {
 		AdminRecoveryEmail: "recovery@example.net",
 		AdminMailboxLogin:  "custom_login",
 		AdminPassword:      "PamPass123!",
-		Region:             "us-east",
 	}, "127.0.0.1", "agent")
 	if err != nil {
 		t.Fatalf("expected setup success with explicit login override, got: %v", err)
@@ -773,7 +770,6 @@ func TestPAMSetupReturnsIdentityErrorWhenNoCandidateAuthenticates(t *testing.T) 
 		AdminEmail:         "webmaster@example.com",
 		AdminRecoveryEmail: "recovery@example.net",
 		AdminPassword:      "PamPass123!",
-		Region:             "us-east",
 	}, "127.0.0.1", "agent")
 	if err == nil {
 		t.Fatalf("expected PAM identity error, got nil")
