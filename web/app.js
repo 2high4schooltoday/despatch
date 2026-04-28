@@ -1466,6 +1466,28 @@ function persistGuestLocalePreference(locale) {
   }
 }
 
+function syncGuestLocaleURLPreference(locale) {
+  if (typeof window === "undefined" || !window.location || !window.history) {
+    return;
+  }
+  try {
+    const normalized = normalizeSupportedLocaleCode(locale);
+    const url = new URL(window.location.href);
+    if (!normalized || normalized === detectSystemLocale()) {
+      url.searchParams.delete("lang");
+    } else {
+      url.searchParams.set("lang", normalized);
+    }
+    const nextURL = `${url.pathname}${url.search}${url.hash}`;
+    const currentURL = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    if (nextURL !== currentURL) {
+      window.history.replaceState({}, document.title, nextURL);
+    }
+  } catch {
+    // ignore URL update failures
+  }
+}
+
 function signedOutPreferredLocale() {
   try {
     const params = new URLSearchParams(window.location.search);
@@ -1864,6 +1886,7 @@ function initLanguageGateUI() {
     if (!languageGateState.resolver) return;
     const locale = normalizeSupportedLocaleCode(el.languageGateSelect?.value || languageGateState.selectedLocale);
     persistGuestLocalePreference(locale);
+    syncGuestLocaleURLPreference(locale);
     const resolve = languageGateState.resolver;
     languageGateState.resolver = null;
     resolve(locale);
