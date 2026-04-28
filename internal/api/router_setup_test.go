@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,6 +134,41 @@ func TestSetupStatusIncludesPasskeyPrimarySignInEnabledAndAutomaticUpdates(t *te
 	if got, _ := payload["default_timezone"].(string); got != "" {
 		t.Fatalf("expected blank default_timezone before setup, payload=%v", payload)
 	}
+}
+
+func TestWebEntryPointAndLocaleBootstrapDisableCaching(t *testing.T) {
+	router, _ := newSetupRouterWithConfigAndStore(t, nil)
+
+	assertNoStore := func(path string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "http://localhost"+path, nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200 for %s, got %d body=%s", path, rec.Code, rec.Body.String())
+		}
+		if cache := rec.Header().Get("Cache-Control"); !strings.Contains(cache, "no-store") {
+			t.Fatalf("expected no-store cache control for %s, got %q", path, cache)
+		}
+		return rec
+	}
+
+	indexRec := assertNoStore("/")
+	body := indexRec.Body.String()
+	if strings.Contains(body, "__DESPATCH_ASSET_VERSION__") {
+		t.Fatalf("expected asset version placeholder to be rendered, body=%s", body)
+	}
+	for _, required := range []string{"/styles.css?v=", "/i18n.js?v=", "/app.js?v="} {
+		if !strings.Contains(body, required) {
+			t.Fatalf("expected %s in rendered index body", required)
+		}
+	}
+
+	assertNoStore("/app.js")
+	assertNoStore("/i18n.js")
+	assertNoStore("/styles.css")
+	assertNoStore("/api/v1/setup/status")
+	assertNoStore("/api/v1/public/i18n/ru")
 }
 
 func TestSetupCompletePersistsPasskeyPrimarySignInChoice(t *testing.T) {

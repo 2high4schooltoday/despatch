@@ -13,6 +13,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -68,8 +70,9 @@ const (
 )
 
 func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
+	webRoot := resolveWebRootDir()
 	var runtimeI18n *webi18n.Runtime
-	if loaded, err := webi18n.Load(filepath.Join("web", "locales"), "despatch"); err != nil {
+	if loaded, err := webi18n.Load(filepath.Join(webRoot, "locales"), "despatch"); err != nil {
 		log.Printf("web_i18n_init_failed err=%v", err)
 	} else {
 		runtimeI18n = loaded
@@ -467,21 +470,109 @@ func NewRouter(cfg config.Config, svc *service.Service) http.Handler {
 		})
 	})
 
-	fs := http.FileServer(http.Dir("web"))
+	assetVersionToken := currentWebAssetVersionToken(webRoot)
+	renderedIndexHTML, renderedIndexErr := renderIndexHTML(webRoot, assetVersionToken)
+	if renderedIndexErr != nil {
+		log.Printf("web_index_render_failed err=%v", renderedIndexErr)
+	}
+	fs := http.FileServer(http.Dir(webRoot))
 	r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		if strings.HasPrefix(p, "/api/") || strings.HasPrefix(p, "/health/") {
 			http.NotFound(w, r)
 			return
 		}
-		if p == "/" {
-			http.ServeFile(w, r, filepath.Join("web", "index.html"))
+		if p == "/" || p == "/index.html" {
+			setNoStoreHeaders(w)
+			if len(renderedIndexHTML) > 0 {
+				w.Header().Set("Content-Type", "text/html; charset=utf-8")
+				_, _ = w.Write(renderedIndexHTML)
+				return
+			}
+			http.ServeFile(w, r, filepath.Join(webRoot, "index.html"))
 			return
+		}
+		if shouldDisableWebAssetCaching(p) {
+			setNoStoreHeaders(w)
 		}
 		fs.ServeHTTP(w, r)
 	})
 
 	return r
+}
+
+func shouldDisableWebAssetCaching(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".css", ".html", ".js", ".json":
+		return true
+	default:
+		return false
+	}
+}
+
+func resolveWebRootDir() string {
+	candidates := []string{
+		"web",
+		filepath.Join("..", "..", "web"),
+	}
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append([]string{filepath.Join(exeDir, "web")}, candidates...)
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(candidate, "index.html")); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "web"
+}
+
+func currentWebAssetVersionToken(webRoot string) string {
+	files := []string{
+		filepath.Join(webRoot, "index.html"),
+		filepath.Join(webRoot, "styles.css"),
+		filepath.Join(webRoot, "i18n.js"),
+		filepath.Join(webRoot, "app.js"),
+	}
+	var newest time.Time
+	for _, name := range files {
+		info, err := os.Stat(name)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+	}
+	snapshot := version.Current()
+	parts := make([]string, 0, 3)
+	if value := strings.TrimSpace(snapshot.Version); value != "" && value != "dev" {
+		parts = append(parts, value)
+	}
+	if value := strings.TrimSpace(snapshot.Commit); value != "" && value != "unknown" {
+		if len(value) > 12 {
+			value = value[:12]
+		}
+		parts = append(parts, value)
+	}
+	if !newest.IsZero() {
+		parts = append(parts, newest.UTC().Format("20060102T150405"))
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "dev")
+	}
+	return url.QueryEscape(strings.Join(parts, "-"))
+}
+
+func renderIndexHTML(webRoot, assetVersion string) ([]byte, error) {
+	raw, err := os.ReadFile(filepath.Join(webRoot, "index.html"))
+	if err != nil {
+		return nil, err
+	}
+	return []byte(strings.ReplaceAll(string(raw), "__DESPATCH_ASSET_VERSION__", assetVersion)), nil
 }
 
 type registerRequest struct {
@@ -524,6 +615,7 @@ func (h *Handlers) PublicAuthCapabilities(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handlers) PublicI18nBundle(w http.ResponseWriter, r *http.Request) {
+	setNoStoreHeaders(w)
 	if h.webI18n == nil {
 		http.NotFound(w, r)
 		return
@@ -537,6 +629,7 @@ func (h *Handlers) PublicI18nBundle(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handlers) SetupStatus(w http.ResponseWriter, r *http.Request) {
+	setNoStoreHeaders(w)
 	status, err := h.svc.SetupStatus(r.Context())
 	if err != nil {
 		util.WriteError(w, 500, "internal_error", err.Error(), middleware.RequestID(r.Context()))
@@ -1023,6 +1116,7 @@ func (h *Handlers) PasswordResetConfirm(w http.ResponseWriter, r *http.Request) 
 }
 
 func (h *Handlers) Me(w http.ResponseWriter, r *http.Request) {
+	setNoStoreHeaders(w)
 	u, _ := middleware.User(r.Context())
 	sess, _ := middleware.Session(r.Context())
 	recoveryEmail := ""

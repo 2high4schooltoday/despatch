@@ -6081,6 +6081,10 @@ button.setting-list-item {
   background: color-mix(in srgb, var(--bg-2) 95%, var(--bg-1));
 }
 
+.outbound-guide-panel {
+  gap: 18px;
+}
+
 .outbound-panel.is-hidden {
   display: none;
 }
@@ -6272,6 +6276,225 @@ button.setting-list-item {
   color: var(--fg-muted);
 }
 
+.ops-guide-head {
+  display: grid;
+  gap: 8px;
+}
+
+.ops-guide-copy,
+.ops-guide-context,
+.ops-guide-example-copy {
+  color: var(--fg-muted);
+  line-height: 1.55;
+}
+
+.ops-guide-context {
+  padding: 12px 13px;
+  border: 1px solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-1) 88%, var(--bg-2));
+}
+
+.ops-guide-flow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.ops-guide-flow--reply {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ops-guide-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px 13px;
+  border: 1px solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-1) 90%, var(--bg-2));
+}
+
+.ops-guide-step-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line-1);
+  color: var(--sig-accent);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ops-guide-step-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ops-guide-step-title {
+  margin: 0;
+  color: var(--fg-0);
+  font-family: var(--font-notice);
+  font-size: 0.94rem;
+  font-weight: 700;
+}
+
+.ops-guide-step-body {
+  margin: 0;
+  color: var(--fg-muted);
+  line-height: 1.55;
+}
+
+.ops-guide-examples {
+  display: grid;
+  gap: 10px;
+}
+
+.ops-guide-checklist {
+  display: grid;
+  gap: 10px;
+}
+
+.ops-guide-checklist-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.ops-guide-checklist-list li {
+  color: var(--fg-0);
+  line-height: 1.6;
+}
+
+.ops-guide-facts {
+  display: grid;
+  gap: 12px;
+  padding: 12px 13px;
+  border: 1px solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-1) 86%, var(--bg-2));
+}
+
+.ops-guide-facts-summary {
+  cursor: pointer;
+  color: var(--fg-0);
+  font-weight: 700;
+  list-style: none;
+}
+
+.ops-guide-facts-summary::-webkit-details-marker {
+  display: none;
+}
+
+.ops-guide-facts-summary::before {
+  content: "+";
+  display: inline-block;
+  width: 14px;
+  color: var(--fg-muted);
+}
+
+.ops-guide-facts[open] .ops-guide-facts-summary::before {
+  content: "−";
+}
+
+.ops-guide-facts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.ops-guide-fact {
+  display: grid;
+  gap: 6px;
+  padding: 12px 13px;
+  border: 1px solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-1) 90%, var(--bg-2));
+}
+
+.ops-guide-fact-label {
+  margin: 0;
+  color: var(--fg-0);
+  font-family: var(--font-notice);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.ops-guide-fact-body {
+  margin: 0;
+  color: var(--fg-muted);
+  line-height: 1.55;
+}
+
+.ops-guide-example {
+  display: grid;
+  gap: 12px;
+  padding: 12px 13px;
+  border: 1px solid var(--line-1);
+  background: color-mix(in srgb, var(--bg-1) 86%, var(--bg-2));
+}
+
+.ops-guide-example-summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.ops-guide-example-summary::-webkit-details-marker {
+  display: none;
+}
+
+.ops-guide-example-summary::before {
+  content: "+";
+  display: inline-block;
+  width: 14px;
+  color: var(--fg-muted);
+}
+
+.ops-guide-example[open] .ops-guide-example-summary::before {
+  content: "−";
+}
+
+.ops-guide-example-summary-copy {
+  display: inline-grid;
+  gap: 3px;
+  vertical-align: top;
+}
+
+.ops-guide-example-title {
+  color: var(--fg-0);
+  font-family: var(--font-notice);
+  font-size: 0.92rem;
+  font-weight: 700;
+}
+
+.ops-guide-example-meta {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.ops-guide-example-body {
+  display: grid;
+  gap: 12px;
+}
+
+.ops-guide-example-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 20px;
+  color: var(--fg-0);
+}
+
+.ops-guide-example-list li {
+  line-height: 1.55;
+}
+
+.ops-guide-note {
+  color: var(--fg-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 .reply-ops-summary {
   display: grid;
   gap: 14px;
@@ -6393,7 +6616,10 @@ button.setting-list-item {
   .outbound-switch-grid,
   .outbound-diagnostics,
   .outbound-summary-grid,
-  .reply-ops-grid {
+  .reply-ops-grid,
+  .ops-guide-flow,
+  .ops-guide-flow--reply,
+  .ops-guide-facts-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 

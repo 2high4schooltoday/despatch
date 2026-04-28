@@ -835,6 +835,7 @@ const el = {
   btnOutboundNew: document.getElementById("btn-outbound-new"),
   outboundCampaignList: document.getElementById("outbound-campaign-list"),
   outboundSummary: document.getElementById("outbound-summary"),
+  outboundGuide: document.getElementById("outbound-guide"),
   outboundSectionStrategy: document.getElementById("outbound-section-strategy"),
   outboundSectionAudience: document.getElementById("outbound-section-audience"),
   outboundSectionHealth: document.getElementById("outbound-section-health"),
@@ -902,6 +903,7 @@ const el = {
   replyOpsBuckets: document.getElementById("reply-ops-buckets"),
   replyOpsList: document.getElementById("reply-ops-list"),
   replyOpsDetail: document.getElementById("reply-ops-detail"),
+  replyOpsGuide: document.getElementById("reply-ops-guide"),
   btnReplyOpsOpenThread: document.getElementById("btn-reply-ops-open-thread"),
   btnReplyOpsTakeover: document.getElementById("btn-reply-ops-takeover"),
   btnReplyOpsStop: document.getElementById("btn-reply-ops-stop"),
@@ -1186,6 +1188,7 @@ function uiLanguageCode() {
 }
 
 const guestLocaleStorageKey = "despatch.ui.locale.guest.v1";
+const guestLocaleCookieName = "despatch_ui_locale_guest";
 const supportedAppLanguages = [
   { code: "en", nativeLabel: "English", englishLabel: "English" },
   { code: "ru", nativeLabel: "Русский", englishLabel: "Russian" },
@@ -1444,7 +1447,52 @@ function detectSystemTimeZone() {
   }
 }
 
+function readCookieValue(name) {
+  if (typeof document === "undefined" || !document.cookie) {
+    return "";
+  }
+  const prefix = `${String(name || "").trim()}=`;
+  if (!prefix.trim()) return "";
+  for (const part of String(document.cookie || "").split(";")) {
+    const item = String(part || "").trim();
+    if (!item.startsWith(prefix)) continue;
+    try {
+      return decodeURIComponent(item.slice(prefix.length));
+    } catch {
+      return item.slice(prefix.length);
+    }
+  }
+  return "";
+}
+
+function writeCookieValue(name, value, maxAgeSeconds) {
+  if (typeof document === "undefined") {
+    return;
+  }
+  const key = String(name || "").trim();
+  if (!key) return;
+  const encoded = encodeURIComponent(String(value || ""));
+  document.cookie = `${key}=${encoded}; Path=/; Max-Age=${Math.trunc(Number(maxAgeSeconds) || 0)}; SameSite=Lax`;
+}
+
+function clearGuestLocaleCookie() {
+  writeCookieValue(guestLocaleCookieName, "", 0);
+}
+
+function persistGuestLocaleCookie(locale) {
+  const normalized = normalizeSupportedLocaleCode(locale);
+  if (!normalized || normalized === detectSystemLocale()) {
+    clearGuestLocaleCookie();
+    return;
+  }
+  writeCookieValue(guestLocaleCookieName, normalized, 31536000);
+}
+
 function storedGuestLocalePreference() {
+  const cookieValue = normalizeSupportedLocaleCode(readCookieValue(guestLocaleCookieName));
+  if (cookieValue) {
+    return cookieValue;
+  }
   try {
     const stored = localStorage.getItem(guestLocaleStorageKey);
     return stored ? normalizeSupportedLocaleCode(stored) : "";
@@ -1454,8 +1502,9 @@ function storedGuestLocalePreference() {
 }
 
 function persistGuestLocalePreference(locale) {
+  const normalized = normalizeSupportedLocaleCode(locale);
+  persistGuestLocaleCookie(normalized);
   try {
-    const normalized = normalizeSupportedLocaleCode(locale);
     if (!normalized || normalized === detectSystemLocale()) {
       localStorage.removeItem(guestLocaleStorageKey);
       return;
@@ -9765,10 +9814,22 @@ function setReplyOpsNote(message = "", tone = "info") {
   else el.replyOpsNote.style.color = "var(--fg-muted)";
 }
 
+function deepCloneValue(value) {
+  if (value === null || value === undefined) return value;
+  if (typeof structuredClone === "function") {
+    try {
+      return structuredClone(value);
+    } catch {
+      // Fall back to JSON cloning for plain object payloads used in UI state.
+    }
+  }
+  return JSON.parse(JSON.stringify(value));
+}
+
 function safeParseOutboundJSONObject(raw, fallback = {}) {
   if (!raw || raw === "{}") return { ...fallback };
   if (typeof raw === "object") {
-    return { ...fallback, ...deepClone(raw) };
+    return { ...fallback, ...deepCloneValue(raw) };
   }
   try {
     const parsed = JSON.parse(String(raw || "{}"));
@@ -10280,6 +10341,493 @@ function setActiveOutboundSection(section) {
   for (const panel of document.querySelectorAll("[data-outbound-section]")) {
     panel.classList.toggle("is-hidden", String(panel.getAttribute("data-outbound-section") || "").trim() !== next);
   }
+  renderOutboundGuide();
+}
+
+function buildOpsGuideStep(index, title, body) {
+  const card = document.createElement("article");
+  card.className = "ops-guide-step";
+  const marker = document.createElement("span");
+  marker.className = "ops-guide-step-index";
+  marker.textContent = String(index || "").trim();
+  const copy = document.createElement("div");
+  copy.className = "ops-guide-step-copy";
+  const titleNode = document.createElement("h4");
+  titleNode.className = "ops-guide-step-title";
+  titleNode.textContent = title;
+  const bodyNode = document.createElement("p");
+  bodyNode.className = "ops-guide-step-body";
+  bodyNode.textContent = body;
+  copy.append(titleNode, bodyNode);
+  card.append(marker, copy);
+  return card;
+}
+
+function buildOpsGuideExample({ title, summary, steps = [], note = "", open = false } = {}) {
+  const details = document.createElement("details");
+  details.className = "ops-guide-example";
+  if (open) details.open = true;
+  const summaryNode = document.createElement("summary");
+  summaryNode.className = "ops-guide-example-summary";
+  const summaryCopy = document.createElement("div");
+  summaryCopy.className = "ops-guide-example-summary-copy";
+  const titleNode = document.createElement("span");
+  titleNode.className = "ops-guide-example-title";
+  titleNode.textContent = title;
+  summaryCopy.appendChild(titleNode);
+  if (summary) {
+    const metaNode = document.createElement("span");
+    metaNode.className = "ops-guide-example-meta";
+    metaNode.textContent = summary;
+    summaryCopy.appendChild(metaNode);
+  }
+  summaryNode.appendChild(summaryCopy);
+  details.appendChild(summaryNode);
+  const body = document.createElement("div");
+  body.className = "ops-guide-example-body";
+  if (summary) {
+    const summaryText = document.createElement("p");
+    summaryText.className = "ops-guide-example-copy";
+    summaryText.textContent = summary;
+    body.appendChild(summaryText);
+  }
+  if (Array.isArray(steps) && steps.length > 0) {
+    const list = document.createElement("ol");
+    list.className = "ops-guide-example-list";
+    for (const step of steps) {
+      const item = document.createElement("li");
+      item.textContent = step;
+      list.appendChild(item);
+    }
+    body.appendChild(list);
+  }
+  if (note) {
+    const noteNode = document.createElement("p");
+    noteNode.className = "ops-guide-note";
+    noteNode.textContent = note;
+    body.appendChild(noteNode);
+  }
+  details.appendChild(body);
+  return details;
+}
+
+function buildOpsGuideChecklist(title, items = []) {
+  const section = document.createElement("section");
+  section.className = "ops-guide-checklist";
+  const titleNode = document.createElement("h4");
+  titleNode.className = "outbound-subtitle";
+  titleNode.textContent = title;
+  section.appendChild(titleNode);
+  const list = document.createElement("ol");
+  list.className = "ops-guide-checklist-list";
+  for (const item of items) {
+    const row = document.createElement("li");
+    row.textContent = item;
+    list.appendChild(row);
+  }
+  section.appendChild(list);
+  return section;
+}
+
+function buildOpsGuideFacts(title, items = [], { open = true } = {}) {
+  const details = document.createElement("details");
+  details.className = "ops-guide-facts";
+  if (open) details.open = true;
+  const summary = document.createElement("summary");
+  summary.className = "ops-guide-facts-summary";
+  summary.textContent = title;
+  details.appendChild(summary);
+  const grid = document.createElement("div");
+  grid.className = "ops-guide-facts-grid";
+  for (const item of items) {
+    const card = document.createElement("article");
+    card.className = "ops-guide-fact";
+    const label = document.createElement("h5");
+    label.className = "ops-guide-fact-label";
+    label.textContent = item.label;
+    const body = document.createElement("p");
+    body.className = "ops-guide-fact-body";
+    body.textContent = item.body;
+    card.append(label, body);
+    grid.appendChild(card);
+  }
+  details.appendChild(grid);
+  return details;
+}
+
+function outboundGuideContextText() {
+  const section = outboundActiveSection();
+  if (section === "audience") {
+    return t("outbound_guide_audience_context", {}, "This section decides who becomes live, what should be skipped, and whether existing-thread campaigns have enough seeded context to be safe.");
+  }
+  if (section === "health") {
+    return t("outbound_guide_health_context", {}, "This section is where you sanity-check provider pacing, reply funnels, domain pressure, and preflight issues before or after launch.");
+  }
+  return t("outbound_guide_strategy_context", {}, "Start here when you are defining the motion itself: what kind of conversation you want, which mailbox owns it, and where replies should return.");
+}
+
+function renderOutboundGuide() {
+  if (!el.outboundGuide) return;
+  el.outboundGuide.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "ops-guide-head";
+  const kicker = document.createElement("p");
+  kicker.className = "settings-pane-kicker";
+  kicker.textContent = t("guide", {}, "Guide");
+  const title = document.createElement("h3");
+  title.className = "settings-pane-title";
+  title.textContent = t("how_outbound_works", {}, "How Outbound works");
+  const intro = document.createElement("p");
+  intro.className = "ops-guide-copy";
+  intro.textContent = t("outbound_guide_intro", {}, "Think in this order: what leaves the mailbox, who receives it, where the reply comes back, and what should happen after the first real response.");
+  const context = document.createElement("p");
+  context.className = "ops-guide-context";
+  context.textContent = outboundGuideContextText();
+  head.append(kicker, title, intro, context);
+
+  const flow = document.createElement("div");
+  flow.className = "ops-guide-flow";
+  const stepDefs = [
+    [
+      t("outbound_guide_step_playbook_title", {}, "1. Start with the motion"),
+      t("outbound_guide_step_playbook_body", {}, "Pick a playbook if the motion already matches a known pattern. Stay custom only when you know why the built-in flow is wrong."),
+    ],
+    [
+      t("outbound_guide_step_routing_title", {}, "2. Choose who sends and who catches replies"),
+      t("outbound_guide_step_routing_body", {}, "Use `Reply funnel` when many source mailboxes feed one operator desk, `Thread owner mailbox` when you are continuing live threads, and `Single sender` when one mailbox should own every conversation."),
+    ],
+    [
+      t("outbound_guide_step_audience_title", {}, "3. Preview before you import"),
+      t("outbound_guide_step_audience_body", {}, "Run Preview to catch duplicates, already-active recipients, and missing seeded thread context before anyone becomes live."),
+    ],
+    [
+      t("outbound_guide_step_reply_ops_title", {}, "4. Launch, then switch to Reply Ops"),
+      t("outbound_guide_step_reply_ops_body", {}, "Outbound defines the motion. Reply Ops becomes the live desk once real human replies begin to change what the campaign should do next."),
+    ],
+  ];
+  stepDefs.forEach(([stepTitle, stepBody], index) => {
+    flow.appendChild(buildOpsGuideStep(index + 1, stepTitle, stepBody));
+  });
+
+  const checklist = buildOpsGuideChecklist(
+    t("outbound_guide_checklist_title", {}, "If you are brand new, do this"),
+    [
+      t("outbound_guide_checklist_1", {}, "Pick a playbook first. If none fit, keep `Custom campaign` and set things by hand."),
+      t("outbound_guide_checklist_2", {}, "Decide whether replies should come back to one shared desk mailbox or stay with the original sender mailbox."),
+      t("outbound_guide_checklist_3", {}, "Fill the audience source, then run Preview before you import anybody into live outreach."),
+      t("outbound_guide_checklist_4", {}, "Save the campaign, run Preflight, and fix anything that sounds risky or unclear."),
+      t("outbound_guide_checklist_5", {}, "Launch only after the route, audience, and reply path all make sense to a human operator."),
+      t("outbound_guide_checklist_6", {}, "Once replies start arriving, stop thinking only about sends and move into Reply Ops for live handling."),
+    ],
+  );
+
+  const section = outboundActiveSection();
+  let facts = [];
+  if (section === "audience") {
+    facts = [
+      {
+        label: t("outbound_guide_audience_fact_source_label", {}, "Audience source"),
+        body: t("outbound_guide_audience_fact_source_body", {}, "This tells Despatch where names and addresses come from: a manual list, a contact group, a saved search, or raw CSV text."),
+      },
+      {
+        label: t("outbound_guide_audience_fact_reference_label", {}, "Source reference"),
+        body: t("outbound_guide_audience_fact_reference_body", {}, "Use this only when the chosen source needs an ID, such as a saved search or contact group. If you are typing addresses directly, you can leave it empty."),
+      },
+      {
+        label: t("outbound_guide_audience_fact_preview_label", {}, "Preview"),
+        body: t("outbound_guide_audience_fact_preview_body", {}, "Preview is the safe step. It shows duplicates, already-active recipients, suppressions, and missing thread context before anything goes live."),
+      },
+      {
+        label: t("outbound_guide_audience_fact_import_label", {}, "Import"),
+        body: t("outbound_guide_audience_fact_import_body", {}, "Import moves the previewed people into the campaign as live recipients. After this point they can actually be scheduled or replied to."),
+      },
+      {
+        label: t("outbound_guide_audience_fact_live_label", {}, "Live recipients"),
+        body: t("outbound_guide_audience_fact_live_body", {}, "This list shows who is already inside the campaign, what step they are on, and whether a human now needs to take over."),
+      },
+    ];
+  } else if (section === "health") {
+    facts = [
+      {
+        label: t("outbound_guide_health_fact_senders_label", {}, "Senders"),
+        body: t("outbound_guide_health_fact_senders_body", {}, "This explains which real mailbox is sending, whether replies go direct or through a collector, and what pacing the provider can probably tolerate."),
+      },
+      {
+        label: t("outbound_guide_health_fact_domains_label", {}, "Domains"),
+        body: t("outbound_guide_health_fact_domains_body", {}, "This helps you see whether too many recipients from the same company or domain are active at once."),
+      },
+      {
+        label: t("outbound_guide_health_fact_preflight_label", {}, "Preflight warnings"),
+        body: t("outbound_guide_health_fact_preflight_body", {}, "Treat these as risk warnings, not decoration. They tell you when the campaign is missing steps, audience, safe pacing, or thread ownership."),
+      },
+      {
+        label: t("outbound_guide_health_fact_events_label", {}, "Recent events"),
+        body: t("outbound_guide_health_fact_events_body", {}, "Use recent events to confirm what really happened: a step was sent, a reply was detected, a recipient was paused, or a domain action fired."),
+      },
+      {
+        label: t("outbound_guide_health_fact_rule_label", {}, "Simple rule"),
+        body: t("outbound_guide_health_fact_rule_body", {}, "If a warning makes you unsure who would send the next message or where a reply would land, do not launch yet."),
+      },
+    ];
+  } else {
+    facts = [
+      {
+        label: t("outbound_guide_strategy_fact_playbook_label", {}, "Playbook"),
+        body: t("outbound_guide_strategy_fact_playbook_body", {}, "A playbook is a ready-made recipe. It can prefill the campaign mode, sender logic, and starter steps so you do not begin from a blank form."),
+      },
+      {
+        label: t("outbound_guide_strategy_fact_mode_label", {}, "Campaign mode"),
+        body: t("outbound_guide_strategy_fact_mode_body", {}, "Use `Start new threads` when this outreach begins a fresh conversation. Use `Continue existing threads` only when you already have real saved thread context and must stay in that same conversation."),
+      },
+      {
+        label: t("outbound_guide_strategy_fact_sender_policy_label", {}, "Sender policy"),
+        body: t("outbound_guide_strategy_fact_sender_policy_body", {}, "This is the most important routing choice. It decides whether one mailbox sends everything, whether a reply funnel is used, or whether Despatch must preserve the original thread owner."),
+      },
+      {
+        label: t("outbound_guide_strategy_fact_sender_reference_label", {}, "Sender reference"),
+        body: t("outbound_guide_strategy_fact_sender_reference_body", {}, "This points the policy at something concrete: a mailbox, a sender identity, a pool of senders, or a reply funnel."),
+      },
+      {
+        label: t("outbound_guide_strategy_fact_manual_task_label", {}, "Manual task step"),
+        body: t("outbound_guide_strategy_fact_manual_task_body", {}, "Use a manual task when a human must read the situation and decide what to do before the sequence continues. It is your safety stop for nuanced replies."),
+      },
+      {
+        label: t("outbound_guide_strategy_fact_preflight_label", {}, "Preflight and launch"),
+        body: t("outbound_guide_strategy_fact_preflight_body", {}, "Preflight is the last calm check before the campaign becomes real. Launch only when you would be comfortable explaining the route and the next step to another operator."),
+      },
+    ];
+  }
+  const fieldGuide = buildOpsGuideFacts(
+    t("outbound_guide_field_guide_title", {}, "What the main controls mean"),
+    facts,
+  );
+
+  const glossary = buildOpsGuideFacts(
+    t("outbound_guide_glossary_title", {}, "Words used here, in plain language"),
+    [
+      {
+        label: t("outbound_guide_glossary_funnel_label", {}, "Reply funnel"),
+        body: t("outbound_guide_glossary_funnel_body", {}, "A reply funnel gathers replies from many sending accounts into one operational flow, while still remembering which source mailbox originally owned each conversation."),
+      },
+      {
+        label: t("outbound_guide_glossary_collector_label", {}, "Collector mailbox"),
+        body: t("outbound_guide_glossary_collector_body", {}, "This is the mailbox that acts like the shared reply desk. Many source accounts can forward or route replies here."),
+      },
+      {
+        label: t("outbound_guide_glossary_source_label", {}, "Source mailbox"),
+        body: t("outbound_guide_glossary_source_body", {}, "This is one of the mailboxes that actually sends the first message out into the world."),
+      },
+      {
+        label: t("outbound_guide_glossary_thread_owner_label", {}, "Thread owner"),
+        body: t("outbound_guide_glossary_thread_owner_body", {}, "The thread owner is the mailbox that already owns an existing conversation. When you continue old threads, this mailbox usually needs to stay in control."),
+      },
+      {
+        label: t("outbound_guide_glossary_suppress_label", {}, "Suppress"),
+        body: t("outbound_guide_glossary_suppress_body", {}, "Suppress means do not contact this recipient or domain again through the scope you choose."),
+      },
+    ],
+    { open: false },
+  );
+
+  const examples = document.createElement("section");
+  examples.className = "ops-guide-examples";
+  const examplesTitle = document.createElement("h4");
+  examplesTitle.className = "outbound-subtitle";
+  examplesTitle.textContent = t("examples", {}, "Examples");
+  examples.appendChild(examplesTitle);
+  examples.appendChild(buildOpsGuideExample({
+    title: t("outbound_guide_example_libero_title", {}, "Example: many Libero source mailboxes, one reply desk"),
+    summary: t("outbound_guide_example_libero_summary", {}, "Use this when a large Libero sending pool should funnel replies into one operator mailbox without losing source-account context."),
+    open: outboundActiveSection() === "strategy",
+    steps: [
+      t("outbound_guide_example_libero_step_1", {}, "Connect all 100 Libero mailboxes in Settings -> Mail -> Accounts, then decide which single mailbox should act as the collector desk."),
+      t("outbound_guide_example_libero_step_2", {}, "In Settings -> Mail -> Funnels, create a funnel such as `Italy collector desk` with Collector Account = your chosen desk mailbox, Replies Send From = `Collector inbox` if the desk should answer everything, or `Best matched source, then collector` if Despatch should prefer the original source mailbox when it can."),
+      t("outbound_guide_example_libero_step_3", {}, "Set Routing = `Guided provider forwarding` when the Libero redirects still need to be configured in the provider, then select the remaining 99 Libero accounts as Source Accounts."),
+      t("outbound_guide_example_libero_step_4", {}, "If every source mailbox should present the same operator name, set Visible Sender Name in the funnel. If some source accounts should look like different people, edit those identities first in Settings -> Mail -> Senders."),
+      t("outbound_guide_example_libero_step_5", {}, "In Outbound, create a campaign with Playbook = `Find The Right Owner`, Campaign mode = `Start new threads`, Sender policy = `Reply funnel`, and Sender reference = that funnel. Preview recipients, import them, run Preflight, then launch."),
+      t("outbound_guide_example_libero_step_6", {}, "When a large wave of replies arrives, move to Reply Ops. `Open Thread` returns you to the live conversation, and the reply route follows the funnel mode you chose for the collector desk."),
+    ],
+    note: t("outbound_guide_compliance_note", {}, "Despatch assumes you are allowed to operate these mailboxes and recipient lists, and that unsubscribe handling stays enabled."),
+  }));
+  examples.appendChild(buildOpsGuideExample({
+    title: t("outbound_guide_example_threads_title", {}, "Example: re-open dormant Gmail or Libero threads"),
+    summary: t("outbound_guide_example_threads_summary", {}, "Best for conversations that already exist and must continue from the mailbox that owns the history."),
+    steps: [
+      t("outbound_guide_example_threads_step_1", {}, "Build a saved search that finds dormant but still relevant threads."),
+      t("outbound_guide_example_threads_step_2", {}, "Create a campaign with Playbook = `Thread Revival`, Campaign mode = `Continue existing threads`, and Sender policy = `Thread owner mailbox`."),
+      t("outbound_guide_example_threads_step_3", {}, "Use the manual task step when a reply needs a human answer before the next follow-up can safely continue."),
+      t("outbound_guide_example_threads_step_4", {}, "Do not launch until Preflight stops warning about missing seeded thread context or thread-owner mismatches."),
+    ],
+  }));
+  examples.appendChild(buildOpsGuideExample({
+    title: t("outbound_guide_example_single_sender_title", {}, "Example: one sender, hand-picked batch"),
+    summary: t("outbound_guide_example_single_sender_summary", {}, "Useful for founder outreach or any small list where one trusted mailbox should stay visible all the way through."),
+    steps: [
+      t("outbound_guide_example_single_sender_step_1", {}, "Choose `Single sender` and point Sender reference at the exact mailbox or sender identity that should own every thread."),
+      t("outbound_guide_example_single_sender_step_2", {}, "Keep the audience small and explicit by using Manual entries, a contact group, or a short CSV import."),
+      t("outbound_guide_example_single_sender_step_3", {}, "Start with one email step and one manual task step instead of building a long sequence too early."),
+      t("outbound_guide_example_single_sender_step_4", {}, "Once replies arrive, use Reply Ops only for outcomes that should change future sends. Everything else can be handled by taking over the live thread manually."),
+    ],
+  }));
+
+  el.outboundGuide.append(head, checklist, fieldGuide, flow, glossary, examples);
+}
+
+function renderReplyOpsGuide(item = null) {
+  if (!el.replyOpsGuide) return;
+  el.replyOpsGuide.replaceChildren();
+  const head = document.createElement("div");
+  head.className = "ops-guide-head";
+  const kicker = document.createElement("p");
+  kicker.className = "settings-pane-kicker";
+  kicker.textContent = t("guide", {}, "Guide");
+  const title = document.createElement("h3");
+  title.className = "settings-pane-title";
+  title.textContent = t("how_reply_ops_works", {}, "How Reply Ops works");
+  const intro = document.createElement("p");
+  intro.className = "ops-guide-copy";
+  intro.textContent = t("reply_ops_guide_intro", {}, "Reply Ops is not another inbox. It is the decision queue for replies that can change a live campaign, a sender route, or whether a recipient should ever be touched again.");
+  head.append(kicker, title, intro);
+
+  if (item) {
+    const liveContext = document.createElement("p");
+    liveContext.className = "ops-guide-context";
+    liveContext.textContent = replyOpsMailboxRouteSummary(item);
+    head.appendChild(liveContext);
+  }
+
+  const flow = document.createElement("div");
+  flow.className = "ops-guide-flow ops-guide-flow--reply";
+  const stepDefs = [
+    [
+      t("reply_ops_guide_step_open_title", {}, "1. Open the reply first"),
+      t("reply_ops_guide_step_open_body", {}, "Start with `Open Thread` when the route is unclear. The detail view tells you whether the operator should answer from the collector inbox, the matched source mailbox, or the original thread owner."),
+    ],
+    [
+      t("reply_ops_guide_step_classify_title", {}, "2. Classify the outcome, not the mood"),
+      t("reply_ops_guide_step_classify_body", {}, "Use `Interested`, `Question`, `Wrong Person`, `Unsubscribe`, `Out Of Office`, and the other outcomes to decide what Despatch should do next, not just to leave a label behind."),
+    ],
+    [
+      t("reply_ops_guide_step_act_title", {}, "3. Only take an action when it changes future sends"),
+      t("reply_ops_guide_step_act_body", {}, "Use `Take Over`, suppression, or pause actions when the reply changes ownership, timing, or safety. If the thread only needs a normal human answer, continue the live conversation and leave the rest alone."),
+    ],
+  ];
+  stepDefs.forEach(([stepTitle, stepBody], index) => {
+    flow.appendChild(buildOpsGuideStep(index + 1, stepTitle, stepBody));
+  });
+
+  const checklist = buildOpsGuideChecklist(
+    t("reply_ops_guide_checklist_title", {}, "If you are brand new, do this"),
+    [
+      t("reply_ops_guide_checklist_1", {}, "Open one reply at a time. Do not classify blindly from the queue list."),
+      t("reply_ops_guide_checklist_2", {}, "Read `Where to respond` first. That card tells you which mailbox should continue the conversation."),
+      t("reply_ops_guide_checklist_3", {}, "If the reply only needs a normal human answer, reply in the thread. Classify it only if the outcome should change future outreach."),
+      t("reply_ops_guide_checklist_4", {}, "Use `Interested`, `Question`, `Wrong Person`, `Unsubscribe`, and the other outcomes to tell Despatch what kind of reply this really is."),
+      t("reply_ops_guide_checklist_5", {}, "Use pause or suppression only when the recipient should wait or stop receiving future contact."),
+      t("reply_ops_guide_checklist_6", {}, "After you act, move to the next reply. Reply Ops works best when the queue is cleared continuously instead of in giant bursts."),
+    ],
+  );
+
+  const actionGuide = buildOpsGuideFacts(
+    t("reply_ops_guide_actions_title", {}, "What the main actions mean"),
+    [
+      {
+        label: t("reply_ops_guide_action_open_label", {}, "Open Thread"),
+        body: t("reply_ops_guide_action_open_body", {}, "Jump into the real conversation so you can read the full context and answer from the correct mailbox."),
+      },
+      {
+        label: t("reply_ops_guide_action_takeover_label", {}, "Take Over"),
+        body: t("reply_ops_guide_action_takeover_body", {}, "Use this when automation should stop and a person now owns the thread manually."),
+      },
+      {
+        label: t("reply_ops_guide_action_interested_label", {}, "Interested"),
+        body: t("reply_ops_guide_action_interested_body", {}, "Use this when the reply shows genuine interest and the next step should be a real human conversation, not another automated send."),
+      },
+      {
+        label: t("reply_ops_guide_action_question_label", {}, "Question or Objection"),
+        body: t("reply_ops_guide_action_question_body", {}, "Use these when the recipient engaged but needs a real answer first. This usually means a human should reply before the sequence continues."),
+      },
+      {
+        label: t("reply_ops_guide_action_wrong_person_label", {}, "Wrong Person"),
+        body: t("reply_ops_guide_action_wrong_person_body", {}, "Use this when the recipient says they are not the owner, or points you to someone else."),
+      },
+      {
+        label: t("reply_ops_guide_action_unsubscribe_label", {}, "Unsubscribe or Suppress"),
+        body: t("reply_ops_guide_action_unsubscribe_body", {}, "Use this the moment it is clear that this person or domain should no longer receive further outreach."),
+      },
+      {
+        label: t("reply_ops_guide_action_pause_label", {}, "Pause Until"),
+        body: t("reply_ops_guide_action_pause_body", {}, "Use this for absence replies or timing-based pauses, so the thread returns when it becomes appropriate again."),
+      },
+    ],
+  );
+
+  const glossary = buildOpsGuideFacts(
+    t("reply_ops_guide_glossary_title", {}, "Words used here, in plain language"),
+    [
+      {
+        label: t("reply_ops_guide_glossary_bucket_label", {}, "Bucket"),
+        body: t("reply_ops_guide_glossary_bucket_body", {}, "A bucket is just a queue of similar replies, such as questions, wrong-person replies, or unsubscribes."),
+      },
+      {
+        label: t("reply_ops_guide_glossary_takeover_label", {}, "Manual takeover"),
+        body: t("reply_ops_guide_glossary_takeover_body", {}, "This means a human, not the sequence, now owns the thread."),
+      },
+      {
+        label: t("reply_ops_guide_glossary_recipient_suppress_label", {}, "Suppress recipient"),
+        body: t("reply_ops_guide_glossary_recipient_suppress_body", {}, "Stop future outreach to one person."),
+      },
+      {
+        label: t("reply_ops_guide_glossary_domain_suppress_label", {}, "Suppress domain"),
+        body: t("reply_ops_guide_glossary_domain_suppress_body", {}, "Stop future outreach to a whole company or domain when the risk is not limited to one address."),
+      },
+      {
+        label: t("reply_ops_guide_glossary_route_label", {}, "Where to respond"),
+        body: t("reply_ops_guide_glossary_route_body", {}, "This is the most important routing hint in the screen. It tells you which mailbox should keep the conversation coherent."),
+      },
+    ],
+    { open: false },
+  );
+
+  const examples = document.createElement("section");
+  examples.className = "ops-guide-examples";
+  const examplesTitle = document.createElement("h4");
+  examplesTitle.className = "outbound-subtitle";
+  examplesTitle.textContent = t("examples", {}, "Examples");
+  examples.appendChild(examplesTitle);
+  examples.appendChild(buildOpsGuideExample({
+    title: t("reply_ops_guide_example_collector_title", {}, "Example: the collector desk receives the first large reply wave"),
+    summary: t("reply_ops_guide_example_collector_summary", {}, "This is the normal next step after a multi-mailbox Libero funnel or any other collector-based motion starts getting real answers."),
+    open: !item,
+    steps: [
+      t("reply_ops_guide_example_collector_step_1", {}, "Start in `Needs Review` and work from the newest replies first so the collector desk does not silently age."),
+      t("reply_ops_guide_example_collector_step_2", {}, "Open one reply. If the route says the reply should stay in the collector mailbox, answer from the desk account. If Despatch tells you to respond from the matched source mailbox, keep the original sender context."),
+      t("reply_ops_guide_example_collector_step_3", {}, "Use `Interested` when the thread deserves a real human conversation, `Question` or `Objection` when the sequence should stop and a person should reply, and `Wrong Person` when you need to update the contact owner or referral path."),
+      t("reply_ops_guide_example_collector_step_4", {}, "Use `Unsubscribe`, `Hostile`, or `Suppress Domain` the moment a recipient or company should no longer be contacted by this motion."),
+      t("reply_ops_guide_example_collector_step_5", {}, "If the reply is an absence message, use `Pause Until` so the thread returns at the right time instead of staying mixed in with actionable human replies."),
+    ],
+    note: t("reply_ops_guide_note", {}, "Reply Ops is where you decide whether the next move is a human answer, a pause, a suppression, or no further contact at all."),
+  }));
+  examples.appendChild(buildOpsGuideExample({
+    title: t("reply_ops_guide_example_wrong_person_title", {}, "Example: the recipient says this is the wrong person"),
+    summary: t("reply_ops_guide_example_wrong_person_summary", {}, "Use this when the reply is helpful, but it means your current target should no longer stay in the same path."),
+    steps: [
+      t("reply_ops_guide_example_wrong_person_step_1", {}, "Open the thread and confirm whether the recipient simply redirected you or explicitly asked not to be contacted again."),
+      t("reply_ops_guide_example_wrong_person_step_2", {}, "If they named a better owner, classify the reply as `Wrong Person`, update your contacts, and continue from the correct mailbox or funnel route."),
+      t("reply_ops_guide_example_wrong_person_step_3", {}, "If they also asked to stop contact entirely, suppress the recipient rather than only marking them as the wrong person."),
+    ],
+  }));
+  examples.appendChild(buildOpsGuideExample({
+    title: t("reply_ops_guide_example_unsubscribe_title", {}, "Example: the reply is a clear stop signal"),
+    summary: t("reply_ops_guide_example_unsubscribe_summary", {}, "Use this when the recipient says stop, unsubscribe, or reacts in a way that makes further contact unsafe."),
+    steps: [
+      t("reply_ops_guide_example_unsubscribe_step_1", {}, "Classify the reply as `Unsubscribe` or `Hostile`, depending on what actually happened."),
+      t("reply_ops_guide_example_unsubscribe_step_2", {}, "If the problem is broader than one address, suppress the whole domain so another campaign does not touch the same company by accident."),
+      t("reply_ops_guide_example_unsubscribe_step_3", {}, "Do not reply unless policy or law requires it. The safe move is usually to stop future outreach immediately."),
+    ],
+  }));
+
+  el.replyOpsGuide.append(head, checklist, actionGuide, flow, glossary, examples);
 }
 
 function outboundCampaignIntentSummary(campaign) {
@@ -10306,6 +10854,7 @@ function renderOutboundSummary() {
     empty.className = "outbound-summary-empty";
     empty.textContent = t("choose_a_campaign_to_see_a_quiet_summary_before_you_edit_the_details", {}, "Choose a campaign to see a quiet summary before you edit the details.");
     el.outboundSummary.appendChild(empty);
+    renderOutboundGuide();
     return;
   }
   const senderPolicyKind = String(el.outboundCampaignSenderKind?.value || savedCampaign.sender_policy_kind || "preferred_sender").trim() || "preferred_sender";
@@ -10374,6 +10923,7 @@ function renderOutboundSummary() {
   note.className = "outbound-summary-note";
   note.textContent = outboundCampaignIntentSummary(campaign);
   el.outboundSummary.append(head, grid, note);
+  renderOutboundGuide();
 }
 
 function outboundExternalProviderSummary() {
@@ -11278,6 +11828,7 @@ function renderReplyOpsDetail() {
     empty.className = "settings-list-empty";
     empty.textContent = t("select_a_reply_to_review_thread_context_sender_choice_and_the_recommended_action", {}, "Select a reply to review thread context, sender choice, and the recommended action.");
     el.replyOpsDetail.appendChild(empty);
+    renderReplyOpsGuide(null);
     syncReplyOpsActionButtons();
     return;
   }
@@ -11357,6 +11908,7 @@ function renderReplyOpsDetail() {
   preview.style.maxHeight = "280px";
   preview.textContent = String(item?.preview || "").trim() || t("no_indexed_preview_available_for_this_reply_yet", {}, "No indexed preview available for this reply yet.");
   el.replyOpsDetail.appendChild(preview);
+  renderReplyOpsGuide(item);
   syncReplyOpsActionButtons();
 }
 
@@ -19918,8 +20470,7 @@ function mergeOptimisticSentSummaries(items) {
 }
 
 function mailSnapshotValue(value) {
-  if (value === null || value === undefined) return value;
-  return JSON.parse(JSON.stringify(value));
+  return deepCloneValue(value);
 }
 
 function snapshotMailState() {
